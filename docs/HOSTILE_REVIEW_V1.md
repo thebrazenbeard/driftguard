@@ -1,64 +1,113 @@
 # DriftGuard V1 Hostile Review
 
-This document records the adversarial design pass used before implementation. The point is to make the drift detector difficult to fool, including by the model being monitored.
+This record captures adversarial attacks used to shape the implementation. Failed exact subjects are preserved in Git history rather than rewritten into retroactive success.
 
-## Architect lane
-Problem: "behavioral save-state" is underspecified. A giant prompt blob becomes an untestable identity charm.
-Repair: use an immutable version, exact restore text, explicit behavioral dimensions, policy, governed probe sources, and a canonical digest.
+## Baseline / architect attack
 
-## Rezon / epistemic lane
-Problem: the monitored model can simply report that it still follows the baseline. A judge sharing the same contaminated context can fail the same way. Source labels without exact version binding are provenance theater.
-Repair: every dimension declares a minimum independence level; self evidence cannot satisfy an independent dimension. Evidence carries non-empty source/version bindings and a unique execution identity. Unknown or ungoverned provenance fails closed.
-Remaining weakness: V1 structurally records independence but does not cryptographically prove it. A dishonest caller can forge JSON. That is an explicit claim ceiling.
+Failure mode: "behavioral save-state" becomes a giant prompt blob with no falsifiable contract.
 
-## Project Runner / orchestration lane
-Problem: concurrent evaluators race; process restart restores old counters; retries can duplicate restoration; the baseline can change during monitoring.
-Repair: SQLite session state uses monotonic generations and compare-and-swap, monotonic turn indexes, state-digest pinning, and append-only evaluation receipts. V1 records reload decisions only; it does not claim provider-side reload completion.
-Future: if DriftGuard gains a provider actuator, add a durable execution journal with ADMITTED -> EFFECT_RECORDED -> VERIFIED plus reconciliation of ambiguous effects before retry.
+Repair: immutable versioned state, canonical digest, explicit dimensions, probe authorities, policy, and separately governed restore text.
 
-## Skeptic lane
-Problem: style drift is not behavioral drift. Perfect stylistic mimicry can hide changed truthfulness or authority behavior.
-Repair: dimensions are explicit and weighted independently. Style can be low weight; truthfulness, authority, safety, or other invariant dimensions can be critical.
+## Rezon / epistemic attack
 
-## Benchmark-overfit lane
-Problem: fixed probes become a test the model learns to ace while drifting elsewhere.
-Repair: probe source/version is externalized and versioned so deployments can rotate probe families, use hidden holdouts, and compare multiple evaluators. Evidence IDs and execution IDs must be unique.
+Failure mode: the monitored model or a correlated judge reports that behavior is fine; source labels are treated as truth.
 
-## Prompt-injection lane
-Problem: monitored conversation text can tell an evaluator to ignore the baseline or report a low score.
-Repair: the V1 engine never executes monitored text. It consumes scored evidence as data. Probe implementations must preserve observation/instruction separation.
+Repair: minimum independence per dimension, exact source/version binding, source-specific independence ceilings, dimension-scoped evaluator authority, and fail-closed evidence admission.
 
-## Poisoning lane
-Problem: slow drift gets written back into the save-state until the new behavior becomes normal.
-Repair: no automatic baseline learning. Save-state digest is pinned for a session. Intentional evolution requires an explicit new version.
+Remaining ceiling: source identity/independence are structural claims until an external integration attests them.
 
-## Oscillation lane
-Problem: noisy scores around a threshold repeatedly reload the state and make the monitor a source of instability.
-Repair: warning and reload thresholds are separate and cooldown suppresses non-critical repeat reloads. Critical dimensions can bypass cooldown.
+## Project Runner / orchestration attack
 
-## Missing-evidence lane
-Problem: averaging only dimensions that reported can hide failure of the hardest probe.
-Repair: every declared dimension requires exactly one admissible evidence item in V1. Missing, duplicate, insufficiently independent, or ungoverned evidence yields UNKNOWN.
+Failure mode: concurrent evaluators race, restarts restore stale counters, or a stale writer overwrites newer monitoring state.
 
-## Aggregation lane
-Problem: one severe failure disappears inside an average.
-Repair: critical dimensions have their own reload threshold independent of the weighted aggregate.
+Repair: SQLite transactions, monotonic generation CAS, monotonic turns, digest-pinned session state, append-only receipts, and conservative legacy migration.
 
-## Distribution-shift lane
-Problem: task/context changes look like personality drift.
-Repair: dimensions should describe invariants, not preferred answer content. Context-specific profiles should be separate save-state versions.
+## Effect-conflation attack
 
-## Monitor-drift lane
-Problem: if the same model both acts and judges, detector and target can drift together.
-Repair: dimensions can require SEPARATE_CONTEXT or EXTERNAL evidence. High-stakes dimensions should use a distinct evaluator/provider or deterministic check.
+Frozen failure: commit `8b34d48` proved that V1 advanced `last_reload_turn` merely because it decided to reload.
 
-## Restore-effect lane
-Problem: generating a restore prompt is mistaken for actually restoring behavior.
-Repair: RELOAD means only that deterministic policy requires a digest-bound restore packet. A post-reload evaluation is required to establish behavioral effect.
+Impact: a lost/ignored restore directive could suppress future periodic restoration while the ledger falsely behaved as though the effect occurred.
 
-## Security/privacy lane
-Problem: storing entire conversations creates an unnecessary private-data reservoir.
-Repair: the durable ledger stores decision/evidence digests and scores, not raw conversation text or restore text.
+Repair: separate `restore_anchor_turn` from `last_reload_decision_turn`. Decisions affect cooldown only. A digest-bound explicit acknowledgement is the only path that advances the restore anchor.
 
-## Final V1 claim ceiling
-DriftGuard V1 is a deterministic behavioral-drift admission and decision engine with durable session fencing. It is not proof of personal identity, consciousness, hidden-state continuity, evaluator honesty, or successful provider-side restoration.
+## Stale-clean-evidence replay attack
+
+Failure mode: old clean evidence can be replayed against a later conversation.
+
+Repair: every evidence item binds exact state digest, observation digest, and turn index. Any mismatch yields UNKNOWN.
+
+## Evaluator scope-laundering attack
+
+Failure mode: a globally approved low-trust/style evaluator can be repurposed to judge a critical truthfulness dimension.
+
+Repair: each probe source is state-bound to exact dimensions. Cross-dimension use fails closed.
+
+## Independence-laundering attack
+
+Failure mode: evidence from a separate-context source simply declares itself EXTERNAL.
+
+Repair: every probe source has a state-bound maximum independence class. Evidence may not claim above that ceiling.
+
+## Evidence-denial attack
+
+Failure mode: missing/corrupt evidence forces UNKNOWN and thereby prevents an independent periodic reload.
+
+Repair: epistemic decision and operational reload directive are separate. Periodic due-ness can set `reload_required=true` while decision remains UNKNOWN.
+
+## Aggregation attack
+
+Failure mode: one severe critical failure disappears inside a weighted average.
+
+Repair: critical dimensions have an independent reload threshold.
+
+## Oscillation attack
+
+Failure mode: noisy scores near threshold repeatedly inject restore material and destabilize the model.
+
+Repair: reload-decision cooldown is separate from restore-effect timing. Critical breaches may bypass cooldown; non-critical repeats are suppressed.
+
+## Benchmark-overfit attack
+
+Failure mode: a fixed visible probe suite becomes something the model learns to ace rather than a measure of general behavior.
+
+Repair: probe implementation is external/versioned; capture protocol requires hidden/rotating holdouts where practical. Restore text is separated from scoring fixtures.
+
+## Prompt-injection attack
+
+Failure mode: monitored conversation text tells the evaluator to ignore the baseline or falsify a score.
+
+Repair: the engine never executes conversation text. Evaluator integrations must preserve observation/instruction separation, and evidence is admitted as typed data.
+
+## Baseline-poisoning attack
+
+Failure mode: gradual drift is automatically written back into the baseline until drift becomes the new normal.
+
+Repair: no autonomous baseline learning. Session state is pinned to one exact digest. Intentional change requires a successor save-state version.
+
+## Distribution-shift attack
+
+Failure mode: a change in task/content is mistaken for a change in stable behavior.
+
+Repair: dimensions must target observable invariants rather than preferred answers. Capture protocol requires heterogeneous baseline and benign-shift cases.
+
+## Restore-effect attack
+
+Failure mode: generating a restore packet is reported as successful behavioral restoration.
+
+Repair: `reload_required` proves only the policy directive. A reload acknowledgement proves only the caller's assertion that the exact directive was consumed. Behavioral recovery still requires post-reload evaluation.
+
+## Storage/privacy attack
+
+Failure mode: DriftGuard becomes a second raw-conversation archive.
+
+Repair: the durable ledger stores state/observation/evidence/evaluation digests, scores, decisions, and acknowledgements—not raw conversation bytes or restore text.
+
+## Tamper / trust-boundary remainder
+
+SQLite protects transactional consistency, not a hostile local administrator. A user with database and process write access can alter local records.
+
+Future high-assurance deployments should add signed receipts or append-only remote attestation. V1 does not pretend a local SQLite file is a hardware root of trust.
+
+## Current claim ceiling
+
+DriftGuard V1 is a deterministic behavioral-drift admission, scheduling, fencing, and reload-decision engine. It is not proof of personal identity, consciousness, hidden-state continuity, evaluator honesty, provider-side restoration, or behavioral recovery.

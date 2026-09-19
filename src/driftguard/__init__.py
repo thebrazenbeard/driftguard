@@ -8,6 +8,8 @@ from .model import (
     DriftPolicy,
     Evaluation,
     EvidenceIndependence,
+    ProbeSource,
+    ReloadAcknowledgement,
     SaveState,
     SourceBinding,
 )
@@ -20,6 +22,8 @@ __all__ = [
     "DriftPolicy",
     "Evaluation",
     "EvidenceIndependence",
+    "ProbeSource",
+    "ReloadAcknowledgement",
     "SaveState",
     "SourceBinding",
     "StaleGenerationError",

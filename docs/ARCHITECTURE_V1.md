@@ -1,44 +1,101 @@
 # DriftGuard V1 Architecture
 
-Status: design + executable reference implementation candidate.
+Status: executable reference implementation candidate.
 
 ## Goal
 
-DriftGuard monitors behavioral divergence from a versioned behavioral save-state and decides when restoration material should be reloaded. It does not claim to measure consciousness, identity, or inaccessible model-internal state. Its subject is observable behavior under an explicit contract.
+DriftGuard monitors observable behavioral divergence from a versioned save-state and determines when that exact state should be reloaded. It does not claim access to hidden model state, consciousness, or identity continuity.
 
-## Core invariants
+## State model
 
-1. A save-state is immutable inside a monitoring session. Intentional evolution creates a new version; it is never silently learned into the baseline.
-2. Drift is a vector over named behavioral dimensions, not one opaque similarity score.
-3. Evidence and authority are separate. A model saying it still follows the baseline is not independent evidence that it does.
-4. Every evidence item has an exact execution identity plus non-empty source/version bindings. Allowed probe sources are declared by the save-state.
-5. Each dimension declares the minimum independence required of its evidence.
-6. Missing, duplicate, under-independent, or ungoverned evidence yields UNKNOWN, not a guessed score.
-7. A reload decision returns a digest-bound restore packet. The engine itself does not claim that a provider actually consumed or obeyed it.
-8. Reload decisions use cooldown behavior so DriftGuard cannot create an endless self-induced reload loop. Critical dimensions can bypass cooldown.
-9. A periodic reload can be required even when measured drift is low. Detection and periodic refresh are separate mechanisms.
-10. Session persistence uses monotonic turn numbers and generation compare-and-swap. Stale writers cannot overwrite newer monitoring state.
+A save-state binds:
+
+- an immutable state ID + version;
+- exact restore text;
+- named behavioral dimensions with weights, criticality, and minimum evidence independence;
+- a governed probe-source registry;
+- reload thresholds, periodic interval, and cooldown policy.
+
+Each probe source binds an exact source reference/version to:
+
+- the maximum independence class it may claim;
+- the exact dimensions it may judge.
+
+The canonical state digest covers all of the above.
+
+## Evidence model
+
+Each V1 drift evidence item carries:
+
+- unique evidence and execution IDs;
+- one dimension and drift score in [0, 1];
+- exactly one governed probe source;
+- claimed independence;
+- exact save-state digest;
+- exact observation digest;
+- exact turn index.
+
+Admission fails closed when evidence is stale, duplicated, under-independent, overclaims its source's independence ceiling, comes from an ungoverned source, crosses source/dimension scope, or leaves a required dimension uncovered.
+
+The source registry is an authority boundary, not proof of provider honesty. A dishonest caller can still forge a source identity unless a future integration supplies cryptographic/provider attestation.
+
+## Decision model
+
+Epistemic status and reload action are intentionally separate.
+
+`decision` describes evidence interpretation:
+
+- `STABLE`
+- `WARN`
+- `RELOAD`
+- `UNKNOWN`
+
+`reload_required` is the operational directive.
+
+That separation matters because a periodic reload can still be required while evidence is `UNKNOWN`. An attacker cannot suppress scheduled restoration merely by denying or corrupting drift evidence.
+
+Critical-dimension or aggregate threshold breaches can also require reload when evidence is complete.
+
+## Reload clocks
+
+Two clocks are separate:
+
+- `restore_anchor_turn`: last session-start or acknowledged restore anchor;
+- `last_reload_decision_turn`: last turn where DriftGuard required a reload.
+
+The first controls periodic reload due-ness. The second controls decision cooldown.
+
+A reload decision never advances the restore anchor.
+
+Only an explicit reload acknowledgement bound to the exact state digest, evaluation digest, and turn may advance the restore anchor. The acknowledgement remains a caller assertion of downstream effect; it is not behavioral proof.
+
+## Persistence and concurrency
+
+SQLite provides:
+
+- monotonic session generation;
+- compare-and-swap on every durable mutation;
+- monotonic turn ordering;
+- save-state digest pinning;
+- append-only evaluation receipts;
+- append-only reload acknowledgements.
+
+Legacy V1 databases that used one conflated `last_reload_turn` are migrated conservatively: the old first turn becomes the restore anchor, while a later legacy reload value is treated only as a decision timestamp. An old decision is never promoted into a confirmed restore effect.
 
 ## Project Runner influence
 
-Project Runner contributes the operational discipline: exact mutable predecessors, monotonic generations, fail-closed stale work, postcondition readback, and explicit separation of execution capability from authority. DriftGuard V1 applies the same pattern to monitoring-session generations and save-state pinning rather than treating every invocation as fresh state.
+Project Runner supplied the operational invariants: exact mutable predecessor, generation CAS, fail-closed stale work, explicit readback/receipt boundaries, and separation of capability from authority/effect.
 
 ## Rezon influence
 
-Rezon contributes epistemic discipline: canonical digests, explicit source/version association, rejection of empty provenance identities, and distrust of self-promoted evidence. DriftGuard therefore admits probe evidence only through explicit source bindings and independence requirements.
+Rezon supplied the epistemic invariants: canonical digest binding, exact source/version provenance, rejection of empty identities, scope-aware evidence admission, and distrust of self-promoted evidence.
 
-## Decision semantics
+## Remaining external boundary
 
-STABLE: complete admissible evidence is below thresholds and no periodic reload is due.
+V1 does not perform the model-provider reload itself and does not generate drift scores from conversation text. External evaluator/actuator integrations must preserve:
 
-WARN: drift exceeds the warning threshold, or a non-critical reload condition is currently suppressed by cooldown.
-
-RELOAD: aggregate drift, a critical dimension, or the periodic interval requires a restore packet.
-
-UNKNOWN: evidence is incomplete, conflicting, insufficiently independent, or outside the save-state's governed probe sources.
-
-UNKNOWN is intentionally not auto-converted to RELOAD in V1. Some deployments may choose that policy later, but hiding uncertainty inside a remediation action would erase useful evidence.
-
-## Evidence ceiling
-
-The reference engine can prove deterministic admission and decision behavior for its inputs. It cannot prove that an external evaluator is genuinely independent merely because a JSON field says so; cryptographic/provider attestation is a future boundary. It also cannot prove that a generated restore packet changed a model's behavior unless a separate post-reload probe establishes that effect.
+1. observation bytes separate from evaluator instructions;
+2. exact state + observation + turn binding;
+3. source identity and independence provenance;
+4. effect reconciliation before retry if downstream delivery becomes ambiguous;
+5. post-reload behavioral replay before claiming recovery.

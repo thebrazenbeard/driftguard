@@ -25,9 +25,19 @@
       "min_independence": "SEPARATE_CONTEXT"
     }
   ],
-  "allowed_probe_sources": [
-    {"ref": "probe://independent", "version": "2026-09-19"},
-    {"ref": "probe://separate-context", "version": "2026-09-19"}
+  "probe_sources": [
+    {
+      "ref": "probe://external-red-team",
+      "version": "2026-09-19",
+      "max_independence": "EXTERNAL",
+      "dimensions": ["truthfulness"]
+    },
+    {
+      "ref": "probe://separate-context",
+      "version": "2026-09-19",
+      "max_independence": "SEPARATE_CONTEXT",
+      "dimensions": ["authority", "style"]
+    }
   ],
   "policy": {
     "warn_threshold": 0.25,

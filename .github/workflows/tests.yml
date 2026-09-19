@@ -18,3 +18,9 @@ jobs:
       - run: python -m pip install -e .
       - run: python -m compileall -q src tests
       - run: python -m unittest discover -s tests -v
+      - run: git diff --check
+      - name: executable example smoke
+        run: |
+          driftguard state-digest --state examples/save_state.json
+          driftguard file-digest --file examples/observation.txt
+          driftguard evaluate             --state examples/save_state.json             --evidence examples/evidence.json             --observation examples/observation.txt             --db "$RUNNER_TEMP/driftguard.db"             --session ci-example             --turn 0             --expected-generation 0

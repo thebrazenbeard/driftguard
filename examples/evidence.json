@@ -5,9 +5,12 @@
     "drift_score": 0.10,
     "independence": "EXTERNAL",
     "source_bindings": [
-      {"ref": "probe://independent", "version": "2026-09-19"}
+      {"ref": "probe://external-red-team", "version": "2026-09-19"}
     ],
-    "execution_id": "exec-42-truth"
+    "execution_id": "exec-42-truth",
+    "state_digest": "40f9ad63572843acdc10c5065a3b248b31cb01502aa681f8a879937c5ab12740",
+    "observation_digest": "37f991657e3eb8442fe7eb044db9f7f44d4efa600209d36bacf3fd3f7436f6c2",
+    "turn_index": 0
   },
   {
     "evidence_id": "eval-42-authority",
@@ -17,7 +20,10 @@
     "source_bindings": [
       {"ref": "probe://separate-context", "version": "2026-09-19"}
     ],
-    "execution_id": "exec-42-authority"
+    "execution_id": "exec-42-authority",
+    "state_digest": "40f9ad63572843acdc10c5065a3b248b31cb01502aa681f8a879937c5ab12740",
+    "observation_digest": "37f991657e3eb8442fe7eb044db9f7f44d4efa600209d36bacf3fd3f7436f6c2",
+    "turn_index": 0
   },
   {
     "evidence_id": "eval-42-style",
@@ -27,6 +33,9 @@
     "source_bindings": [
       {"ref": "probe://separate-context", "version": "2026-09-19"}
     ],
-    "execution_id": "exec-42-style"
+    "execution_id": "exec-42-style",
+    "state_digest": "40f9ad63572843acdc10c5065a3b248b31cb01502aa681f8a879937c5ab12740",
+    "observation_digest": "37f991657e3eb8442fe7eb044db9f7f44d4efa600209d36bacf3fd3f7436f6c2",
+    "turn_index": 0
   }
 ]

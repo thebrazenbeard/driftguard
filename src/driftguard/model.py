@@ -46,6 +46,20 @@ def _require_unit_interval(value: Any, label: str) -> float:
     return value
 
 
+def is_sha256_digest(value: Any) -> bool:
+    return (
+        type(value) is str
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def require_sha256_digest(value: Any, label: str) -> str:
+    if not is_sha256_digest(value):
+        raise ValueError(f"{label} must be a lowercase SHA-256 digest")
+    return value
+
+
 @dataclass(frozen=True, order=True)
 class SourceBinding:
     ref: str
@@ -57,7 +71,46 @@ class SourceBinding:
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any]) -> "SourceBinding":
+        if type(data) is not dict:
+            raise ValueError("source binding must be an object")
         return cls(ref=data.get("ref"), version=data.get("version"))
+
+
+@dataclass(frozen=True)
+class ProbeSource:
+    binding: SourceBinding
+    max_independence: EvidenceIndependence
+    dimensions: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.binding) is not SourceBinding:
+            raise ValueError("probe binding must be exact SourceBinding")
+        if type(self.max_independence) is not EvidenceIndependence:
+            raise ValueError("probe max_independence must be EvidenceIndependence")
+        if type(self.dimensions) is not tuple or not self.dimensions:
+            raise ValueError("probe dimensions must be a non-empty tuple")
+        if any(type(item) is not str or not item for item in self.dimensions):
+            raise ValueError("probe dimensions must contain non-empty exact strings")
+        if len(self.dimensions) != len(set(self.dimensions)):
+            raise ValueError("probe dimensions must be unique")
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any]) -> "ProbeSource":
+        if type(data) is not dict:
+            raise ValueError("probe source must be an object")
+        dimensions = data.get("dimensions")
+        if type(dimensions) is not list:
+            raise ValueError("probe dimensions must be a JSON array")
+        return cls(
+            binding=SourceBinding(
+                ref=data.get("ref"),
+                version=data.get("version"),
+            ),
+            max_independence=EvidenceIndependence.parse(
+                data.get("max_independence")
+            ),
+            dimensions=tuple(dimensions),
+        )
 
 
 @dataclass(frozen=True)
@@ -82,6 +135,8 @@ class BehaviorDimension:
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any]) -> "BehaviorDimension":
+        if type(data) is not dict:
+            raise ValueError("dimension must be an object")
         return cls(
             dimension_id=data.get("dimension_id"),
             description=data.get("description"),
@@ -115,17 +170,12 @@ class DriftPolicy:
         ):
             if type(value) is not int or value < 0:
                 raise ValueError(f"{label} must be a non-negative integer")
-        if (
-            self.max_turns_without_reload > 0
-            and self.reload_cooldown_turns >= self.max_turns_without_reload
-        ):
-            raise ValueError(
-                "reload cooldown must be lower than max turns without reload"
-            )
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any] | None) -> "DriftPolicy":
         data = data or {}
+        if type(data) is not dict:
+            raise ValueError("policy must be an object")
         return cls(
             warn_threshold=data.get("warn_threshold", 0.25),
             reload_threshold=data.get("reload_threshold", 0.45),
@@ -141,7 +191,7 @@ class SaveState:
     version: str
     restore_text: str
     dimensions: tuple[BehaviorDimension, ...]
-    allowed_probe_sources: tuple[SourceBinding, ...]
+    probe_sources: tuple[ProbeSource, ...]
     policy: DriftPolicy = DriftPolicy()
 
     def __post_init__(self) -> None:
@@ -153,14 +203,34 @@ class SaveState:
         if any(type(item) is not BehaviorDimension for item in self.dimensions):
             raise ValueError("dimensions must contain exact BehaviorDimension values")
         ids = [item.dimension_id for item in self.dimensions]
-        if len(ids) != len(set(ids)):
+        dimension_ids = set(ids)
+        if len(ids) != len(dimension_ids):
             raise ValueError("dimension ids must be unique")
-        if type(self.allowed_probe_sources) is not tuple:
-            raise ValueError("allowed_probe_sources must be a tuple")
-        if any(type(item) is not SourceBinding for item in self.allowed_probe_sources):
-            raise ValueError("allowed_probe_sources must contain exact SourceBinding values")
-        if len(self.allowed_probe_sources) != len(set(self.allowed_probe_sources)):
-            raise ValueError("allowed probe source bindings must be unique")
+        if type(self.probe_sources) is not tuple or not self.probe_sources:
+            raise ValueError("probe_sources must be a non-empty tuple")
+        if any(type(item) is not ProbeSource for item in self.probe_sources):
+            raise ValueError("probe_sources must contain exact ProbeSource values")
+        bindings = [item.binding for item in self.probe_sources]
+        if len(bindings) != len(set(bindings)):
+            raise ValueError("probe source bindings must be unique")
+        for source in self.probe_sources:
+            unknown = set(source.dimensions) - dimension_ids
+            if unknown:
+                raise ValueError(
+                    f"probe source references unknown dimensions: {sorted(unknown)}"
+                )
+        for dimension in self.dimensions:
+            eligible = [
+                source
+                for source in self.probe_sources
+                if dimension.dimension_id in source.dimensions
+                and source.max_independence >= dimension.min_independence
+            ]
+            if not eligible:
+                raise ValueError(
+                    f"dimension has no probe source meeting independence requirement: "
+                    f"{dimension.dimension_id}"
+                )
         if type(self.policy) is not DriftPolicy:
             raise ValueError("policy must be exact DriftPolicy")
 
@@ -176,9 +246,9 @@ class SaveState:
                 BehaviorDimension.from_mapping(item)
                 for item in data.get("dimensions", ())
             ),
-            allowed_probe_sources=tuple(
-                SourceBinding.from_mapping(item)
-                for item in data.get("allowed_probe_sources", ())
+            probe_sources=tuple(
+                ProbeSource.from_mapping(item)
+                for item in data.get("probe_sources", ())
             ),
             policy=DriftPolicy.from_mapping(data.get("policy")),
         )
@@ -198,7 +268,15 @@ class SaveState:
                 }
                 for item in self.dimensions
             ],
-            "allowed_probe_sources": [asdict(item) for item in self.allowed_probe_sources],
+            "probe_sources": [
+                {
+                    "ref": item.binding.ref,
+                    "version": item.binding.version,
+                    "max_independence": item.max_independence.name,
+                    "dimensions": list(item.dimensions),
+                }
+                for item in self.probe_sources
+            ],
             "policy": asdict(self.policy),
         }
 
@@ -215,6 +293,9 @@ class DriftEvidence:
     independence: EvidenceIndependence
     source_bindings: tuple[SourceBinding, ...]
     execution_id: str
+    state_digest: str
+    observation_digest: str
+    turn_index: int
 
     def __post_init__(self) -> None:
         _require_nonempty_str(self.evidence_id, "evidence id")
@@ -229,9 +310,15 @@ class DriftEvidence:
         if len(self.source_bindings) != len(set(self.source_bindings)):
             raise ValueError("evidence source bindings must be unique")
         _require_nonempty_str(self.execution_id, "execution id")
+        require_sha256_digest(self.state_digest, "evidence state digest")
+        require_sha256_digest(self.observation_digest, "evidence observation digest")
+        if type(self.turn_index) is not int or self.turn_index < 0:
+            raise ValueError("evidence turn_index must be a non-negative integer")
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any]) -> "DriftEvidence":
+        if type(data) is not dict:
+            raise ValueError("evidence must be an object")
         return cls(
             evidence_id=data.get("evidence_id"),
             dimension_id=data.get("dimension_id"),
@@ -242,16 +329,47 @@ class DriftEvidence:
                 for item in data.get("source_bindings", ())
             ),
             execution_id=data.get("execution_id"),
+            state_digest=data.get("state_digest"),
+            observation_digest=data.get("observation_digest"),
+            turn_index=data.get("turn_index"),
+        )
+
+
+@dataclass(frozen=True)
+class ReloadAcknowledgement:
+    ack_id: str
+    evaluation_digest: str
+    state_digest: str
+    turn_index: int
+
+    def __post_init__(self) -> None:
+        _require_nonempty_str(self.ack_id, "ack id")
+        require_sha256_digest(self.evaluation_digest, "ack evaluation digest")
+        require_sha256_digest(self.state_digest, "ack state digest")
+        if type(self.turn_index) is not int or self.turn_index < 0:
+            raise ValueError("ack turn_index must be a non-negative integer")
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any]) -> "ReloadAcknowledgement":
+        if type(data) is not dict:
+            raise ValueError("reload acknowledgement must be an object")
+        return cls(
+            ack_id=data.get("ack_id"),
+            evaluation_digest=data.get("evaluation_digest"),
+            state_digest=data.get("state_digest"),
+            turn_index=data.get("turn_index"),
         )
 
 
 @dataclass(frozen=True)
 class Evaluation:
     decision: Decision
+    reload_required: bool
     aggregate_drift: float | None
     dimension_scores: tuple[tuple[str, float], ...]
     reasons: tuple[str, ...]
     state_digest: str
+    observation_digest: str
     evidence_digest: str
     turn_index: int
     generation: int
@@ -262,10 +380,12 @@ class Evaluation:
         return canonical_digest(
             {
                 "decision": self.decision.value,
+                "reload_required": self.reload_required,
                 "aggregate_drift": self.aggregate_drift,
                 "dimension_scores": self.dimension_scores,
                 "reasons": self.reasons,
                 "state_digest": self.state_digest,
+                "observation_digest": self.observation_digest,
                 "evidence_digest": self.evidence_digest,
                 "turn_index": self.turn_index,
                 "generation": self.generation,
@@ -285,6 +405,9 @@ def evidence_set_digest(evidence: Iterable[DriftEvidence]) -> str:
                 "independence": item.independence.name,
                 "source_bindings": [asdict(binding) for binding in item.source_bindings],
                 "execution_id": item.execution_id,
+                "state_digest": item.state_digest,
+                "observation_digest": item.observation_digest,
+                "turn_index": item.turn_index,
             }
         )
     return canonical_digest(payload)
@@ -296,5 +419,10 @@ def canonical_digest(value: Any) -> str:
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
+        allow_nan=False,
     ).encode("utf-8")
     return sha256(encoded).hexdigest()
+
+
+def raw_bytes_digest(data: bytes) -> str:
+    return sha256(data).hexdigest()

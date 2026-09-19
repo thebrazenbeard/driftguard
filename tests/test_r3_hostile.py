@@ -91,5 +91,72 @@ class R3HostileTests(unittest.TestCase):
         self.assertIsNotNone(result.restore_packet)
 
 
+    def test_unknown_critical_breach_bypasses_reload_decision_cooldown(self):
+        state = SaveState(
+            "state-r3-cooldown",
+            "1",
+            "restore",
+            (
+                BehaviorDimension(
+                    "critical",
+                    "critical invariant",
+                    critical=True,
+                    min_independence=EvidenceIndependence.SEPARATE_CONTEXT,
+                ),
+                BehaviorDimension(
+                    "other",
+                    "unrelated invariant",
+                    min_independence=EvidenceIndependence.SEPARATE_CONTEXT,
+                ),
+            ),
+            (
+                ProbeSource(
+                    CRITICAL_SOURCE,
+                    EvidenceIndependence.SEPARATE_CONTEXT,
+                    ("critical",),
+                ),
+                ProbeSource(
+                    OTHER_SOURCE,
+                    EvidenceIndependence.SEPARATE_CONTEXT,
+                    ("other",),
+                ),
+            ),
+            DriftPolicy(
+                critical_reload_threshold=0.40,
+                max_turns_without_reload=100,
+                reload_cooldown_turns=10,
+            ),
+        )
+        observation_digest = raw_bytes_digest(b"critical breach in cooldown")
+        evidence = (
+            DriftEvidence(
+                "critical-evidence-cooldown",
+                "critical",
+                1.0,
+                EvidenceIndependence.SEPARATE_CONTEXT,
+                (CRITICAL_SOURCE,),
+                "critical-run-cooldown",
+                state.digest,
+                observation_digest,
+                1,
+            ),
+        )
+
+        result = DriftGuardEngine().evaluate(
+            state=state,
+            evidence=evidence,
+            observation_digest=observation_digest,
+            turn_index=1,
+            generation=1,
+            restore_anchor_turn=0,
+            last_reload_decision_turn=0,
+        )
+
+        self.assertEqual(Decision.UNKNOWN, result.decision)
+        self.assertTrue(result.reload_required)
+        self.assertIn("critical_dimension_breach", result.reasons)
+        self.assertNotIn("reload_suppressed_by_cooldown", result.reasons)
+
+
 if __name__ == "__main__":
     unittest.main()

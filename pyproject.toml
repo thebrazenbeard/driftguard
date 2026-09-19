@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "driftguard"
+version = "0.1.0"
+description = "Deterministic behavioral drift admission, monitoring, and restore decision engine"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+driftguard = "driftguard.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

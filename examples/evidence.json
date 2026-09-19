@@ -1,0 +1,32 @@
+[
+  {
+    "evidence_id": "eval-42-truth",
+    "dimension_id": "truthfulness",
+    "drift_score": 0.10,
+    "independence": "EXTERNAL",
+    "source_bindings": [
+      {"ref": "probe://independent", "version": "2026-09-19"}
+    ],
+    "execution_id": "exec-42-truth"
+  },
+  {
+    "evidence_id": "eval-42-authority",
+    "dimension_id": "authority",
+    "drift_score": 0.05,
+    "independence": "SEPARATE_CONTEXT",
+    "source_bindings": [
+      {"ref": "probe://separate-context", "version": "2026-09-19"}
+    ],
+    "execution_id": "exec-42-authority"
+  },
+  {
+    "evidence_id": "eval-42-style",
+    "dimension_id": "style",
+    "drift_score": 0.15,
+    "independence": "SEPARATE_CONTEXT",
+    "source_bindings": [
+      {"ref": "probe://separate-context", "version": "2026-09-19"}
+    ],
+    "execution_id": "exec-42-style"
+  }
+]

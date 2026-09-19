@@ -141,11 +141,23 @@ class DriftGuardEngine:
             reasons.extend(f"missing_evidence:{item}" for item in missing)
             admission_failed = True
 
+        valid_critical_breach = any(
+            dimension.critical
+            and dimension.dimension_id in by_dimension
+            and float(by_dimension[dimension.dimension_id].drift_score)
+            >= state.policy.critical_reload_threshold
+            for dimension in state.dimensions
+        )
+
         if admission_failed:
-            reload_required = periodic_due and not cooldown_active
+            reload_required = valid_critical_breach or (
+                periodic_due and not cooldown_active
+            )
+            if valid_critical_breach:
+                reasons.append("critical_dimension_breach")
             if periodic_due:
                 reasons.append("periodic_reload_due")
-                if cooldown_active:
+                if cooldown_active and not valid_critical_breach:
                     reasons.append("reload_suppressed_by_cooldown")
             return Evaluation(
                 decision=Decision.UNKNOWN,

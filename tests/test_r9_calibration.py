@@ -347,8 +347,97 @@ class CalibrationQualificationTests(unittest.TestCase):
         self.assertEqual(CalibrationDisposition.FAIL, receipt.disposition)
         metrics = receipt.family_metrics[0]
         self.assertEqual(25, metrics.wrong_dimension_alarm.successes)
+        self.assertEqual(0, metrics.mixed_target_wrong_dimension_alarms)
         self.assertIn(
             "two:wrong_dimension_alarm_upper_bound_exceeded",
+            receipt.reasons,
+        )
+
+    def test_mixed_target_and_unrelated_alarm_counts_both_outcomes(self):
+        spec = SequentialDetectorSpec(
+            detector_id="r9-two-dim-mixed",
+            session_id="r9-session",
+            state_digest=raw_bytes_digest(b"r9-state-two-mixed"),
+            measurement_digest=raw_bytes_digest(b"r9-measurement-two-mixed"),
+            subject_digest=raw_bytes_digest(b"r9-subject-two-mixed"),
+            subject_epoch=0,
+            calibration=CAL,
+            calibration_digest=CAL_DIGEST,
+            max_consecutive_unknown=1,
+            max_turn_gap=2,
+            dimensions=(
+                CusumDimensionPolicy("d", 0.10, 0.05, 0.50),
+                CusumDimensionPolicy("e", 0.10, 0.05, 0.50),
+            ),
+        )
+        rows = []
+        for index in range(25):
+            rows.append(
+                CalibrationTrajectory(
+                    trajectory_id=f"mixed-stable-{index}",
+                    family_id="mixed",
+                    regime=CalibrationTrajectoryRegime.STABLE,
+                    samples=tuple(
+                        (("d", 0.10), ("e", 0.10))
+                        for _ in range(8)
+                    ),
+                )
+            )
+            rows.append(
+                CalibrationTrajectory(
+                    trajectory_id=f"mixed-shifted-{index}",
+                    family_id="mixed",
+                    regime=CalibrationTrajectoryRegime.SHIFTED,
+                    samples=tuple(
+                        (("d", 0.10), ("e", 0.10))
+                        for _ in range(4)
+                    )
+                    + tuple(
+                        (("d", 0.80), ("e", 0.80))
+                        for _ in range(4)
+                    ),
+                    shift_index=4,
+                    shift_dimensions=("d",),
+                )
+            )
+        c = CalibrationCorpus(
+            "mixed-dimension",
+            "1",
+            CalibrationCorpusRole.HOLDOUT_QUALIFICATION,
+            tuple(rows),
+        )
+        policy_mixed = CalibrationFamilyPolicy(
+            family_id="mixed",
+            minimum_stable_trajectories=20,
+            minimum_shifted_trajectories=20,
+            stable_horizon_observations=8,
+            pre_shift_horizon_observations=4,
+            post_shift_horizon_observations=4,
+            maximum_stable_false_alarm_rate=0.15,
+            maximum_pre_shift_false_alarm_rate=0.15,
+            maximum_wrong_dimension_alarm_rate=0.15,
+            minimum_detection_rate=0.85,
+            maximum_mean_detection_delay=1.5,
+        )
+        p = CalibrationPlan(
+            "mixed-dimension-plan",
+            spec.digest,
+            c.digest,
+            c.role,
+            (policy_mixed,),
+        )
+        receipt = qualify_calibration(
+            plan=p,
+            corpus=c,
+            detector_spec=spec,
+        )
+        self.assertEqual(CalibrationDisposition.FAIL, receipt.disposition)
+        metrics = receipt.family_metrics[0]
+        self.assertEqual(25, metrics.detection.successes)
+        self.assertEqual(25, metrics.wrong_dimension_alarm.successes)
+        self.assertEqual(25, metrics.mixed_target_wrong_dimension_alarms)
+        self.assertIn(
+            "mixed:wrong_dimension_alarm_upper_bound_exceeded",
             receipt.reasons,
         )
 
@@ -591,6 +680,50 @@ class CalibrationQualificationTests(unittest.TestCase):
                 wrong_dimension_alarms=2,
                 horizon_violations=0,
                 failures=(),
+            )
+
+    def test_family_metrics_accept_explicit_mixed_overlap(self):
+        stable_zero = BinomialEstimate.from_counts(0, 5)
+        pre = BinomialEstimate.from_counts(2, 5)
+        wrong = BinomialEstimate.from_counts(2, 5)
+        detection = BinomialEstimate.from_counts(2, 5)
+        metrics = CalibrationFamilyMetrics(
+            family_id="explicit-mixed-overlap",
+            stable_false_alarm=stable_zero,
+            pre_shift_false_alarm=pre,
+            wrong_dimension_alarm=wrong,
+            detection=detection,
+            stable_alarm_run_lengths=(),
+            detection_delays=(1, 1),
+            mean_detection_delay=1.0,
+            wrong_dimension_alarms=2,
+            horizon_violations=0,
+            failures=(),
+            mixed_target_wrong_dimension_alarms=1,
+        )
+        self.assertEqual(1, metrics.mixed_target_wrong_dimension_alarms)
+
+    def test_family_metrics_reject_impossible_mixed_overlap(self):
+        stable_zero = BinomialEstimate.from_counts(0, 5)
+        shifted_zero = BinomialEstimate.from_counts(0, 5)
+        detection = BinomialEstimate.from_counts(1, 5)
+        with self.assertRaisesRegex(
+            ValueError,
+            "mixed target/wrong-dimension count must be a valid overlap",
+        ):
+            CalibrationFamilyMetrics(
+                family_id="impossible-mixed-overlap",
+                stable_false_alarm=stable_zero,
+                pre_shift_false_alarm=shifted_zero,
+                wrong_dimension_alarm=shifted_zero,
+                detection=detection,
+                stable_alarm_run_lengths=(),
+                detection_delays=(1,),
+                mean_detection_delay=1.0,
+                wrong_dimension_alarms=0,
+                horizon_violations=0,
+                failures=(),
+                mixed_target_wrong_dimension_alarms=1,
             )
 
     def test_qualification_receipt_cannot_be_directly_constructed(self):

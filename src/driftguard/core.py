@@ -204,6 +204,26 @@ class DriftGuardEngine:
                     rows[0][0].drift_score
                 )
 
+        strict_evidence_trace = (
+            tuple(
+                sorted(
+                    (
+                        item.evidence_id,
+                        item.dimension_id,
+                        source.binding.ref,
+                        source.binding.version,
+                        float(item.drift_score),
+                        item.independence.name,
+                        item.execution_id,
+                    )
+                    for rows in by_dimension.values()
+                    for item, source in rows
+                )
+            )
+            if strict
+            else ()
+        )
+
         valid_critical_breach = any(
             dimension.critical
             and quorum_satisfied.get(dimension.dimension_id, False)
@@ -248,6 +268,7 @@ class DriftGuardEngine:
                     if strict and valid_critical_breach
                     else Decision.UNKNOWN if strict else None
                 ),
+                evidence_trace=strict_evidence_trace,
             )
 
         scores = tuple(
@@ -303,6 +324,7 @@ class DriftGuardEngine:
                     generation=generation,
                     restore_packet=self.restore_packet(state),
                     behavioral_decision=behavioral_decision,
+                    evidence_trace=strict_evidence_trace,
                 )
 
             warn_reasons: list[str] = []
@@ -328,6 +350,7 @@ class DriftGuardEngine:
                     turn_index=turn_index,
                     generation=generation,
                     behavioral_decision=behavioral_decision,
+                    evidence_trace=strict_evidence_trace,
                 )
 
             return Evaluation(
@@ -342,6 +365,7 @@ class DriftGuardEngine:
                 turn_index=turn_index,
                 generation=generation,
                 behavioral_decision=behavioral_decision,
+                evidence_trace=strict_evidence_trace,
             )
 
         total_weight = sum(float(item.weight) for item in state.dimensions)

@@ -12,6 +12,7 @@ from driftguard import (
     MeasurementMode,
     MonitoredSubject,
     ProbeSource,
+    ReloadAcknowledgement,
     SaveState,
     SequentialDetectorSpec,
     SequentialStatus,
@@ -114,6 +115,7 @@ def detector_spec(
     session_id="r8-session",
     *,
     max_consecutive_unknown=1,
+    max_turn_gap=2,
 ):
     return SequentialDetectorSpec(
         detector_id="cusum-r8",
@@ -125,6 +127,7 @@ def detector_spec(
         calibration=DETECTOR_CAL,
         calibration_digest=DETECTOR_CAL_DIGEST,
         max_consecutive_unknown=max_consecutive_unknown,
+        max_turn_gap=max_turn_gap,
         dimensions=(
             CusumDimensionPolicy(
                 "d",
@@ -342,6 +345,51 @@ class SequentialCusumTests(unittest.TestCase):
         self.assertEqual(SequentialStatus.INVALID_GAP, receipt.status)
         self.assertTrue(receipt.gap_invalid)
 
+    def test_turn_gap_budget_invalidates_detector(self):
+        spec, _, _ = self.register_after_anchor(max_turn_gap=2)
+        far = self.commit(0.20, turn=3, generation=1)
+        receipt = self.advance(spec, far, 0)
+        self.assertEqual(SequentialStatus.INVALID_GAP, receipt.status)
+        self.assertTrue(receipt.gap_invalid)
+        self.assertEqual(3, receipt.turn_gap)
+        self.assertIn("turn_gap_exceeded", receipt.reasons)
+        self.assertEqual(0, receipt.observation_count)
+
+    def test_session_generation_mutation_invalidates_detector(self):
+        spec, _, _ = self.register_after_anchor(max_turn_gap=3)
+
+        reload_commit = self.commit(0.99, turn=1, generation=1)
+        first = self.advance(spec, reload_commit, 0)
+        self.assertEqual(SequentialStatus.ALARM, first.status)
+        self.assertEqual(1, first.session_generation_before)
+        self.assertEqual(2, first.session_generation_after)
+
+        acknowledgement = ReloadAcknowledgement(
+            "ack-r8-continuity",
+            reload_commit.evaluation.digest,
+            self.state.digest,
+            1,
+        )
+        ack = self.ledger.acknowledge_reload(
+            session_id=self.session_id,
+            state=self.state,
+            acknowledgement=acknowledgement,
+            expected_generation=2,
+            subject=self.subject,
+        )
+        self.assertEqual(3, ack.successor_generation)
+
+        after_ack = self.commit(0.10, turn=2, generation=3)
+        invalid = self.advance(spec, after_ack, 1)
+        self.assertEqual(SequentialStatus.INVALID_GAP, invalid.status)
+        self.assertTrue(invalid.gap_invalid)
+        self.assertEqual(3, invalid.session_generation_before)
+        self.assertEqual(4, invalid.session_generation_after)
+        self.assertIn(
+            "session_generation_discontinuity",
+            invalid.reasons,
+        )
+
     def test_detector_id_cannot_be_rebound_to_new_policy(self):
         spec, _, _ = self.register_after_anchor()
         changed = replace(
@@ -444,6 +492,11 @@ class SequentialCusumTests(unittest.TestCase):
                 ),
             ),
         )
+        self.assertNotEqual(spec.digest, changed.digest)
+
+    def test_policy_digest_moves_when_turn_gap_budget_moves(self):
+        spec, _, _ = self.register_after_anchor(max_turn_gap=2)
+        changed = replace(spec, max_turn_gap=3)
         self.assertNotEqual(spec.digest, changed.digest)
 
     def test_policy_digest_moves_when_unknown_budget_moves(self):

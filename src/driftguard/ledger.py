@@ -342,6 +342,28 @@ class DriftLedger:
         )
 
     @staticmethod
+    def _assert_subject_epoch_current(
+        db: sqlite3.Connection,
+        subject: MonitoredSubject,
+    ) -> None:
+        latest = db.execute(
+            """
+            SELECT MAX(epoch) AS max_epoch
+              FROM subject_epochs
+             WHERE subject_id=?
+            """,
+            (subject.subject_id,),
+        ).fetchone()
+        if latest is None or latest["max_epoch"] is None:
+            raise StaleGenerationError(
+                "monitored subject epoch is not registered"
+            )
+        if int(latest["max_epoch"]) != subject.epoch:
+            raise StaleGenerationError(
+                "monitored subject epoch has been superseded"
+            )
+
+    @staticmethod
     def _validate_subject_readback(
         row: sqlite3.Row,
         subject: MonitoredSubject | None,
@@ -408,6 +430,7 @@ class DriftLedger:
             if row is None:
                 if subject is not None:
                     self._bind_subject_epoch(db, subject)
+                    self._assert_subject_epoch_current(db, subject)
                 if expected_generation != 0:
                     raise StaleGenerationError(
                         "new session requires expected_generation=0"
@@ -471,6 +494,8 @@ class DriftLedger:
                     raise StaleGenerationError(
                         "monitored subject epoch changed inside an existing session"
                     )
+                if subject is not None:
+                    self._assert_subject_epoch_current(db, subject)
 
             if turn_index <= last_turn:
                 raise StaleGenerationError(
@@ -590,6 +615,8 @@ class DriftLedger:
                     "save-state digest changed inside an existing session"
                 )
             self._validate_subject_readback(row, subject)
+            if subject is not None:
+                self._assert_subject_epoch_current(db, subject)
             if acknowledgement.state_digest != state.digest:
                 raise StaleGenerationError("acknowledgement state digest mismatch")
 
@@ -833,6 +860,8 @@ class DriftLedger:
                     "save-state digest changed inside an existing session"
                 )
             self._validate_subject_readback(row, subject)
+            if subject is not None:
+                self._assert_subject_epoch_current(db, subject)
 
             ack = db.execute(
                 """
@@ -1032,6 +1061,12 @@ class DriftLedger:
                 "SELECT * FROM sessions WHERE session_id=?", (session_id,)
             ).fetchone()
             return dict(row) if row is not None else None
+
+    def assert_subject_current(self, subject: MonitoredSubject) -> None:
+        if type(subject) is not MonitoredSubject:
+            raise ValueError("subject must be exact MonitoredSubject")
+        with closing(self._connect()) as db, db:
+            self._assert_subject_epoch_current(db, subject)
 
     def subject_epochs(self, subject_id: str) -> tuple[dict, ...]:
         if type(subject_id) is not str or not subject_id.strip():

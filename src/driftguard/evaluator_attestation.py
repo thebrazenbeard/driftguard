@@ -29,7 +29,13 @@ from .ledger import (
     DriftLedger,
     EvaluatorAttestationEventReceipt,
 )
-from .model import SaveState, SourceBinding, canonical_digest, require_sha256_digest
+from .model import (
+    MonitoredSubject,
+    SaveState,
+    SourceBinding,
+    canonical_digest,
+    require_sha256_digest,
+)
 
 
 def _nonempty(value: Any, label: str) -> str:
@@ -192,6 +198,8 @@ class EvaluatorAttestationVerification:
     turn_index: int
     generation_before: int
     evidence_digest: str
+    subject_digest: str | None
+    subject_epoch: int | None
     request_digest: str
     response_digest: str
     policy_digest: str
@@ -212,6 +220,8 @@ class EvaluatorAttestationVerification:
         turn_index: int,
         generation_before: int,
         evidence_digest: str,
+        subject_digest: str | None,
+        subject_epoch: int | None,
         request_digest: str,
         response_digest: str,
         policy_digest: str,
@@ -233,6 +243,8 @@ class EvaluatorAttestationVerification:
         object.__setattr__(self, "turn_index", turn_index)
         object.__setattr__(self, "generation_before", generation_before)
         object.__setattr__(self, "evidence_digest", evidence_digest)
+        object.__setattr__(self, "subject_digest", subject_digest)
+        object.__setattr__(self, "subject_epoch", subject_epoch)
         object.__setattr__(self, "request_digest", request_digest)
         object.__setattr__(self, "response_digest", response_digest)
         object.__setattr__(self, "policy_digest", policy_digest)
@@ -265,6 +277,24 @@ class EvaluatorAttestationVerification:
             (self.signature_sha256, "signature_sha256"),
         ):
             require_sha256_digest(value, label)
+        if (self.subject_digest is None) != (self.subject_epoch is None):
+            raise ValueError(
+                "attestation verification subject digest/epoch must be supplied together"
+            )
+        if self.subject_digest is not None:
+            require_sha256_digest(
+                self.subject_digest,
+                "attestation verification subject_digest",
+            )
+            if (
+                type(self.subject_epoch) is not int
+                or isinstance(self.subject_epoch, bool)
+                or self.subject_epoch < 0
+            ):
+                raise ValueError(
+                    "attestation verification subject_epoch must be non-negative int"
+                )
+
         if (
             type(self.turn_index) is not int
             or isinstance(self.turn_index, bool)
@@ -308,7 +338,7 @@ class EvaluatorAttestationVerification:
             raise ValueError("unsupported attestation verification claim")
 
     def payload(self) -> dict[str, Any]:
-        return {
+        payload = {
             "schema": "DRIFTGUARD_EVALUATOR_ATTESTATION_VERIFICATION_V1",
             "session_id": self.session_id,
             "state_digest": self.state_digest,
@@ -330,6 +360,10 @@ class EvaluatorAttestationVerification:
             ],
             "verification_claim": self.verification_claim,
         }
+        if self.subject_digest is not None:
+            payload["subject_digest"] = self.subject_digest
+            payload["subject_epoch"] = self.subject_epoch
+        return payload
 
     @property
     def digest(self) -> str:
@@ -404,6 +438,10 @@ class AttestedEvaluatorCommit:
             raise ValueError("durable attestation signature mismatch")
         if self.durable_receipt.covered_sources != self.attestation.covered_sources:
             raise ValueError("durable attestation covered-source mismatch")
+        if self.durable_receipt.subject_digest != self.attestation.subject_digest:
+            raise ValueError("durable attestation subject digest mismatch")
+        if self.durable_receipt.subject_epoch != self.attestation.subject_epoch:
+            raise ValueError("durable attestation subject epoch mismatch")
         if self.commit_claim != (
             "STRUCTURAL_EVALUATION_COMMIT_PLUS_DURABLE_KEY_POSSESSION_VERIFICATION"
         ):
@@ -569,6 +607,8 @@ def verify_evaluator_attestation(
         turn_index=request.turn_index,
         generation_before=request.expected_generation,
         evidence_digest=response.evidence_digest,
+        subject_digest=request.subject_digest,
+        subject_epoch=request.subject_epoch,
         request_digest=request.digest,
         response_digest=response.digest,
         policy_digest=policy.digest,
@@ -593,6 +633,7 @@ def commit_attested_evaluator_response(
     attestation: EvaluatorAttestation,
     key_material: bytes,
     ledger: DriftLedger,
+    subject: MonitoredSubject | None = None,
 ) -> AttestedEvaluatorCommit:
     verification = verify_evaluator_attestation(
         request=request,
@@ -606,6 +647,7 @@ def commit_attested_evaluator_response(
         state=state,
         response=response,
         ledger=ledger,
+        subject=subject,
     )
     durable_receipt = ledger._record_verified_evaluator_attestation(
         evaluation_digest=commit.evaluation.digest,

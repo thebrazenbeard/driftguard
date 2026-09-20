@@ -39,4 +39,17 @@ __all__ = [
     "SubjectComponent",
     "SubjectEpochTransition",
     "StaleGenerationError",
+    "CusumDimensionPolicy",
+    "SequentialDetectionReceipt",
+    "SequentialDetectorSpec",
+    "SequentialRegistrationReceipt",
+    "SequentialStatus",
 ]
+
+from .sequential import (
+    CusumDimensionPolicy,
+    SequentialDetectionReceipt,
+    SequentialDetectorSpec,
+    SequentialRegistrationReceipt,
+    SequentialStatus,
+)

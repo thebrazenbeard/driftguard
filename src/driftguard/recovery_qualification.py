@@ -203,9 +203,15 @@ def _validate_commit(
         or receipt.reload_required is not evaluation.reload_required
         or receipt.aggregate_drift != evaluation.aggregate_drift
         or receipt.reasons != evaluation.reasons
-        or receipt.dimension_scores != evaluation.dimension_scores
         or receipt.behavioral_decision is not evaluation.behavioral_decision
-        or receipt.evidence_trace != evaluation.evidence_trace
+        or (
+            evaluation.behavioral_decision is not None
+            and receipt.dimension_scores != evaluation.dimension_scores
+        )
+        or (
+            evaluation.behavioral_decision is not None
+            and receipt.evidence_trace != evaluation.evidence_trace
+        )
     ):
         raise ValueError(
             "recovery checkpoint does not match durable ledger evaluation receipt"

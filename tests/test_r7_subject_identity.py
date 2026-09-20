@@ -16,6 +16,7 @@ from driftguard import (
     SourceBinding,
     StaleGenerationError,
     SubjectComponent,
+    SubjectEpochTransition,
 )
 from driftguard.external_boundary import (
     ExternalEvaluatorResponse,
@@ -155,6 +156,7 @@ class SubjectLedgerTests(unittest.TestCase):
         self.ledger = DriftLedger(self.path)
         self.state = state()
         self.subject = subject()
+        self.ledger.register_subject_epoch(self.subject)
 
     def tearDown(self):
         os.unlink(self.path)
@@ -285,8 +287,61 @@ class SubjectLedgerTests(unittest.TestCase):
         ):
             self.commit(self.subject, turn=1, generation=1)
 
-    def test_subject_epoch_registry_prevents_cross_session_rebind(self):
-        self.commit(self.subject, turn=0, generation=0)
+    def transition(self, predecessor, successor, transition_id="transition-r7"):
+        transition = SubjectEpochTransition(
+            transition_id=transition_id,
+            subject_id=predecessor.subject_id,
+            predecessor_epoch=predecessor.epoch,
+            predecessor_digest=predecessor.configuration_digest,
+            successor_epoch=successor.epoch,
+            successor_digest=successor.configuration_digest,
+            reason="explicit test transition",
+        )
+        return self.ledger.transition_subject_epoch(
+            predecessor=predecessor,
+            successor=successor,
+            transition=transition,
+        )
+
+    def test_bootstrap_registration_requires_epoch_zero(self):
+        other = DriftLedger(self.path + "-other")
+        try:
+            with self.assertRaisesRegex(
+                StaleGenerationError,
+                "requires epoch 0",
+            ):
+                other.register_subject_epoch(subject(epoch=1))
+        finally:
+            os.unlink(self.path + "-other")
+
+    def test_bootstrap_registration_is_idempotent_for_exact_subject(self):
+        first = self.ledger.register_subject_epoch(self.subject)
+        second = self.ledger.register_subject_epoch(self.subject)
+        self.assertEqual(first, second)
+
+    def test_ordinary_evaluation_cannot_advance_subject_epoch(self):
+        next_epoch = subject(epoch=1)
+        with self.assertRaisesRegex(
+            StaleGenerationError,
+            "not registered",
+        ):
+            self.ledger.evaluate_and_commit(
+                session_id="rogue-next-epoch",
+                state=self.state,
+                evidence=evidence(
+                    self.state,
+                    next_epoch,
+                    turn=0,
+                ),
+                observation_digest=OBS,
+                turn_index=0,
+                expected_generation=0,
+                subject=next_epoch,
+            )
+        epochs = self.ledger.subject_epochs("runtime-under-test")
+        self.assertEqual((0,), tuple(row["epoch"] for row in epochs))
+
+    def test_registered_epoch_cannot_be_rebound_by_evaluation(self):
         changed = subject(
             overrides={
                 "model": component(
@@ -298,7 +353,7 @@ class SubjectLedgerTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(
             StaleGenerationError,
-            "subject epoch cannot be rebound",
+            "binding mismatch",
         ):
             self.ledger.evaluate_and_commit(
                 session_id="different-session",
@@ -314,43 +369,100 @@ class SubjectLedgerTests(unittest.TestCase):
                 subject=changed,
             )
 
-    def test_new_subject_epoch_must_advance_sequentially(self):
-        self.commit(self.subject, turn=0, generation=0)
-        skipped = subject(epoch=2)
-        with self.assertRaisesRegex(
-            StaleGenerationError,
-            "advance exactly one",
-        ):
-            self.ledger.evaluate_and_commit(
-                session_id="epoch-two",
-                state=self.state,
-                evidence=evidence(
-                    self.state,
-                    skipped,
-                    turn=0,
-                ),
-                observation_digest=OBS,
-                turn_index=0,
-                expected_generation=0,
-                subject=skipped,
-            )
+    def test_explicit_transition_advances_epoch_and_persists_receipt(self):
         next_epoch = subject(epoch=1)
-        result = self.ledger.evaluate_and_commit(
-            session_id="epoch-one",
-            state=self.state,
-            evidence=evidence(
-                self.state,
-                next_epoch,
-                turn=0,
-            ),
-            observation_digest=OBS,
-            turn_index=0,
-            expected_generation=0,
-            subject=next_epoch,
+        receipt = self.transition(self.subject, next_epoch)
+        self.assertEqual("transition-r7", receipt.transition_id)
+        self.assertEqual(0, receipt.predecessor_epoch)
+        self.assertEqual(1, receipt.successor_epoch)
+        readback = self.ledger.subject_epoch_transition_receipt(
+            "transition-r7"
         )
-        self.assertEqual(Decision.STABLE, result.evaluation.decision)
+        self.assertEqual(receipt, readback)
         epochs = self.ledger.subject_epochs("runtime-under-test")
         self.assertEqual((0, 1), tuple(row["epoch"] for row in epochs))
+
+    def test_transition_replay_is_rejected(self):
+        next_epoch = subject(epoch=1)
+        self.transition(self.subject, next_epoch)
+        with self.assertRaisesRegex(
+            StaleGenerationError,
+            "already been consumed",
+        ):
+            self.transition(self.subject, next_epoch)
+
+    def test_stale_predecessor_transition_is_rejected(self):
+        epoch1 = subject(epoch=1)
+        self.transition(self.subject, epoch1, "transition-1")
+        epoch2 = subject(epoch=2)
+        stale = SubjectEpochTransition(
+            transition_id="stale-transition",
+            subject_id=self.subject.subject_id,
+            predecessor_epoch=0,
+            predecessor_digest=self.subject.configuration_digest,
+            successor_epoch=1,
+            successor_digest=epoch1.configuration_digest,
+            reason="stale predecessor",
+        )
+        with self.assertRaisesRegex(
+            StaleGenerationError,
+            "predecessor is stale",
+        ):
+            self.ledger.transition_subject_epoch(
+                predecessor=self.subject,
+                successor=epoch1,
+                transition=stale,
+            )
+        valid = self.transition(epoch1, epoch2, "transition-2")
+        self.assertEqual(2, valid.successor_epoch)
+
+    def test_skipped_epoch_transition_is_rejected_by_subject(self):
+        with self.assertRaisesRegex(
+            ValueError,
+            "advance exactly one",
+        ):
+            SubjectEpochTransition(
+                transition_id="skip",
+                subject_id=self.subject.subject_id,
+                predecessor_epoch=0,
+                predecessor_digest=self.subject.configuration_digest,
+                successor_epoch=2,
+                successor_digest=subject(epoch=2).configuration_digest,
+                reason="skip epoch",
+            )
+
+    def test_double_advance_from_same_predecessor_is_rejected(self):
+        first_successor = subject(
+            epoch=1,
+            overrides={"model": component("model", "v2", "model-a")},
+        )
+        second_successor = subject(
+            epoch=1,
+            overrides={"model": component("model", "v2", "model-b")},
+        )
+        self.transition(
+            self.subject,
+            first_successor,
+            "transition-first",
+        )
+        second = SubjectEpochTransition(
+            transition_id="transition-second",
+            subject_id=self.subject.subject_id,
+            predecessor_epoch=0,
+            predecessor_digest=self.subject.configuration_digest,
+            successor_epoch=1,
+            successor_digest=second_successor.configuration_digest,
+            reason="competing successor",
+        )
+        with self.assertRaisesRegex(
+            StaleGenerationError,
+            "predecessor is stale",
+        ):
+            self.ledger.transition_subject_epoch(
+                predecessor=self.subject,
+                successor=second_successor,
+                transition=second,
+            )
 
     def test_reload_acknowledgement_requires_current_subject_readback(self):
         reload_result = self.commit(
@@ -387,19 +499,7 @@ class SubjectLedgerTests(unittest.TestCase):
     def test_superseded_epoch_session_cannot_continue(self):
         self.commit(self.subject, turn=0, generation=0)
         next_epoch = subject(epoch=1)
-        self.ledger.evaluate_and_commit(
-            session_id="new-current-epoch",
-            state=self.state,
-            evidence=evidence(
-                self.state,
-                next_epoch,
-                turn=0,
-            ),
-            observation_digest=OBS,
-            turn_index=0,
-            expected_generation=0,
-            subject=next_epoch,
-        )
+        self.transition(self.subject, next_epoch)
         with self.assertRaisesRegex(
             StaleGenerationError,
             "epoch has been superseded",
@@ -460,6 +560,7 @@ class SubjectLedgerTests(unittest.TestCase):
 
     def test_prior_epoch_evidence_is_rejected_on_new_epoch(self):
         current = subject(epoch=1)
+        self.transition(self.subject, current)
         stale = evidence(
             self.state,
             subject(epoch=0),
@@ -502,6 +603,7 @@ class SubjectExternalBoundaryTests(unittest.TestCase):
         self.ledger = DriftLedger(self.path)
         self.state = state()
         self.subject = subject()
+        self.ledger.register_subject_epoch(self.subject)
 
     def tearDown(self):
         os.unlink(self.path)
@@ -585,18 +687,19 @@ class SubjectExternalBoundaryTests(unittest.TestCase):
             subject=self.subject,
         )
         next_epoch = subject(epoch=1)
-        self.ledger.evaluate_and_commit(
-            session_id="new-subject",
-            state=self.state,
-            evidence=evidence(
-                self.state,
-                next_epoch,
-                turn=0,
-            ),
-            observation_digest=OBS,
-            turn_index=0,
-            expected_generation=0,
-            subject=next_epoch,
+        transition = SubjectEpochTransition(
+            transition_id="external-supersede",
+            subject_id=self.subject.subject_id,
+            predecessor_epoch=0,
+            predecessor_digest=self.subject.configuration_digest,
+            successor_epoch=1,
+            successor_digest=next_epoch.configuration_digest,
+            reason="external boundary supersession test",
+        )
+        self.ledger.transition_subject_epoch(
+            predecessor=self.subject,
+            successor=next_epoch,
+            transition=transition,
         )
         with self.assertRaisesRegex(
             StaleGenerationError,

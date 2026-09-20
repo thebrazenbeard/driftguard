@@ -40,6 +40,8 @@ class EvaluationEventReceipt:
     evaluation_digest: str
     decision: Decision
     reload_required: bool
+    aggregate_drift: float | None
+    reasons: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -443,6 +445,16 @@ class DriftLedger:
                 evaluation_digest=str(row["evaluation_digest"]),
                 decision=Decision(str(row["decision"])),
                 reload_required=bool(row["reload_required"]),
+                aggregate_drift=(
+                    float(row["aggregate_drift"])
+                    if row["aggregate_drift"] is not None
+                    else None
+                ),
+                reasons=tuple(
+                    item
+                    for item in str(row["reasons"]).split("|")
+                    if item
+                ),
             )
 
     def acknowledgement_receipt(

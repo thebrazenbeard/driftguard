@@ -154,6 +154,8 @@ class DriftLedger:
                     turn_index INTEGER NOT NULL,
                     status TEXT NOT NULL,
                     reasons TEXT NOT NULL,
+                    subject_digest TEXT NULL,
+                    subject_epoch INTEGER NULL,
                     FOREIGN KEY(session_id) REFERENCES sessions(session_id),
                     FOREIGN KEY(ack_id) REFERENCES reload_acknowledgements(ack_id)
                 );
@@ -245,6 +247,18 @@ class DriftLedger:
         if "subject_epoch" not in event_columns:
             db.execute(
                 "ALTER TABLE evaluation_events "
+                "ADD COLUMN subject_epoch INTEGER NULL"
+            )
+
+        recovery_columns = self._columns(db, "recovery_verifications")
+        if "subject_digest" not in recovery_columns:
+            db.execute(
+                "ALTER TABLE recovery_verifications "
+                "ADD COLUMN subject_digest TEXT NULL"
+            )
+        if "subject_epoch" not in recovery_columns:
+            db.execute(
+                "ALTER TABLE recovery_verifications "
                 "ADD COLUMN subject_epoch INTEGER NULL"
             )
 
@@ -831,6 +845,16 @@ class DriftLedger:
                     *replay_reasons,
                 ),
                 generation=generation,
+                subject_digest=(
+                    str(replay["subject_digest"])
+                    if replay["subject_digest"] is not None
+                    else None
+                ),
+                subject_epoch=(
+                    int(replay["subject_epoch"])
+                    if replay["subject_epoch"] is not None
+                    else None
+                ),
             )
             successor = generation + 1
             db.execute(
@@ -852,8 +876,9 @@ class DriftLedger:
                     generation_before,generation_after,
                     acknowledged_evaluation_digest,
                     replay_evaluation_digest,state_digest,
-                    observation_digest,evidence_digest,turn_index,status,reasons
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    observation_digest,evidence_digest,turn_index,status,reasons,
+                    subject_digest,subject_epoch
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     verification.digest,
@@ -869,6 +894,8 @@ class DriftLedger:
                     verification.turn_index,
                     verification.status.value,
                     "|".join(verification.reasons),
+                    verification.subject_digest,
+                    verification.subject_epoch,
                 ),
             )
             return RecoveryCommitResult(

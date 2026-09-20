@@ -5,7 +5,7 @@ from enum import StrEnum
 from hashlib import sha256
 from typing import Any, Iterable
 
-from .ledger import AcknowledgementResult, CommitResult
+from .ledger import AcknowledgementResult, CommitResult, DriftLedger
 from .model import (
     Decision,
     DriftEvidence,
@@ -205,9 +205,12 @@ def build_reload_directive(
     *,
     session_id: str,
     commit: CommitResult,
+    ledger: DriftLedger,
 ) -> ReloadDirective:
     if type(commit) is not CommitResult:
         raise ValueError("commit must be exact CommitResult")
+    if type(ledger) is not DriftLedger:
+        raise ValueError("ledger must be exact DriftLedger")
     evaluation = commit.evaluation
     if evaluation.reload_required is not True:
         raise ValueError("reload directive requires reload-required evaluation")
@@ -215,6 +218,24 @@ def build_reload_directive(
         raise ValueError("reload-required evaluation is missing restore packet")
     if commit.successor_generation != evaluation.generation + 1:
         raise ValueError("commit generation does not bind evaluation generation")
+    receipt = ledger.evaluation_receipt(
+        session_id=session_id,
+        evaluation_digest=evaluation.digest,
+    )
+    if receipt is None:
+        raise ValueError("reload directive requires durable ledger evaluation receipt")
+    if (
+        receipt.generation_before != evaluation.generation
+        or receipt.generation_after != commit.successor_generation
+        or receipt.turn_index != evaluation.turn_index
+        or receipt.state_digest != evaluation.state_digest
+        or receipt.observation_digest != evaluation.observation_digest
+        or receipt.evidence_digest != evaluation.evidence_digest
+        or receipt.evaluation_digest != evaluation.digest
+        or receipt.decision is not evaluation.decision
+        or receipt.reload_required is not True
+    ):
+        raise ValueError("reload directive commit does not match durable ledger receipt")
     return ReloadDirective(
         session_id=session_id,
         evaluation_digest=evaluation.digest,
@@ -387,9 +408,11 @@ class BehavioralRecoveryReceipt:
 
 def qualify_post_reload_behavior(
     *,
+    session_id: str,
     acknowledgement: ReloadAcknowledgement,
     acknowledgement_result: AcknowledgementResult,
     replay_commit: CommitResult,
+    ledger: DriftLedger,
 ) -> BehavioralRecoveryReceipt:
     if type(acknowledgement) is not ReloadAcknowledgement:
         raise ValueError("acknowledgement must be exact ReloadAcknowledgement")
@@ -397,11 +420,46 @@ def qualify_post_reload_behavior(
         raise ValueError("acknowledgement_result must be exact AcknowledgementResult")
     if type(replay_commit) is not CommitResult:
         raise ValueError("replay_commit must be exact CommitResult")
+    if type(ledger) is not DriftLedger:
+        raise ValueError("ledger must be exact DriftLedger")
+    if type(session_id) is not str or not session_id.strip():
+        raise ValueError("session_id must be a non-empty exact string")
     if acknowledgement_result.ack_id != acknowledgement.ack_id:
         raise ValueError("acknowledgement/result id mismatch")
     if acknowledgement_result.restore_anchor_turn != acknowledgement.turn_index:
         raise ValueError("acknowledgement/result turn mismatch")
+
+    ack_receipt = ledger.acknowledgement_receipt(ack_id=acknowledgement.ack_id)
+    if ack_receipt is None:
+        raise ValueError("behavioral recovery requires durable ledger acknowledgement receipt")
+    if (
+        ack_receipt.session_id != session_id
+        or ack_receipt.generation_after != acknowledgement_result.successor_generation
+        or ack_receipt.evaluation_digest != acknowledgement.evaluation_digest
+        or ack_receipt.state_digest != acknowledgement.state_digest
+        or ack_receipt.turn_index != acknowledgement.turn_index
+    ):
+        raise ValueError("acknowledgement does not match durable ledger receipt")
+
     replay = replay_commit.evaluation
+    replay_receipt = ledger.evaluation_receipt(
+        session_id=session_id,
+        evaluation_digest=replay.digest,
+    )
+    if replay_receipt is None:
+        raise ValueError("behavioral recovery requires durable ledger replay receipt")
+    if (
+        replay_receipt.generation_before != replay.generation
+        or replay_receipt.generation_after != replay_commit.successor_generation
+        or replay_receipt.turn_index != replay.turn_index
+        or replay_receipt.state_digest != replay.state_digest
+        or replay_receipt.observation_digest != replay.observation_digest
+        or replay_receipt.evidence_digest != replay.evidence_digest
+        or replay_receipt.evaluation_digest != replay.digest
+        or replay_receipt.decision is not replay.decision
+        or replay_receipt.reload_required is not replay.reload_required
+    ):
+        raise ValueError("behavioral replay does not match durable ledger receipt")
     if replay.state_digest != acknowledgement.state_digest:
         raise ValueError("behavioral replay state digest mismatch")
     if replay.turn_index <= acknowledgement.turn_index:

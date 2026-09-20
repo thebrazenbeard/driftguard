@@ -60,15 +60,18 @@ An actuator `APPLIED` receipt may support a reload acknowledgement. That acknowl
 
 It still does not prove behavioral recovery.
 
-`qualify_post_reload_behavior()` requires the acknowledgement and the later replay to be present in the same `DriftLedger`; bare caller-constructed result objects are insufficient. The later committed evaluation must:
+`qualify_post_reload_behavior()` requires the acknowledgement and the later replay to be present in the same `DriftLedger`; bare caller-constructed result objects are insufficient. It also requires the exact `SaveState`, whose digest must match both acknowledgement and replay. The later committed evaluation must:
 
-- binds the same save-state;
-- occurs after the acknowledgement turn;
-- begins at the acknowledgement successor generation;
-- is `STABLE`;
-- does not request another reload.
+- bind the same save-state;
+- occur after the acknowledgement turn;
+- begin at the acknowledgement successor generation;
+- have complete admitted evidence;
+- contain no critical-dimension breach;
+- remain below the save-state warning threshold.
 
-Only then is a bounded `POST_RELOAD_BEHAVIORAL_REPLAY_PASS` receipt produced.
+The behavioral classifier deliberately does **not** use `reload_required` as a proxy for drift. A periodic reload is an operational scheduling decision and may be due even when the admitted behavioral replay is below every drift threshold.
+
+A replay at or above the warning threshold is degraded; at or above the reload threshold (or with a critical breach) it is relapse; incomplete/UNKNOWN evidence is indeterminate. Only behaviorally stable replay produces a bounded `POST_RELOAD_BEHAVIORAL_REPLAY_PASS` receipt.
 
 This receipt says the governed replay was stable at that later turn. It does not prove hidden-state restoration, identity continuity, consciousness, or universal future stability.
 

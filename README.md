@@ -25,7 +25,8 @@ The canonical R5 integration contains:
 - first-post-reload behavioral replay verification;
 - durable recovery qualification that keeps behavioral stability separate from reload scheduling;
 - a Discovery effect-envelope consumer adapter with explicit non-promotion rules;
-- hostile-regression tests covering stale generations, replay laundering, cross-session reuse, ambiguous delivery, receipt rebinding, and recovery cherry-picking.
+- hostile-regression tests covering stale generations, replay laundering, cross-session reuse, ambiguous delivery, receipt rebinding, and recovery cherry-picking;
+- optional evaluator-response HMAC attestation bound to exact request/response/policy/key identity, with an explicit key-possession-only claim ceiling.
 
 ## Evidence flow
 
@@ -69,6 +70,7 @@ Start with:
 - docs/CAPTURE_PROTOCOL_V1.md — save-state capture rules
 - docs/HOSTILE_REVIEW_V1.md — adversarial design pass
 - docs/EXTERNAL_BOUNDARY_V1.md — evaluator/actuator and retry semantics
+- docs/EVALUATOR_ATTESTATION_V1.md — optional evaluator key-possession attestation boundary
 - docs/RECOVERY_QUALIFICATION_V1.md — durable behavioral recovery qualification
 - docs/R6_MEASUREMENT_VALIDITY_V1.md — opt-in calibrated/quorum measurement contract candidate
 - docs/R7_SUBJECT_IDENTITY_EPOCH_V1.md — monitored-runtime manifest and epoch boundary candidate
@@ -86,6 +88,7 @@ A reload directive does not prove delivery.
 An acknowledgement does not prove behavioral recovery.
 A stable replay does not prove reload causality.
 A provider or transport receipt does not prove internal model obedience.
+A valid evaluator HMAC proves possession of configured key material, not provider honesty or evaluator independence.
 A source or test PASS does not itself grant deployment, credential, provider, retry, or other effect authority.
 
 DriftGuard exists to keep those distinctions explicit instead of accidentally collapsing them.

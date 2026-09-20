@@ -75,6 +75,7 @@ Start with:
 - docs/R8_SEQUENTIAL_CUSUM_V1.md — precommitted diagnostic sequential-detection candidate
 - docs/R9_CALIBRATION_QUALIFICATION_V1.md — frozen-corpus CUSUM calibration qualification candidate
 - docs/R10_DETECTOR_COMPARISON_V1.md — same-holdout CUSUM/Page-Hinkley/EWMA comparison candidate
+- docs/R11_GOVERNED_BENCHMARK_HOLDOUT_V1.md — governed benchmark portfolio and precommitted HOLDOUT protocol
 - docs/DISCOVERY_EFFECT_ENVELOPE_CONSUMER_V1.md — Discovery adapter contract
 - docs/qualification/DRIFTGUARD_R5_POST_RELOAD_REPLAY.md — first-replay qualification boundary
 - docs/qualification/DRIFTGUARD_R5_CONVERGED_RECOVERY_20260920.md — converged recovery semantics

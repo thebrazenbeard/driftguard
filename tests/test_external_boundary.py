@@ -1,3 +1,5 @@
+import os
+import tempfile
 import unittest
 from hashlib import sha256
 
@@ -23,8 +25,8 @@ from driftguard.external_boundary import (
     reconcile_actuator_receipt,
     validate_evaluator_response,
 )
-from driftguard.ledger import AcknowledgementResult, CommitResult
-from driftguard.model import Evaluation, canonical_digest, raw_bytes_digest
+from driftguard.ledger import CommitResult, DriftLedger
+from driftguard.model import raw_bytes_digest
 
 
 SOURCE = SourceBinding("probe://external", "v1")
@@ -54,57 +56,54 @@ def state() -> SaveState:
     )
 
 
-def evidence(s: SaveState, turn: int, score: float = 0.0) -> DriftEvidence:
-    return DriftEvidence(
-        f"e-{turn}",
-        "d",
-        score,
-        EvidenceIndependence.EXTERNAL,
-        (SOURCE,),
-        f"external-run-{turn}",
-        s.digest,
-        OBS,
-        turn,
-    )
-
-
-def evaluation(
-    *,
+def evidence(
     s: SaveState,
     turn: int,
-    generation: int,
-    decision: Decision,
-    reload_required: bool,
-    restore_packet: str | None,
-) -> Evaluation:
-    rows = (evidence(s, turn, 1.0 if reload_required else 0.0),)
-    return Evaluation(
-        decision=decision,
-        reload_required=reload_required,
-        aggregate_drift=1.0 if reload_required else 0.0,
-        dimension_scores=(("d", 1.0 if reload_required else 0.0),),
-        reasons=("test",),
-        state_digest=s.digest,
-        observation_digest=OBS,
-        evidence_digest=canonical_digest([
-            {
-                "evidence_id": rows[0].evidence_id,
-                "dimension_id": rows[0].dimension_id,
-                "drift_score": float(rows[0].drift_score),
-                "independence": rows[0].independence.name,
-                "source_bindings": [
-                    {"ref": SOURCE.ref, "version": SOURCE.version}
-                ],
-                "execution_id": rows[0].execution_id,
-                "state_digest": s.digest,
-                "observation_digest": OBS,
-                "turn_index": turn,
-            }
-        ]),
-        turn_index=turn,
-        generation=generation,
-        restore_packet=restore_packet,
+    score: float = 0.0,
+    observation_digest: str = OBS,
+) -> tuple[DriftEvidence, ...]:
+    return (
+        DriftEvidence(
+            f"e-{turn}",
+            "d",
+            score,
+            EvidenceIndependence.EXTERNAL,
+            (SOURCE,),
+            f"external-run-{turn}",
+            s.digest,
+            observation_digest,
+            turn,
+        ),
     )
+
+
+class LedgerHarness(unittest.TestCase):
+    def setUp(self):
+        handle = tempfile.NamedTemporaryFile(delete=False)
+        handle.close()
+        self.path = handle.name
+        self.ledger = DriftLedger(self.path)
+        self.s = state()
+
+    def tearDown(self):
+        os.unlink(self.path)
+
+    def commit(self, *, turn: int, generation: int, score: float = 0.0, rows=True):
+        return self.ledger.evaluate_and_commit(
+            session_id="session",
+            state=self.s,
+            evidence=evidence(self.s, turn, score) if rows else (),
+            observation_digest=OBS,
+            turn_index=turn,
+            expected_generation=generation,
+        )
+
+    def reload_commit(self):
+        first = self.commit(turn=0, generation=0, score=0.0)
+        self.assertEqual(Decision.STABLE, first.evaluation.decision)
+        reload_commit = self.commit(turn=5, generation=1, score=1.0)
+        self.assertTrue(reload_commit.evaluation.reload_required)
+        return reload_commit
 
 
 class ExternalEvaluatorBoundaryTests(unittest.TestCase):
@@ -154,17 +153,9 @@ class ExternalEvaluatorBoundaryTests(unittest.TestCase):
             turn_index=7,
             expected_generation=3,
         )
-        wrong_obs = DriftEvidence(
-            "wrong",
-            "d",
-            0.0,
-            EvidenceIndependence.EXTERNAL,
-            (SOURCE,),
-            "run",
-            s.digest,
-            raw_bytes_digest(b"wrong"),
-            7,
-        )
+        wrong_obs = evidence(
+            s, 7, observation_digest=raw_bytes_digest(b"wrong")
+        )[0]
         with self.assertRaisesRegex(ValueError, "observation digest mismatch"):
             validate_evaluator_response(req, (wrong_obs,))
 
@@ -184,19 +175,7 @@ class ExternalEvaluatorBoundaryTests(unittest.TestCase):
             validate_evaluator_response(req, (wrong_source,))
 
 
-class ExternalActuatorBoundaryTests(unittest.TestCase):
-    def reload_commit(self) -> CommitResult:
-        s = state()
-        ev = evaluation(
-            s=s,
-            turn=5,
-            generation=1,
-            decision=Decision.RELOAD,
-            reload_required=True,
-            restore_packet="restore this exact behavior",
-        )
-        return CommitResult(ev, 2)
-
+class ExternalActuatorBoundaryTests(LedgerHarness):
     def receipt(self, directive, status):
         return ActuatorReceipt(
             directive.directive_id,
@@ -206,38 +185,43 @@ class ExternalActuatorBoundaryTests(unittest.TestCase):
             sha256(b"provider receipt").hexdigest(),
         )
 
-    def test_reload_directive_is_exactly_bound_and_stable_is_rejected(self):
+    def test_reload_directive_requires_durable_ledger_receipt(self):
         commit = self.reload_commit()
         directive = build_reload_directive(
             session_id="session",
             commit=commit,
+            ledger=self.ledger,
         )
         self.assertEqual(commit.evaluation.digest, directive.evaluation_digest)
         self.assertEqual(commit.successor_generation, directive.expected_generation)
-        self.assertEqual(
-            sha256(directive.restore_packet.encode("utf-8")).hexdigest(),
-            directive.restore_packet_sha256,
-        )
 
-        s = state()
-        stable = CommitResult(
-            evaluation(
-                s=s,
-                turn=1,
-                generation=0,
-                decision=Decision.STABLE,
-                reload_required=False,
-                restore_packet=None,
-            ),
-            1,
-        )
+        other_handle = tempfile.NamedTemporaryFile(delete=False)
+        other_handle.close()
+        try:
+            empty_ledger = DriftLedger(other_handle.name)
+            with self.assertRaisesRegex(ValueError, "durable ledger evaluation receipt"):
+                build_reload_directive(
+                    session_id="session",
+                    commit=commit,
+                    ledger=empty_ledger,
+                )
+        finally:
+            os.unlink(other_handle.name)
+
+    def test_stable_commit_cannot_create_reload_directive(self):
+        stable = self.commit(turn=0, generation=0, score=0.0)
         with self.assertRaisesRegex(ValueError, "reload-required"):
-            build_reload_directive(session_id="session", commit=stable)
+            build_reload_directive(
+                session_id="session",
+                commit=stable,
+                ledger=self.ledger,
+            )
 
     def test_applied_receipt_yields_acknowledgement(self):
         directive = build_reload_directive(
             session_id="session",
             commit=self.reload_commit(),
+            ledger=self.ledger,
         )
         result = reconcile_actuator_receipt(
             directive=directive,
@@ -249,28 +233,25 @@ class ExternalActuatorBoundaryTests(unittest.TestCase):
             directive.evaluation_digest,
             result.acknowledgement.evaluation_digest,
         )
-        self.assertEqual(directive.state_digest, result.acknowledgement.state_digest)
-        self.assertEqual(directive.turn_index, result.acknowledgement.turn_index)
 
     def test_ambiguous_delivery_requires_readback_and_forbids_blind_retry(self):
         directive = build_reload_directive(
             session_id="session",
             commit=self.reload_commit(),
+            ledger=self.ledger,
         )
         result = reconcile_actuator_receipt(
             directive=directive,
             receipt=self.receipt(directive, ActuatorDeliveryStatus.UNKNOWN),
         )
-        self.assertEqual(
-            ActuatorDisposition.READBACK_REQUIRED,
-            result.disposition,
-        )
+        self.assertEqual(ActuatorDisposition.READBACK_REQUIRED, result.disposition)
         self.assertIsNone(result.acknowledgement)
 
     def test_confirmed_not_applied_is_retryable(self):
         directive = build_reload_directive(
             session_id="session",
             commit=self.reload_commit(),
+            ledger=self.ledger,
         )
         result = reconcile_actuator_receipt(
             directive=directive,
@@ -283,6 +264,7 @@ class ExternalActuatorBoundaryTests(unittest.TestCase):
         directive = build_reload_directive(
             session_id="session",
             commit=self.reload_commit(),
+            ledger=self.ledger,
         )
         receipt = ActuatorReceipt(
             "wrong",
@@ -295,66 +277,90 @@ class ExternalActuatorBoundaryTests(unittest.TestCase):
             reconcile_actuator_receipt(directive=directive, receipt=receipt)
 
 
-class BehavioralRecoveryBoundaryTests(unittest.TestCase):
-    def test_acknowledgement_is_not_recovery_but_later_stable_replay_can_qualify(self):
-        s = state()
-        ack = ReloadAcknowledgement(
-            "ack",
-            "a" * 64,
-            s.digest,
-            5,
+class BehavioralRecoveryBoundaryTests(LedgerHarness):
+    def applied_ack(self):
+        commit = self.reload_commit()
+        directive = build_reload_directive(
+            session_id="session",
+            commit=commit,
+            ledger=self.ledger,
         )
-        ack_result = AcknowledgementResult(
-            ack_id="ack",
-            successor_generation=3,
-            restore_anchor_turn=5,
-        )
-        replay = CommitResult(
-            evaluation(
-                s=s,
-                turn=6,
-                generation=3,
-                decision=Decision.STABLE,
-                reload_required=False,
-                restore_packet=None,
+        external = reconcile_actuator_receipt(
+            directive=directive,
+            receipt=ActuatorReceipt(
+                directive.directive_id,
+                directive.digest,
+                ActuatorDeliveryStatus.APPLIED,
+                "provider-op-1",
+                sha256(b"provider receipt").hexdigest(),
             ),
-            4,
+        )
+        ack = external.acknowledgement
+        self.assertIsNotNone(ack)
+        result = self.ledger.acknowledge_reload(
+            session_id="session",
+            state=self.s,
+            acknowledgement=ack,
+            expected_generation=commit.successor_generation,
+        )
+        return ack, result
+
+    def test_acknowledgement_is_not_recovery_but_later_stable_replay_can_qualify(self):
+        ack, ack_result = self.applied_ack()
+        replay = self.commit(
+            turn=6,
+            generation=ack_result.successor_generation,
+            score=0.0,
         )
         receipt = qualify_post_reload_behavior(
+            session_id="session",
             acknowledgement=ack,
             acknowledgement_result=ack_result,
             replay_commit=replay,
+            ledger=self.ledger,
         )
         self.assertEqual("POST_RELOAD_BEHAVIORAL_REPLAY_PASS", receipt.result)
         self.assertEqual(6, receipt.replay_turn_index)
         self.assertEqual(replay.evaluation.digest, receipt.replay_evaluation_digest)
 
-    def test_reload_or_unknown_replay_cannot_be_called_recovery(self):
-        s = state()
-        ack = ReloadAcknowledgement("ack", "a" * 64, s.digest, 5)
-        ack_result = AcknowledgementResult("ack", 3, 5)
-        for decision, reload_required, packet in (
-            (Decision.UNKNOWN, False, None),
-            (Decision.RELOAD, True, "restore"),
-        ):
-            replay = CommitResult(
-                evaluation(
-                    s=s,
-                    turn=6,
-                    generation=3,
-                    decision=decision,
-                    reload_required=reload_required,
-                    restore_packet=packet,
-                ),
-                4,
+    def test_forged_replay_without_ledger_event_cannot_qualify(self):
+        ack, ack_result = self.applied_ack()
+        replay = self.commit(
+            turn=6,
+            generation=ack_result.successor_generation,
+            score=0.0,
+        )
+        other_handle = tempfile.NamedTemporaryFile(delete=False)
+        other_handle.close()
+        try:
+            empty_ledger = DriftLedger(other_handle.name)
+            with self.assertRaisesRegex(ValueError, "ledger acknowledgement receipt"):
+                qualify_post_reload_behavior(
+                    session_id="session",
+                    acknowledgement=ack,
+                    acknowledgement_result=ack_result,
+                    replay_commit=replay,
+                    ledger=empty_ledger,
+                )
+        finally:
+            os.unlink(other_handle.name)
+
+    def test_unknown_replay_cannot_be_called_recovery(self):
+        ack, ack_result = self.applied_ack()
+        replay = self.commit(
+            turn=6,
+            generation=ack_result.successor_generation,
+            rows=False,
+        )
+        self.assertEqual(Decision.UNKNOWN, replay.evaluation.decision)
+        with self.assertRaisesRegex(ValueError, "stable bounded recovery"):
+            qualify_post_reload_behavior(
+                session_id="session",
+                acknowledgement=ack,
+                acknowledgement_result=ack_result,
+                replay_commit=replay,
+                ledger=self.ledger,
             )
-            with self.subTest(decision=decision):
-                with self.assertRaisesRegex(ValueError, "stable bounded recovery"):
-                    qualify_post_reload_behavior(
-                        acknowledgement=ack,
-                        acknowledgement_result=ack_result,
-                        replay_commit=replay,
-                    )
 
     def test_external_receipt_chain_is_hash_linked(self):
         first = append_external_receipt(

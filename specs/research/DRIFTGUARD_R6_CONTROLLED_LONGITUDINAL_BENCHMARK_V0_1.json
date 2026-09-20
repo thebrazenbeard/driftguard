@@ -1,0 +1,153 @@
+{
+  "schema_version": "DRIFTGUARD_R6_CONTROLLED_LONGITUDINAL_BENCHMARK_V0_1",
+  "status": "RESEARCH_BENCHMARK_CONTRACT",
+  "parent_architecture": "DRIFTGUARD_R6_LONGITUDINAL_DRIFT_ARCHITECTURE_V0_1",
+  "method_selection": "NONE",
+  "stages": [
+    "DESIGN",
+    "CALIBRATION",
+    "CONFIRMATORY"
+  ],
+  "invariants": [
+    "BENCHMARK_PASS_NE_ALGORITHM_ADMISSION",
+    "ALGORITHM_ADMISSION_NE_PRODUCTION_READINESS",
+    "SYNTHETIC_DETECTION_SUCCESS_NE_REAL_WORLD_VALIDATION",
+    "CONFIRMATORY_DATA_NE_CALIBRATION_DATA",
+    "POST_OUTCOME_TUNING_NE_CONFIRMATORY_EVIDENCE",
+    "EVALUATOR_CHANGE_NE_TARGET_CHANGE",
+    "MISSING_EVIDENCE_NE_STABLE",
+    "SOURCE_COUNT_NE_INDEPENDENT_EVIDENCE_COUNT",
+    "PERIODIC_RELOAD_NE_BEHAVIORAL_DRIFT",
+    "SESSION_CONTINUITY_NE_SUBJECT_CONTINUITY"
+  ],
+  "candidate_freeze_required_fields": [
+    "detector_id",
+    "detector_version",
+    "implementation_digest",
+    "parameter_digest",
+    "decision_policy_digest",
+    "reset_stopping_rule_digest",
+    "missing_evidence_rule_digest",
+    "subject_manifest_version",
+    "evaluator_calibration_version",
+    "provenance_policy_version",
+    "benchmark_suite_version",
+    "seed_set_digest",
+    "acceptance_criteria_digest",
+    "frozen_at"
+  ],
+  "scenario_families": [
+    {
+      "id": "BM-01",
+      "class": "NO_DRIFT_CONTROL",
+      "expected_claim": "CONTROL_NO_TARGET_DRIFT_CLAIM"
+    },
+    {
+      "id": "BM-02",
+      "class": "ABRUPT_TARGET_DRIFT",
+      "expected_claim": "TARGET_DRIFT_DETECTABLE"
+    },
+    {
+      "id": "BM-03",
+      "class": "GRADUAL_TARGET_DRIFT",
+      "expected_claim": "GRADUAL_CHANGE_EVIDENCE_PRESERVED"
+    },
+    {
+      "id": "BM-04",
+      "class": "RECURRING_TARGET_DRIFT",
+      "expected_claim": "RECURRING_DRIFT_PATTERN_PRESERVED"
+    },
+    {
+      "id": "BM-05",
+      "class": "EVALUATOR_ONLY_DRIFT",
+      "expected_claim": "EVALUATOR_DRIFT_OR_MEASUREMENT_INVALID"
+    },
+    {
+      "id": "BM-06",
+      "class": "TARGET_DRIFT_STABLE_EVALUATOR",
+      "expected_claim": "TARGET_DRIFT_NOT_ERASED_BY_EVALUATOR_STABILITY"
+    },
+    {
+      "id": "BM-07",
+      "class": "SHARED_ROOT_CORRELATED_PROBES",
+      "expected_claim": "NO_INDEPENDENCE_ESCALATION"
+    },
+    {
+      "id": "BM-08",
+      "class": "MISSING_EVIDENCE",
+      "expected_claim": "INDETERMINATE_NOT_STABLE"
+    },
+    {
+      "id": "BM-09",
+      "class": "PERIODIC_RELOAD_NO_BEHAVIORAL_DRIFT",
+      "expected_claim": "OPERATIONAL_RELOAD_NOT_BEHAVIORAL_DRIFT"
+    },
+    {
+      "id": "BM-10",
+      "class": "BASELINE_SUCCESSOR_EPOCH",
+      "expected_claim": "NEW_BASELINE_EPOCH"
+    },
+    {
+      "id": "BM-11",
+      "class": "SUBJECT_EPOCH_CHANGE",
+      "expected_claim": "INVALIDATED_SUBJECT_OR_POLICY_CHANGE"
+    },
+    {
+      "id": "BM-12",
+      "class": "POST_HOC_POLICY_MUTATION",
+      "expected_claim": "INVALID_EXPERIMENT_POST_HOC_POLICY"
+    }
+  ],
+  "required_measurements": [
+    "false_alert_count",
+    "detection_delay_turns",
+    "missed_target_drift_events",
+    "evaluator_target_confusion_count",
+    "missing_evidence_outcomes",
+    "independence_escalation_count",
+    "reload_behavior_conflation_count",
+    "epoch_invalidation_count",
+    "failed_or_aborted_runs",
+    "candidate_freeze_id",
+    "scenario_instance_id"
+  ],
+  "confirmatory_invalid_states": [
+    "POST_HOC_POLICY_CHANGE",
+    "CONFIRMATORY_LEAKAGE",
+    "OUTCOME_DROPPED_FROM_REPORT",
+    "EVALUATOR_DRIFT_MISLABELED_TARGET_DRIFT",
+    "MISSING_EVIDENCE_CLASSIFIED_STABLE",
+    "SHARED_ROOT_COUNTED_INDEPENDENT",
+    "BASELINE_MUTATED_TO_ERASE_DRIFT",
+    "SUBJECT_CHANGE_CONTINUED_AS_SAME_SERIES",
+    "PERIODIC_RELOAD_LABELED_BEHAVIORAL_DRIFT"
+  ],
+  "scenario_instance_required_fields": [
+    "scenario_id",
+    "scenario_version",
+    "subject_epoch",
+    "save_state_digest",
+    "evaluator_calibration_epoch",
+    "provenance_topology_digest",
+    "turn_sequence_digest",
+    "hidden_injection_schedule_digest",
+    "evidence_completeness_schedule_digest",
+    "operational_reload_schedule_digest",
+    "expected_claim"
+  ],
+  "quantitative_acceptance_policy": {
+    "canonized_default_thresholds": false,
+    "criteria_must_be_method_specific": true,
+    "criteria_must_be_precommitted": true,
+    "criteria_must_be_versioned": true
+  },
+  "claim_ceiling": [
+    "NO_ALGORITHM_ADMISSION",
+    "NO_RUNTIME_DETECTOR_IMPLEMENTATION",
+    "NO_REAL_WORLD_GENERALIZATION_CLAIM",
+    "NO_PROVIDER_OR_EVALUATOR_HONESTY_CLAIM",
+    "NO_HIDDEN_STATE_OR_IDENTITY_CLAIM",
+    "NO_PRODUCTION_READINESS",
+    "NO_MERGE_OR_DEPLOY_AUTHORITY"
+  ]
+}

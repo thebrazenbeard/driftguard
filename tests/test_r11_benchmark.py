@@ -27,6 +27,7 @@ from driftguard.benchmark import (
     REVEAL_CLAIM,
     RUN_CLAIM,
     canonical_corpus_artifact_bytes,
+    trajectory_content_digest,
     reveal_holdout,
     run_precommitted_holdout,
 )
@@ -222,6 +223,7 @@ def manifest(c, *, label):
         corpus_version=c.version,
         corpus_role=c.role,
         corpus_digest=c.digest,
+        trajectory_content_digest=trajectory_content_digest(c),
         artifact=SourceBinding(f"benchmark://{label}/corpus", "v1"),
         artifact_digest=sha256(artifact_bytes).hexdigest(),
         families=families,
@@ -334,6 +336,41 @@ class R11BenchmarkTests(unittest.TestCase):
             plan.design_manifest.portfolio_digest,
             plan.holdout_seal.manifest.portfolio_digest,
         )
+
+    def test_precommit_rejects_identical_design_holdout_trajectory_content(self):
+        spec = cusum_spec()
+        design = corpus(CalibrationCorpusRole.DESIGN, label="same")
+        holdout = CalibrationCorpus(
+            corpus_id="r11-same-holdout",
+            version="1",
+            role=CalibrationCorpusRole.HOLDOUT_QUALIFICATION,
+            trajectories=design.trajectories,
+        )
+        design_manifest = manifest(design, label="same-design")
+        holdout_manifest = manifest(holdout, label="same-holdout")
+        self.assertEqual(
+            design_manifest.trajectory_content_digest,
+            holdout_manifest.trajectory_content_digest,
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "cannot reuse identical trajectory content",
+        ):
+            BenchmarkPrecommitPlan(
+                precommit_id="reused-content",
+                design_manifest=design_manifest,
+                holdout_seal=HoldoutCorpusSeal(
+                    seal_id="reused-holdout",
+                    manifest=holdout_manifest,
+                ),
+                cusum_spec_digest=spec.digest,
+                family_policies=family_policies(),
+                candidates=candidates(spec),
+                calibration_plan_id="reused-calibration",
+                comparison_id="reused-comparison",
+                precommit_artifact=SourceBinding("precommit://reuse", "v1"),
+                precommit_artifact_digest=raw_bytes_digest(b"reuse"),
+            )
 
     def test_precommit_binds_exact_future_r9_and_r10_plan_digests(self):
         plan, spec, _, _ = precommit()

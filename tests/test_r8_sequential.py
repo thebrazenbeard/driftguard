@@ -390,6 +390,20 @@ class SequentialCusumTests(unittest.TestCase):
             invalid.reasons,
         )
 
+    def test_new_detector_id_cannot_reset_same_session(self):
+        spec, registration, _ = self.register_after_anchor()
+        self.assertEqual(spec.detector_id, registration.detector_id)
+        reset = replace(spec, detector_id="cusum-r8-reset")
+        with self.assertRaisesRegex(
+            StaleGenerationError,
+            "already bound to a sequential detector",
+        ):
+            self.ledger.register_sequential_detector(
+                spec=reset,
+                state=self.state,
+                subject=self.subject,
+            )
+
     def test_detector_id_cannot_be_rebound_to_new_policy(self):
         spec, _, _ = self.register_after_anchor()
         changed = replace(

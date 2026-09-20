@@ -43,6 +43,7 @@ def strict_single_dimension(*, same_group=False, min_sources=2, min_groups=2):
                 min_sources=min_sources,
                 min_correlation_groups=min_groups,
                 score_scale="calibrated-drift-v1",
+                max_source_spread=0.50,
                 warn_threshold=0.25,
                 reload_threshold=0.45,
                 critical_reload_threshold=0.40,
@@ -109,6 +110,7 @@ def strict_two_dimension():
                 "truth",
                 "Truth discipline.",
                 score_scale="calibrated-drift-v1",
+                max_source_spread=0.30,
                 warn_threshold=0.20,
                 reload_threshold=0.50,
             ),
@@ -116,6 +118,7 @@ def strict_two_dimension():
                 "style",
                 "Direct style.",
                 score_scale="calibrated-drift-v1",
+                max_source_spread=0.30,
                 warn_threshold=0.25,
                 reload_threshold=0.60,
             ),
@@ -188,6 +191,7 @@ class R6MeasurementValidityTests(unittest.TestCase):
             min_sources=2,
             min_correlation_groups=2,
             score_scale="calibrated-drift-v1",
+            max_source_spread=0.50,
             warn_threshold=0.25,
             reload_threshold=0.45,
             critical_reload_threshold=0.40,
@@ -248,6 +252,7 @@ class R6MeasurementValidityTests(unittest.TestCase):
                         "d",
                         "dimension",
                         score_scale="scale-v1",
+                        max_source_spread=0.25,
                         warn_threshold=0.25,
                         reload_threshold=0.45,
                     ),
@@ -275,6 +280,7 @@ class R6MeasurementValidityTests(unittest.TestCase):
                         "d",
                         "dimension",
                         score_scale="scale-a",
+                        max_source_spread=0.25,
                         warn_threshold=0.25,
                         reload_threshold=0.45,
                     ),
@@ -423,6 +429,40 @@ class R6MeasurementValidityTests(unittest.TestCase):
             changed.control_policy_digest,
         )
         self.assertNotEqual(state.digest, changed.digest)
+
+    def test_noncritical_evaluator_disagreement_fails_closed(self):
+        state = strict_single_dimension()
+        state = replace(
+            state,
+            dimensions=(
+                replace(
+                    state.dimensions[0],
+                    critical=False,
+                    critical_reload_threshold=None,
+                    max_source_spread=0.20,
+                ),
+            ),
+        )
+        result = self.evaluate(state, rows(state, values=(0.10, 0.80)))
+        self.assertEqual(Decision.UNKNOWN, result.decision)
+        self.assertEqual(Decision.UNKNOWN, result.behavioral_decision)
+        self.assertFalse(result.reload_required)
+        self.assertIn(
+            "evaluator_disagreement:truthfulness",
+            result.reasons,
+        )
+
+    def test_critical_disagreement_can_reload_without_claiming_relapse(self):
+        state = strict_single_dimension()
+        result = self.evaluate(state, rows(state, values=(0.10, 0.90)))
+        self.assertEqual(Decision.UNKNOWN, result.decision)
+        self.assertEqual(Decision.UNKNOWN, result.behavioral_decision)
+        self.assertTrue(result.reload_required)
+        self.assertIn(
+            "evaluator_disagreement:truthfulness",
+            result.reasons,
+        )
+        self.assertIn("critical_dimension_breach", result.reasons)
 
     def test_evaluator_request_binds_split_measurement_subjects(self):
         state = strict_single_dimension()

@@ -31,6 +31,12 @@ class Decision(StrEnum):
     UNKNOWN = "UNKNOWN"
 
 
+class RecoveryStatus(StrEnum):
+    VERIFIED_STABLE = "VERIFIED_STABLE"
+    NOT_STABLE = "NOT_STABLE"
+    UNKNOWN = "UNKNOWN"
+
+
 def _require_nonempty_str(value: Any, label: str) -> str:
     if type(value) is not str or not value.strip():
         raise ValueError(f"{label} must be a non-empty exact string")
@@ -390,6 +396,72 @@ class Evaluation:
                 "turn_index": self.turn_index,
                 "generation": self.generation,
                 "restore_packet": self.restore_packet,
+            }
+        )
+
+
+@dataclass(frozen=True)
+class RecoveryVerification:
+    ack_id: str
+    acknowledged_evaluation_digest: str
+    replay_evaluation_digest: str
+    state_digest: str
+    observation_digest: str
+    evidence_digest: str
+    turn_index: int
+    status: RecoveryStatus
+    reasons: tuple[str, ...]
+    generation: int
+
+    def __post_init__(self) -> None:
+        _require_nonempty_str(self.ack_id, "recovery acknowledgement id")
+        require_sha256_digest(
+            self.acknowledged_evaluation_digest,
+            "recovery acknowledged evaluation digest",
+        )
+        require_sha256_digest(
+            self.replay_evaluation_digest,
+            "recovery replay evaluation digest",
+        )
+        require_sha256_digest(self.state_digest, "recovery state digest")
+        require_sha256_digest(
+            self.observation_digest,
+            "recovery observation digest",
+        )
+        require_sha256_digest(self.evidence_digest, "recovery evidence digest")
+        if type(self.turn_index) is not int or self.turn_index < 0:
+            raise ValueError(
+                "recovery turn_index must be a non-negative integer"
+            )
+        if type(self.status) is not RecoveryStatus:
+            raise ValueError("recovery status must be exact RecoveryStatus")
+        if type(self.reasons) is not tuple or not self.reasons:
+            raise ValueError("recovery reasons must be a non-empty tuple")
+        if any(type(item) is not str or not item for item in self.reasons):
+            raise ValueError(
+                "recovery reasons must contain non-empty exact strings"
+            )
+        if type(self.generation) is not int or self.generation < 0:
+            raise ValueError(
+                "recovery generation must be a non-negative integer"
+            )
+
+    @property
+    def digest(self) -> str:
+        return canonical_digest(
+            {
+                "ack_id": self.ack_id,
+                "acknowledged_evaluation_digest": (
+                    self.acknowledged_evaluation_digest
+                ),
+                "replay_evaluation_digest": self.replay_evaluation_digest,
+                "state_digest": self.state_digest,
+                "observation_digest": self.observation_digest,
+                "evidence_digest": self.evidence_digest,
+                "turn_index": self.turn_index,
+                "status": self.status.value,
+                "reasons": self.reasons,
+                "generation": self.generation,
             }
         )
 

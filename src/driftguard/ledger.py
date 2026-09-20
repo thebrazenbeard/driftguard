@@ -9,6 +9,8 @@ from .model import (
     Decision,
     DriftEvidence,
     Evaluation,
+    RecoveryStatus,
+    RecoveryVerification,
     ReloadAcknowledgement,
     SaveState,
     require_sha256_digest,
@@ -53,6 +55,12 @@ class ReloadAcknowledgementEventReceipt:
     evaluation_digest: str
     state_digest: str
     turn_index: int
+
+
+@dataclass(frozen=True)
+class RecoveryCommitResult:
+    verification: RecoveryVerification
+    successor_generation: int
 
 
 class DriftLedger:
@@ -116,6 +124,33 @@ class DriftLedger:
                 CREATE UNIQUE INDEX IF NOT EXISTS
                     reload_ack_session_evaluation_uq
                     ON reload_acknowledgements(session_id, evaluation_digest);
+                CREATE TABLE IF NOT EXISTS recovery_verifications (
+                    verification_digest TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    ack_id TEXT NOT NULL,
+                    generation_before INTEGER NOT NULL,
+                    generation_after INTEGER NOT NULL,
+                    acknowledged_evaluation_digest TEXT NOT NULL,
+                    replay_evaluation_digest TEXT NOT NULL,
+                    state_digest TEXT NOT NULL,
+                    observation_digest TEXT NOT NULL,
+                    evidence_digest TEXT NOT NULL,
+                    turn_index INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    reasons TEXT NOT NULL,
+                    FOREIGN KEY(session_id) REFERENCES sessions(session_id),
+                    FOREIGN KEY(ack_id) REFERENCES reload_acknowledgements(ack_id)
+                );
+
+                CREATE UNIQUE INDEX IF NOT EXISTS
+                    recovery_verifications_session_ack_uq
+                    ON recovery_verifications(session_id, ack_id);
+
+                CREATE UNIQUE INDEX IF NOT EXISTS
+                    recovery_verifications_session_replay_uq
+                    ON recovery_verifications(
+                        session_id, replay_evaluation_digest
+                    );
                 """
             )
             self._migrate_legacy_v1(db)
@@ -484,6 +519,206 @@ class DriftLedger:
                 turn_index=int(row["turn_index"]),
             )
 
+    def verify_recovery(
+        self,
+        *,
+        session_id: str,
+        state: SaveState,
+        ack_id: str,
+        replay_evaluation_digest: str,
+        expected_generation: int,
+    ) -> RecoveryCommitResult:
+        """Bind the first post-acknowledgement evaluation as recovery evidence.
+
+        This proves only the observed replay status. It does not prove that the
+        reload caused the observed behavior.
+        """
+        if type(session_id) is not str or not session_id.strip():
+            raise ValueError("session_id must be a non-empty exact string")
+        if type(ack_id) is not str or not ack_id.strip():
+            raise ValueError("ack_id must be a non-empty exact string")
+        require_sha256_digest(
+            replay_evaluation_digest,
+            "replay evaluation digest",
+        )
+        if type(expected_generation) is not int or expected_generation < 0:
+            raise ValueError("expected_generation must be non-negative int")
+
+        with closing(self._connect()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT * FROM sessions WHERE session_id=?",
+                (session_id,),
+            ).fetchone()
+            if row is None:
+                raise StaleGenerationError(
+                    "cannot verify recovery for unknown session"
+                )
+            generation = int(row["generation"])
+            if generation != expected_generation:
+                raise StaleGenerationError(
+                    f"expected generation {expected_generation}, observed {generation}"
+                )
+            if row["state_digest"] != state.digest:
+                raise StaleGenerationError(
+                    "save-state digest changed inside an existing session"
+                )
+
+            ack = db.execute(
+                """
+                SELECT * FROM reload_acknowledgements
+                 WHERE session_id=? AND ack_id=?
+                """,
+                (session_id, ack_id),
+            ).fetchone()
+            if ack is None:
+                raise StaleGenerationError(
+                    "recovery verification requires a recorded acknowledgement"
+                )
+            if ack["state_digest"] != state.digest:
+                raise StaleGenerationError(
+                    "recovery acknowledgement state digest mismatch"
+                )
+            if int(ack["turn_index"]) != int(row["restore_anchor_turn"]):
+                raise StaleGenerationError(
+                    "recovery acknowledgement is not the current restore anchor"
+                )
+            if db.execute(
+                """
+                SELECT 1 FROM recovery_verifications
+                 WHERE session_id=? AND ack_id=?
+                """,
+                (session_id, ack_id),
+            ).fetchone():
+                raise StaleGenerationError(
+                    "recovery acknowledgement already verified"
+                )
+
+            replay = db.execute(
+                """
+                SELECT * FROM evaluation_events
+                 WHERE session_id=? AND evaluation_digest=?
+                """,
+                (session_id, replay_evaluation_digest),
+            ).fetchone()
+            if replay is None:
+                raise StaleGenerationError(
+                    "recovery replay does not bind a recorded evaluation"
+                )
+            if replay["state_digest"] != state.digest:
+                raise StaleGenerationError(
+                    "recovery replay state digest mismatch"
+                )
+            if int(replay["turn_index"]) <= int(ack["turn_index"]):
+                raise StaleGenerationError(
+                    "recovery replay must occur after acknowledgement turn"
+                )
+            if int(replay["generation_before"]) != int(
+                ack["generation_after"]
+            ):
+                raise StaleGenerationError(
+                    "recovery replay must be the first ledger mutation "
+                    "after acknowledgement"
+                )
+            if int(replay["generation_after"]) != generation:
+                raise StaleGenerationError(
+                    "recovery replay must be the latest committed ledger mutation"
+                )
+            if row["last_evaluation_digest"] != replay_evaluation_digest:
+                raise StaleGenerationError(
+                    "recovery replay is not the session's latest evaluation"
+                )
+
+            decision = Decision(str(replay["decision"]))
+            replay_reasons = tuple(
+                item
+                for item in str(replay["reasons"]).split("|")
+                if item
+            )
+            aggregate_drift = (
+                float(replay["aggregate_drift"])
+                if replay["aggregate_drift"] is not None
+                else None
+            )
+            if decision is Decision.UNKNOWN or aggregate_drift is None:
+                status = RecoveryStatus.UNKNOWN
+                status_reason = "first_post_reload_replay_unknown"
+            elif (
+                "critical_dimension_breach" in replay_reasons
+                or aggregate_drift >= state.policy.warn_threshold
+            ):
+                status = RecoveryStatus.NOT_STABLE
+                status_reason = (
+                    "first_post_reload_replay_behaviorally_not_stable"
+                )
+            else:
+                status = RecoveryStatus.VERIFIED_STABLE
+                status_reason = (
+                    "first_post_reload_replay_behaviorally_stable"
+                )
+
+            verification = RecoveryVerification(
+                ack_id=ack_id,
+                acknowledged_evaluation_digest=str(
+                    ack["evaluation_digest"]
+                ),
+                replay_evaluation_digest=replay_evaluation_digest,
+                state_digest=state.digest,
+                observation_digest=str(replay["observation_digest"]),
+                evidence_digest=str(replay["evidence_digest"]),
+                turn_index=int(replay["turn_index"]),
+                status=status,
+                reasons=(
+                    status_reason,
+                    f"replay_decision:{decision.value}",
+                    *replay_reasons,
+                ),
+                generation=generation,
+            )
+            successor = generation + 1
+            db.execute(
+                """
+                UPDATE sessions
+                   SET generation=?
+                 WHERE session_id=? AND generation=?
+                """,
+                (successor, session_id, generation),
+            )
+            if db.execute("SELECT changes()").fetchone()[0] != 1:
+                raise StaleGenerationError(
+                    "recovery generation compare-and-swap failed"
+                )
+            db.execute(
+                """
+                INSERT INTO recovery_verifications(
+                    verification_digest,session_id,ack_id,
+                    generation_before,generation_after,
+                    acknowledged_evaluation_digest,
+                    replay_evaluation_digest,state_digest,
+                    observation_digest,evidence_digest,turn_index,status,reasons
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    verification.digest,
+                    session_id,
+                    ack_id,
+                    generation,
+                    successor,
+                    verification.acknowledged_evaluation_digest,
+                    verification.replay_evaluation_digest,
+                    verification.state_digest,
+                    verification.observation_digest,
+                    verification.evidence_digest,
+                    verification.turn_index,
+                    verification.status.value,
+                    "|".join(verification.reasons),
+                ),
+            )
+            return RecoveryCommitResult(
+                verification=verification,
+                successor_generation=successor,
+            )
+
     def session_row(self, session_id: str) -> dict | None:
         with closing(self._connect()) as db, db:
             row = db.execute(
@@ -508,6 +743,18 @@ class DriftLedger:
             rows = db.execute(
                 """
                 SELECT * FROM reload_acknowledgements
+                 WHERE session_id=?
+                 ORDER BY rowid
+                """,
+                (session_id,),
+            ).fetchall()
+            return tuple(dict(row) for row in rows)
+
+    def recoveries(self, session_id: str) -> tuple[dict, ...]:
+        with closing(self._connect()) as db, db:
+            rows = db.execute(
+                """
+                SELECT * FROM recovery_verifications
                  WHERE session_id=?
                  ORDER BY rowid
                 """,

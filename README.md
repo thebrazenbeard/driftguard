@@ -1,73 +1,86 @@
-# DriftGuard
+﻿# DriftGuard
 
-Monitor AI-model behavioral drift by pinning a versioned behavioral save-state, admitting independently sourced drift evidence, and deterministically deciding when the state should be reloaded.
+DriftGuard is a deterministic behavioral-drift monitor for AI systems.
 
-DriftGuard does **not** claim to inspect hidden model state or prove identity continuity. It monitors observable behavior against an explicit contract.
+It pins an explicit, versioned behavioral save-state; accepts evidence only when it is bound to the exact state, observation, turn, evaluator provenance, and required independence; persists decisions in a monotonic ledger; and keeps drift detection, reload decisions, reload effects, and later behavioral verification as separate evidence classes.
 
-## V1
+It does not inspect hidden model state, prove consciousness or identity continuity, prove that a provider internally consumed every token, or treat a reload request as proof that a reload happened.
 
-V1 provides:
+## What is implemented
 
-- immutable, SHA-256 digest-bound behavioral save-states;
-- weighted multi-dimensional drift rather than one opaque similarity score;
-- critical dimensions that cannot disappear inside an average;
-- evaluator source/version authority scoped to exact dimensions and maximum independence;
-- evidence bound to the exact save-state, observation bytes, and turn;
-- fail-closed UNKNOWN status for missing, duplicate, stale, under-independent, overclaimed, or ungoverned evidence;
-- a reload directive that is separate from epistemic status, so periodic reload cannot be disabled by making evidence UNKNOWN;
-- periodic reload plus threshold-triggered reload;
-- decision cooldown without confusing a reload decision for a restore effect;
-- explicit digest-bound reload acknowledgements as the only path that advances the restore anchor;
-- deterministic restore packets bound to the exact save-state digest;
-- SQLite persistence with monotonic generations, turn ordering, state pinning, legacy-safe migration, and append-only receipts;
-- no third-party runtime dependencies.
+The canonical R5 integration contains:
 
-See `docs/HOSTILE_REVIEW_V1.md` for the adversarial design pass and `docs/ARCHITECTURE_V1.md` for the contract.
+- SHA-256-bound behavioral save-states and restore packets;
+- weighted multi-dimensional drift scoring with critical-dimension safeguards;
+- governed evaluator source/version bindings and independence ceilings;
+- exact observation-byte binding across Windows and Linux;
+- fail-closed UNKNOWN handling for missing, stale, duplicated, under-independent, overclaimed, or ungoverned evidence;
+- monotonic SQLite session generations and append-only evaluation receipts;
+- threshold-triggered and periodic reload decisions;
+- reload cooldown semantics that do not confuse a decision with an effect;
+- exact reload acknowledgements as the only path that advances the restore anchor;
+- an external evaluator boundary bound to exact session/state/observation/turn/generation provenance;
+- an external actuator boundary that distinguishes APPLIED, NOT_APPLIED, and UNKNOWN and forbids blind retry after ambiguous delivery;
+- durable evaluation and acknowledgement readback before effect or recovery claims are accepted;
+- first-post-reload behavioral replay verification;
+- durable recovery qualification that keeps behavioral stability separate from reload scheduling;
+- a Discovery effect-envelope consumer adapter with explicit non-promotion rules;
+- hostile-regression tests covering stale generations, replay laundering, cross-session reuse, ambiguous delivery, receipt rebinding, and recovery cherry-picking.
+
+## Evidence flow
+
+1. Pin a save-state.
+2. Evaluate observable behavior against exact provenance and independence requirements.
+3. Commit the evaluation using monotonic generation semantics.
+4. Emit a reload directive when policy requires it.
+5. Record the actuator outcome separately.
+6. Acknowledge an actually applied reload.
+7. Evaluate later behavior and qualify the first committed post-acknowledgement replay.
+
+A stable replay is bounded behavioral evidence. It does not prove the reload caused the observed behavior.
 
 ## Quick start
 
-```bash
-python -m pip install -e .
-python -m unittest discover -s tests -v
+    python -m pip install -e .
+    python -m pip install pytest
+    python -m pytest -q
 
-driftguard state-digest --state examples/save_state.json
-driftguard file-digest --file examples/observation.txt
+Example:
 
-driftguard evaluate \
-  --state examples/save_state.json \
-  --evidence examples/evidence.json \
-  --observation examples/observation.txt \
-  --db ./driftguard.db \
-  --session demo \
-  --turn 0 \
-  --expected-generation 0
-```
+    driftguard state-digest --state examples/save_state.json
+    driftguard file-digest --file examples/observation.txt
 
-When `reload_required` is true, the result contains the exact restore packet that should be delivered. That is a directive, not proof of delivery or behavioral recovery.
+    driftguard evaluate \
+      --state examples/save_state.json \
+      --evidence examples/evidence.json \
+      --observation examples/observation.txt \
+      --db ./driftguard.db \
+      --session demo \
+      --turn 0 \
+      --expected-generation 0
 
-After a downstream loader has actually consumed that exact packet, create a reload acknowledgement bound to the returned `evaluation_digest`, `state_digest`, and `turn_index`, then persist it:
+When reload_required is true, the emitted restore packet is a directive only. Downstream application and later behavioral verification are separately evidenced.
 
-```bash
-driftguard ack-reload \
-  --state examples/save_state.json \
-  --ack ./reload-ack.json \
-  --db ./driftguard.db \
-  --session demo \
-  --expected-generation <current-generation>
-```
+## Architecture and qualification
 
-The acknowledgement records a caller assertion that the reload effect occurred. It still does not prove provider honesty or behavioral recovery. A post-reload evaluation is required for that stronger claim.
+Start with:
 
-## Evidence model
+- docs/ARCHITECTURE_V1.md — core behavioral/state/ledger contract
+- docs/CAPTURE_PROTOCOL_V1.md — save-state capture rules
+- docs/HOSTILE_REVIEW_V1.md — adversarial design pass
+- docs/EXTERNAL_BOUNDARY_V1.md — evaluator/actuator and retry semantics
+- docs/RECOVERY_QUALIFICATION_V1.md — durable behavioral recovery qualification
+- docs/DISCOVERY_EFFECT_ENVELOPE_CONSUMER_V1.md — Discovery adapter contract
+- docs/qualification/DRIFTGUARD_R5_POST_RELOAD_REPLAY.md — first-replay qualification boundary
+- docs/qualification/DRIFTGUARD_R5_CONVERGED_RECOVERY_20260920.md — converged recovery semantics
 
-A probe source is part of the save-state and declares:
+## Claim ceilings
 
-- exact source reference + version;
-- maximum independence it may claim;
-- exact behavioral dimensions it may judge.
+A passing evaluation does not prove hidden-state equivalence.
+A reload directive does not prove delivery.
+An acknowledgement does not prove behavioral recovery.
+A stable replay does not prove reload causality.
+A provider or transport receipt does not prove internal model obedience.
+A source or test PASS does not itself grant deployment, credential, provider, retry, or other effect authority.
 
-Each V1 evidence item must use exactly one governed probe source and bind itself to the exact save-state digest, observation digest, and turn. This prevents stale clean evidence, cross-dimension evaluator promotion, and independence-class laundering at the admission boundary.
-
-## Current claim ceiling
-
-DriftGuard V1 proves deterministic admission, scheduling, fencing, and reload-decision behavior for its supplied inputs. It does not prove that a claimed external evaluator was genuinely independent, that a downstream provider actually applied a restore packet, or that the model's hidden state/identity remained unchanged.
+DriftGuard exists to keep those distinctions explicit instead of accidentally collapsing them.

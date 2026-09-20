@@ -96,11 +96,29 @@ Failure mode: generating a restore packet is reported as successful behavioral r
 
 Repair: `reload_required` proves only the policy directive. A reload acknowledgement proves only the caller's assertion that the exact directive was consumed. Behavioral recovery still requires post-reload evaluation.
 
+## Recovery cherry-pick attack
+
+Failure mode: an acknowledgement is followed by a WARN/RELOAD/UNKNOWN replay, but the caller waits for a later clean observation and presents only that later result as proof the original reload recovered behavior.
+
+Repair: recovery verification accepts only the evaluation whose `generation_before` is exactly the acknowledgement's `generation_after`, and only while that replay remains the latest committed ledger mutation. Later clean evidence cannot overwrite or reinterpret the first replay.
+
+## Recovery clock-conflation attack
+
+Failure mode: a behaviorally clean replay is marked "not recovered" merely because the independent periodic reload clock is due.
+
+Repair: recovery status is derived from admitted behavioral drift and critical-dimension evidence, not from `reload_required`. A clean replay may be `VERIFIED_STABLE` even while periodic policy independently requires another reload.
+
+## Recovery causality attack
+
+Failure mode: stable behavior after a caller acknowledgement is reported as proof that the reload caused the recovery or that the provider truly applied the restore packet.
+
+Repair: the durable receipt is named and scoped as behavioral replay verification. It binds exact acknowledgement, replay evaluation, state, observation, evidence, turn, and generation. Its strongest positive status is `VERIFIED_STABLE`, not "reload succeeded" or "caused recovery."
+
 ## Storage/privacy attack
 
 Failure mode: DriftGuard becomes a second raw-conversation archive.
 
-Repair: the durable ledger stores state/observation/evidence/evaluation digests, scores, decisions, and acknowledgements—not raw conversation bytes or restore text.
+Repair: the durable ledger stores state/observation/evidence/evaluation digests, scores, decisions, acknowledgements, and recovery-verification receipts—not raw conversation bytes or restore text.
 
 ## Tamper / trust-boundary remainder
 
@@ -110,4 +128,4 @@ Future high-assurance deployments should add signed receipts or append-only remo
 
 ## Current claim ceiling
 
-DriftGuard V1 is a deterministic behavioral-drift admission, scheduling, fencing, and reload-decision engine. It is not proof of personal identity, consciousness, hidden-state continuity, evaluator honesty, provider-side restoration, or behavioral recovery.
+DriftGuard V1 is a deterministic behavioral-drift admission, scheduling, fencing, reload-decision, acknowledgement, and first-post-ack behavioral replay engine. `VERIFIED_STABLE` establishes only admitted observable stability for that replay. It is not proof of personal identity, consciousness, hidden-state continuity, evaluator honesty, provider-side restoration, or causal restoration.

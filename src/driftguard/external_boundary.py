@@ -10,6 +10,7 @@ from .model import (
     Decision,
     DriftEvidence,
     Evaluation,
+    MeasurementMode,
     ReloadAcknowledgement,
     SaveState,
     SourceBinding,
@@ -31,6 +32,10 @@ class EvaluatorProbeContract:
     source_version: str
     max_independence: str
     dimensions: tuple[str, ...]
+    calibration_ref: str | None = None
+    calibration_version: str | None = None
+    correlation_group: str | None = None
+    score_scale: str | None = None
 
     def __post_init__(self) -> None:
         _nonempty(self.source_ref, "source_ref")
@@ -42,18 +47,39 @@ class EvaluatorProbeContract:
             raise ValueError("dimensions must contain non-empty exact strings")
         if len(self.dimensions) != len(set(self.dimensions)):
             raise ValueError("dimensions must be unique")
+        if (self.calibration_ref is None) != (self.calibration_version is None):
+            raise ValueError(
+                "calibration_ref and calibration_version must be supplied together"
+            )
+        if self.calibration_ref is not None:
+            _nonempty(self.calibration_ref, "calibration_ref")
+            _nonempty(self.calibration_version, "calibration_version")
+        if self.correlation_group is not None:
+            _nonempty(self.correlation_group, "correlation_group")
+        if self.score_scale is not None:
+            _nonempty(self.score_scale, "score_scale")
 
     @property
     def binding(self) -> SourceBinding:
         return SourceBinding(self.source_ref, self.source_version)
 
     def payload(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "source_ref": self.source_ref,
             "source_version": self.source_version,
             "max_independence": self.max_independence,
             "dimensions": list(self.dimensions),
         }
+        if self.calibration_ref is not None:
+            payload["calibration"] = {
+                "ref": self.calibration_ref,
+                "version": self.calibration_version,
+            }
+        if self.correlation_group is not None:
+            payload["correlation_group"] = self.correlation_group
+        if self.score_scale is not None:
+            payload["score_scale"] = self.score_scale
+        return payload
 
 
 @dataclass(frozen=True)
@@ -64,6 +90,9 @@ class ExternalEvaluatorRequest:
     turn_index: int
     expected_generation: int
     probe_contract: tuple[EvaluatorProbeContract, ...]
+    behavior_digest: str | None = None
+    measurement_digest: str | None = None
+    detection_policy_digest: str | None = None
 
     def __post_init__(self) -> None:
         _nonempty(self.session_id, "session_id")
@@ -80,10 +109,31 @@ class ExternalEvaluatorRequest:
         bindings = [item.binding for item in self.probe_contract]
         if len(bindings) != len(set(bindings)):
             raise ValueError("probe contract bindings must be unique")
+        digest_fields = (
+            self.behavior_digest,
+            self.measurement_digest,
+            self.detection_policy_digest,
+        )
+        if any(value is not None for value in digest_fields):
+            if any(value is None for value in digest_fields):
+                raise ValueError(
+                    "behavior, measurement, and detection-policy digests "
+                    "must be supplied together"
+                )
+            require_sha256_digest(self.behavior_digest, "behavior_digest")
+            require_sha256_digest(self.measurement_digest, "measurement_digest")
+            require_sha256_digest(
+                self.detection_policy_digest,
+                "detection_policy_digest",
+            )
 
     def payload(self) -> dict[str, Any]:
-        return {
-            "schema": "DRIFTGUARD_EXTERNAL_EVALUATOR_REQUEST_V1",
+        payload: dict[str, Any] = {
+            "schema": (
+                "DRIFTGUARD_EXTERNAL_EVALUATOR_REQUEST_V2"
+                if self.behavior_digest is not None
+                else "DRIFTGUARD_EXTERNAL_EVALUATOR_REQUEST_V1"
+            ),
             "session_id": self.session_id,
             "state_digest": self.state_digest,
             "observation_digest": self.observation_digest,
@@ -91,6 +141,11 @@ class ExternalEvaluatorRequest:
             "expected_generation": self.expected_generation,
             "probe_contract": [item.payload() for item in self.probe_contract],
         }
+        if self.behavior_digest is not None:
+            payload["behavior_digest"] = self.behavior_digest
+            payload["measurement_digest"] = self.measurement_digest
+            payload["detection_policy_digest"] = self.detection_policy_digest
+        return payload
 
     @property
     def digest(self) -> str:
@@ -147,12 +202,25 @@ def build_evaluator_request(
                     source.binding.version,
                     source.max_independence.name,
                     source.dimensions,
+                    (
+                        source.calibration.ref
+                        if source.calibration is not None
+                        else None
+                    ),
+                    (
+                        source.calibration.version
+                        if source.calibration is not None
+                        else None
+                    ),
+                    source.correlation_group,
+                    source.score_scale,
                 )
                 for source in state.probe_sources
             ),
             key=lambda item: (item.source_ref, item.source_version),
         )
     )
+    strict = state.measurement_mode is MeasurementMode.CALIBRATED_QUORUM
     return ExternalEvaluatorRequest(
         session_id=session_id,
         state_digest=state.digest,
@@ -160,6 +228,9 @@ def build_evaluator_request(
         turn_index=turn_index,
         expected_generation=expected_generation,
         probe_contract=contracts,
+        behavior_digest=state.behavior_digest if strict else None,
+        measurement_digest=state.measurement_digest if strict else None,
+        detection_policy_digest=state.detection_policy_digest if strict else None,
     )
 
 

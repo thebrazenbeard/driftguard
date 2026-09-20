@@ -430,6 +430,7 @@ class CalibrationFamilyMetrics:
     wrong_dimension_alarms: int
     horizon_violations: int
     failures: tuple[str, ...]
+    mixed_target_wrong_dimension_alarms: int = 0
 
     def __post_init__(self) -> None:
         _nonempty(self.family_id, "calibration metric family id")
@@ -450,9 +451,25 @@ class CalibrationFamilyMetrics:
                 "shifted-family binomial estimates must share the same trial count"
             )
         if (
-            self.pre_shift_false_alarm.successes
-            + self.wrong_dimension_alarm.successes
+            type(self.mixed_target_wrong_dimension_alarms) is not int
+            or isinstance(self.mixed_target_wrong_dimension_alarms, bool)
+            or self.mixed_target_wrong_dimension_alarms < 0
+            or self.mixed_target_wrong_dimension_alarms
+            > self.wrong_dimension_alarm.successes
+            or self.mixed_target_wrong_dimension_alarms
+            > self.detection.successes
+        ):
+            raise ValueError(
+                "mixed target/wrong-dimension count must be a valid overlap"
+            )
+        post_shift_alarm_union = (
+            self.wrong_dimension_alarm.successes
             + self.detection.successes
+            - self.mixed_target_wrong_dimension_alarms
+        )
+        if (
+            self.pre_shift_false_alarm.successes
+            + post_shift_alarm_union
             > shifted_trials
         ):
             raise ValueError(
@@ -531,6 +548,9 @@ class CalibrationFamilyMetrics:
             "detection_delays": list(self.detection_delays),
             "mean_detection_delay": self.mean_detection_delay,
             "wrong_dimension_alarms": self.wrong_dimension_alarms,
+            "mixed_target_wrong_dimension_alarms": (
+                self.mixed_target_wrong_dimension_alarms
+            ),
             "horizon_violations": self.horizon_violations,
             "failures": list(self.failures),
             "passed": self.passed,
@@ -739,6 +759,7 @@ def _family_metrics(
     detections = 0
     detection_delays: list[int] = []
     wrong_dimension_alarms = 0
+    mixed_target_wrong_dimension_alarms = 0
     for trajectory in shifted:
         outcome = _run_trajectory(spec=spec, trajectory=trajectory)
         alarm_index = outcome.first_alarm_index
@@ -748,15 +769,21 @@ def _family_metrics(
         if alarm_index < trajectory.shift_index:
             pre_shift_false_alarms += 1
             continue
-        if set(outcome.first_alarm_dimensions).intersection(
-            trajectory.shift_dimensions
-        ):
+        alarm_dimensions = set(outcome.first_alarm_dimensions)
+        shift_dimensions = set(trajectory.shift_dimensions)
+        target_alarm = bool(alarm_dimensions.intersection(shift_dimensions))
+        collateral_wrong_dimension_alarm = bool(
+            alarm_dimensions.difference(shift_dimensions)
+        )
+        if target_alarm:
             detections += 1
             detection_delays.append(
                 alarm_index - trajectory.shift_index + 1
             )
-        else:
+        if collateral_wrong_dimension_alarm:
             wrong_dimension_alarms += 1
+        if target_alarm and collateral_wrong_dimension_alarm:
+            mixed_target_wrong_dimension_alarms += 1
 
     if not stable or not shifted:
         raise ValueError(
@@ -827,6 +854,9 @@ def _family_metrics(
         wrong_dimension_alarms=wrong_dimension_alarms,
         horizon_violations=horizon_violations,
         failures=tuple(failures),
+        mixed_target_wrong_dimension_alarms=(
+            mixed_target_wrong_dimension_alarms
+        ),
     )
 
 

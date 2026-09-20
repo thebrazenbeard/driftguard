@@ -90,6 +90,14 @@ signature digest, and covered source/version set. Readback equality is part of t
 stronger claim. An ordinary evaluator commit has no such receipt and therefore
 remains ordinary.
 
+Durable admission is not a free-form ledger write. The ledger has no public
+record_evaluator_attestation(fields...) API. Its private admission boundary accepts
+only the exact verifier-created EvaluatorAttestationVerification capability and
+cross-checks that capability against the committed evaluation's exact session,
+state, observation, turn, predecessor generation, and evidence digest before
+persisting the receipt. A valid verification for response A therefore cannot be
+rebound to an unrelated ordinary evaluation B.
+
 If structural evaluation commit succeeds but attestation persistence does not, the
 evaluation is not silently upgraded: absence of the durable attestation receipt is
 authoritative for the attested/unattested distinction.

@@ -391,9 +391,15 @@ class EvaluatorAttestationTests(unittest.TestCase):
     def test_verification_object_cannot_be_directly_constructed(self):
         with self.assertRaisesRegex(ValueError, "must come from verifier"):
             EvaluatorAttestationVerification(
-                request_digest="1" * 64,
-                response_digest="2" * 64,
-                policy_digest="3" * 64,
+                session_id="session",
+                state_digest="0" * 64,
+                observation_digest="1" * 64,
+                turn_index=0,
+                generation_before=0,
+                evidence_digest="2" * 64,
+                request_digest="3" * 64,
+                response_digest="4" * 64,
+                policy_digest="5" * 64,
                 key_id="key",
                 key_fingerprint_sha256="4" * 64,
                 key_epoch=1,
@@ -432,19 +438,9 @@ class EvaluatorAttestationTests(unittest.TestCase):
                 response=resp,
                 ledger=ledger,
             )
-            receipt = ledger.record_evaluator_attestation(
-                session_id="session",
+            receipt = ledger._record_verified_evaluator_attestation(
                 evaluation_digest=commit.evaluation.digest,
-                verification_digest=verification.digest,
-                request_digest=verification.request_digest,
-                response_digest=verification.response_digest,
-                policy_digest=verification.policy_digest,
-                key_id=verification.key_id,
-                key_fingerprint_sha256=verification.key_fingerprint_sha256,
-                key_epoch=verification.key_epoch,
-                algorithm=verification.algorithm.value,
-                signature_sha256=verification.signature_sha256,
-                covered_sources=verification.covered_sources,
+                verification=verification,
             )
             with self.assertRaisesRegex(ValueError, "durable commit path"):
                 AttestedEvaluatorCommit(
@@ -545,7 +541,16 @@ class EvaluatorAttestationTests(unittest.TestCase):
         finally:
             os.unlink(handle.name)
 
-    def test_durable_attestation_cannot_be_rebound_for_same_evaluation(self):
+    def test_free_form_public_attestation_writer_is_absent(self):
+        handle = tempfile.NamedTemporaryFile(delete=False)
+        handle.close()
+        try:
+            ledger = DriftLedger(handle.name)
+            self.assertFalse(hasattr(ledger, "record_evaluator_attestation"))
+        finally:
+            os.unlink(handle.name)
+
+    def test_verified_attestation_cannot_be_rebound_for_same_evaluation(self):
         handle = tempfile.NamedTemporaryFile(delete=False)
         handle.close()
         try:
@@ -553,38 +558,49 @@ class EvaluatorAttestationTests(unittest.TestCase):
             s = state()
             req = request_for(s)
             resp = response_for(req, evidence(s))
-            pol = policy()
-            attestation = build_hmac_evaluator_attestation(
+            first_policy = policy(
+                key_id="key-a",
+                key_material=KEY,
+                key_epoch=1,
+            )
+            first_attestation = build_hmac_evaluator_attestation(
                 request=req,
                 response=resp,
-                policy=pol,
+                policy=first_policy,
                 key_material=KEY,
             )
             result = commit_attested_evaluator_response(
                 request=req,
                 state=s,
                 response=resp,
-                policy=pol,
-                attestation=attestation,
+                policy=first_policy,
+                attestation=first_attestation,
                 key_material=KEY,
                 ledger=ledger,
             )
+
+            second_policy = policy(
+                key_id="key-b",
+                key_material=OTHER_KEY,
+                key_epoch=2,
+            )
+            second_attestation = build_hmac_evaluator_attestation(
+                request=req,
+                response=resp,
+                policy=second_policy,
+                key_material=OTHER_KEY,
+            )
+            second_verification = verify_evaluator_attestation(
+                request=req,
+                response=resp,
+                policy=second_policy,
+                attestation=second_attestation,
+                key_material=OTHER_KEY,
+            )
             with self.assertRaisesRegex(ValueError, "diverges"):
-                ledger.record_evaluator_attestation(
-                    session_id="session",
+                ledger._record_verified_evaluator_attestation(
                     evaluation_digest=result.commit.evaluation.digest,
-                    verification_digest="f" * 64,
-                    request_digest=result.attestation.request_digest,
-                    response_digest=result.attestation.response_digest,
-                    policy_digest=result.attestation.policy_digest,
-                    key_id=result.attestation.key_id,
-                    key_fingerprint_sha256=(
-                        result.attestation.key_fingerprint_sha256
-                    ),
-                    key_epoch=result.attestation.key_epoch,
-                    algorithm=result.attestation.algorithm.value,
-                    signature_sha256=result.attestation.signature_sha256,
-                    covered_sources=result.attestation.covered_sources,
+                    verification=second_verification,
                 )
         finally:
             os.unlink(handle.name)

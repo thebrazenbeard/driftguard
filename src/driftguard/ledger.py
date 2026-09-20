@@ -586,43 +586,55 @@ class DriftLedger:
             covered_sources=tuple(sorted(sources)),
         )
 
-    def record_evaluator_attestation(
+    def _record_verified_evaluator_attestation(
         self,
         *,
-        session_id: str,
         evaluation_digest: str,
-        verification_digest: str,
-        request_digest: str,
-        response_digest: str,
-        policy_digest: str,
-        key_id: str,
-        key_fingerprint_sha256: str,
-        key_epoch: int,
-        algorithm: str,
-        signature_sha256: str,
-        covered_sources: tuple[SourceBinding, ...],
+        verification: object,
     ) -> EvaluatorAttestationEventReceipt:
-        candidate = EvaluatorAttestationEventReceipt(
-            verification_digest=verification_digest,
-            session_id=session_id,
+        # Deferred import avoids a module cycle. The verification type itself is
+        # constructor-gated by evaluator_attestation.verify_evaluator_attestation().
+        from .evaluator_attestation import EvaluatorAttestationVerification
+
+        if type(verification) is not EvaluatorAttestationVerification:
+            raise ValueError(
+                "durable evaluator attestation requires verifier-created capability"
+            )
+        require_sha256_digest(evaluation_digest, "evaluation digest")
+
+        event = self.evaluation_receipt(
+            session_id=verification.session_id,
             evaluation_digest=evaluation_digest,
-            request_digest=request_digest,
-            response_digest=response_digest,
-            policy_digest=policy_digest,
-            key_id=key_id,
-            key_fingerprint_sha256=key_fingerprint_sha256,
-            key_epoch=key_epoch,
-            algorithm=algorithm,
-            signature_sha256=signature_sha256,
-            covered_sources=tuple(sorted(covered_sources)),
         )
-        if self.evaluation_receipt(
-            session_id=session_id,
-            evaluation_digest=evaluation_digest,
-        ) is None:
+        if event is None:
             raise ValueError(
                 "evaluator attestation requires durable evaluation receipt"
             )
+        if event.state_digest != verification.state_digest:
+            raise ValueError("attestation state/evaluation mismatch")
+        if event.observation_digest != verification.observation_digest:
+            raise ValueError("attestation observation/evaluation mismatch")
+        if event.turn_index != verification.turn_index:
+            raise ValueError("attestation turn/evaluation mismatch")
+        if event.generation_before != verification.generation_before:
+            raise ValueError("attestation generation/evaluation mismatch")
+        if event.evidence_digest != verification.evidence_digest:
+            raise ValueError("attestation evidence/evaluation mismatch")
+
+        candidate = EvaluatorAttestationEventReceipt(
+            verification_digest=verification.digest,
+            session_id=verification.session_id,
+            evaluation_digest=evaluation_digest,
+            request_digest=verification.request_digest,
+            response_digest=verification.response_digest,
+            policy_digest=verification.policy_digest,
+            key_id=verification.key_id,
+            key_fingerprint_sha256=verification.key_fingerprint_sha256,
+            key_epoch=verification.key_epoch,
+            algorithm=verification.algorithm.value,
+            signature_sha256=verification.signature_sha256,
+            covered_sources=tuple(sorted(verification.covered_sources)),
+        )
         covered_json = json.dumps(
             [
                 {"ref": item.ref, "version": item.version}
@@ -641,7 +653,7 @@ class DriftLedger:
                 SELECT * FROM evaluator_attestations
                  WHERE session_id=? AND evaluation_digest=?
                 """,
-                (session_id, evaluation_digest),
+                (candidate.session_id, candidate.evaluation_digest),
             ).fetchone()
             if existing is not None:
                 receipt = self._attestation_row_to_receipt(existing)

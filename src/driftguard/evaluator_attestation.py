@@ -186,6 +186,12 @@ class EvaluatorAttestation:
 
 @dataclass(frozen=True, init=False)
 class EvaluatorAttestationVerification:
+    session_id: str
+    state_digest: str
+    observation_digest: str
+    turn_index: int
+    generation_before: int
+    evidence_digest: str
     request_digest: str
     response_digest: str
     policy_digest: str
@@ -200,6 +206,12 @@ class EvaluatorAttestationVerification:
     def __init__(
         self,
         *,
+        session_id: str,
+        state_digest: str,
+        observation_digest: str,
+        turn_index: int,
+        generation_before: int,
+        evidence_digest: str,
         request_digest: str,
         response_digest: str,
         policy_digest: str,
@@ -215,6 +227,12 @@ class EvaluatorAttestationVerification:
             raise ValueError(
                 "EvaluatorAttestationVerification must come from verifier"
             )
+        object.__setattr__(self, "session_id", session_id)
+        object.__setattr__(self, "state_digest", state_digest)
+        object.__setattr__(self, "observation_digest", observation_digest)
+        object.__setattr__(self, "turn_index", turn_index)
+        object.__setattr__(self, "generation_before", generation_before)
+        object.__setattr__(self, "evidence_digest", evidence_digest)
         object.__setattr__(self, "request_digest", request_digest)
         object.__setattr__(self, "response_digest", response_digest)
         object.__setattr__(self, "policy_digest", policy_digest)
@@ -236,13 +254,31 @@ class EvaluatorAttestationVerification:
         self.__post_init__()
 
     def __post_init__(self) -> None:
+        _nonempty(self.session_id, "session_id")
         for value, label in (
+            (self.state_digest, "state_digest"),
+            (self.observation_digest, "observation_digest"),
+            (self.evidence_digest, "evidence_digest"),
             (self.request_digest, "request_digest"),
             (self.response_digest, "response_digest"),
             (self.policy_digest, "policy_digest"),
             (self.signature_sha256, "signature_sha256"),
         ):
             require_sha256_digest(value, label)
+        if (
+            type(self.turn_index) is not int
+            or isinstance(self.turn_index, bool)
+            or self.turn_index < 0
+        ):
+            raise ValueError("turn_index must be a non-negative exact integer")
+        if (
+            type(self.generation_before) is not int
+            or isinstance(self.generation_before, bool)
+            or self.generation_before < 0
+        ):
+            raise ValueError(
+                "generation_before must be a non-negative exact integer"
+            )
         _nonempty(self.key_id, "key_id")
         require_sha256_digest(
             self.key_fingerprint_sha256,
@@ -274,6 +310,12 @@ class EvaluatorAttestationVerification:
     def payload(self) -> dict[str, Any]:
         return {
             "schema": "DRIFTGUARD_EVALUATOR_ATTESTATION_VERIFICATION_V1",
+            "session_id": self.session_id,
+            "state_digest": self.state_digest,
+            "observation_digest": self.observation_digest,
+            "turn_index": self.turn_index,
+            "generation_before": self.generation_before,
+            "evidence_digest": self.evidence_digest,
             "request_digest": self.request_digest,
             "response_digest": self.response_digest,
             "policy_digest": self.policy_digest,
@@ -521,6 +563,12 @@ def verify_evaluator_attestation(
         raise ValueError("evaluator attestation signature mismatch")
 
     return EvaluatorAttestationVerification(
+        session_id=request.session_id,
+        state_digest=request.state_digest,
+        observation_digest=request.observation_digest,
+        turn_index=request.turn_index,
+        generation_before=request.expected_generation,
+        evidence_digest=response.evidence_digest,
         request_digest=request.digest,
         response_digest=response.digest,
         policy_digest=policy.digest,
@@ -559,19 +607,9 @@ def commit_attested_evaluator_response(
         response=response,
         ledger=ledger,
     )
-    durable_receipt = ledger.record_evaluator_attestation(
-        session_id=request.session_id,
+    durable_receipt = ledger._record_verified_evaluator_attestation(
         evaluation_digest=commit.evaluation.digest,
-        verification_digest=verification.digest,
-        request_digest=verification.request_digest,
-        response_digest=verification.response_digest,
-        policy_digest=verification.policy_digest,
-        key_id=verification.key_id,
-        key_fingerprint_sha256=verification.key_fingerprint_sha256,
-        key_epoch=verification.key_epoch,
-        algorithm=verification.algorithm.value,
-        signature_sha256=verification.signature_sha256,
-        covered_sources=verification.covered_sources,
+        verification=verification,
     )
     return AttestedEvaluatorCommit(
         commit=commit,

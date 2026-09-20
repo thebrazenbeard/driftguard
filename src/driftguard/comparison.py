@@ -17,7 +17,7 @@ from .calibration import (
     CalibrationTrajectoryRegime,
     qualify_calibration,
 )
-from .model import canonical_digest, require_sha256_digest
+from .model import SourceBinding, canonical_digest, require_sha256_digest
 from .sequential import SequentialDetectorSpec, advance_cusum
 
 
@@ -74,12 +74,13 @@ class PageHinkleyDimensionPolicy:
             raise ValueError(
                 "Page-Hinkley alarm_threshold must be finite and > 0"
             )
-        if (
-            type(self.burn_in) is not int
-            or isinstance(self.burn_in, bool)
-            or self.burn_in < 1
-        ):
-            raise ValueError("Page-Hinkley burn_in must be >= 1")
+        if type(self.burn_in) is not int or isinstance(self.burn_in, bool):
+            raise ValueError("Page-Hinkley burn_in must be exact int")
+        if self.burn_in != 1:
+            raise ValueError(
+                "R10 V1 requires Page-Hinkley burn_in=1 so the detector "
+                "cannot suppress any frozen qualification exposure"
+            )
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -111,12 +112,13 @@ class EwmaDimensionPolicy:
             or float(self.alarm_threshold) <= 0.0
         ):
             raise ValueError("EWMA alarm_threshold must be finite and > 0")
-        if (
-            type(self.burn_in) is not int
-            or isinstance(self.burn_in, bool)
-            or self.burn_in < 1
-        ):
-            raise ValueError("EWMA burn_in must be >= 1")
+        if type(self.burn_in) is not int or isinstance(self.burn_in, bool):
+            raise ValueError("EWMA burn_in must be exact int")
+        if self.burn_in != 1:
+            raise ValueError(
+                "R10 V1 requires EWMA burn_in=1 so the detector cannot "
+                "suppress any frozen qualification exposure"
+            )
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -133,6 +135,8 @@ class DetectorCandidate:
     candidate_id: str
     algorithm: DetectorAlgorithm
     cusum_spec_digest: str | None = None
+    parameterization: SourceBinding | None = None
+    parameterization_digest: str | None = None
     page_hinkley: tuple[PageHinkleyDimensionPolicy, ...] = ()
     ewma: tuple[EwmaDimensionPolicy, ...] = ()
 
@@ -148,15 +152,21 @@ class DetectorCandidate:
                 self.cusum_spec_digest,
                 "CUSUM candidate spec digest",
             )
-            if self.page_hinkley or self.ewma:
+            if (
+                self.page_hinkley
+                or self.ewma
+                or self.parameterization is not None
+                or self.parameterization_digest is not None
+            ):
                 raise ValueError(
-                    "CUSUM candidate cannot carry Page-Hinkley/EWMA policy"
+                    "CUSUM candidate cannot carry alternate parameterization"
                 )
         elif self.algorithm is DetectorAlgorithm.PAGE_HINKLEY:
             if self.cusum_spec_digest is not None or self.ewma:
                 raise ValueError(
                     "Page-Hinkley candidate contains incompatible policy"
                 )
+            self._validate_parameterization_provenance()
             self._validate_dimension_tuple(
                 self.page_hinkley,
                 PageHinkleyDimensionPolicy,
@@ -165,11 +175,26 @@ class DetectorCandidate:
         else:
             if self.cusum_spec_digest is not None or self.page_hinkley:
                 raise ValueError("EWMA candidate contains incompatible policy")
+            self._validate_parameterization_provenance()
             self._validate_dimension_tuple(
                 self.ewma,
                 EwmaDimensionPolicy,
                 "EWMA",
             )
+
+    def _validate_parameterization_provenance(self) -> None:
+        if type(self.parameterization) is not SourceBinding:
+            raise ValueError(
+                "non-CUSUM candidate requires exact parameterization SourceBinding"
+            )
+        if self.parameterization_digest is None:
+            raise ValueError(
+                "non-CUSUM candidate requires parameterization digest"
+            )
+        require_sha256_digest(
+            self.parameterization_digest,
+            "candidate parameterization digest",
+        )
 
     @staticmethod
     def _validate_dimension_tuple(
@@ -207,6 +232,11 @@ class DetectorCandidate:
         if self.algorithm is DetectorAlgorithm.CUSUM:
             payload["cusum_spec_digest"] = self.cusum_spec_digest
         elif self.algorithm is DetectorAlgorithm.PAGE_HINKLEY:
+            payload["parameterization"] = {
+                "ref": self.parameterization.ref,
+                "version": self.parameterization.version,
+            }
+            payload["parameterization_digest"] = self.parameterization_digest
             payload["page_hinkley"] = [
                 item.payload()
                 for item in sorted(
@@ -215,6 +245,11 @@ class DetectorCandidate:
                 )
             ]
         else:
+            payload["parameterization"] = {
+                "ref": self.parameterization.ref,
+                "version": self.parameterization.version,
+            }
+            payload["parameterization_digest"] = self.parameterization_digest
             payload["ewma"] = [
                 item.payload()
                 for item in sorted(
@@ -261,9 +296,11 @@ class DetectorComparisonPlan:
             raise ValueError(
                 "comparison permits only one candidate per algorithm"
             )
-        if DetectorAlgorithm.CUSUM not in algorithms:
+        required_algorithms = set(DetectorAlgorithm)
+        if set(algorithms) != required_algorithms:
             raise ValueError(
-                "comparison must include exact R8 CUSUM baseline candidate"
+                "R10 V1 comparison requires exactly CUSUM, PAGE_HINKLEY, "
+                "and EWMA candidates"
             )
         if self.comparison_claim != "COMPARISON_ONLY_NO_HOLDOUT_SELECTION":
             raise ValueError("unsupported comparison claim")

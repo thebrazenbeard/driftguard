@@ -15,6 +15,8 @@ from .model import (
     RecoveryVerification,
     ReloadAcknowledgement,
     SaveState,
+    SubjectEpochTransition,
+    canonical_digest,
     require_sha256_digest,
 )
 
@@ -53,6 +55,37 @@ class EvaluationEventReceipt:
     ] = ()
     subject_digest: str | None = None
     subject_epoch: int | None = None
+
+
+@dataclass(frozen=True)
+class SubjectEpochRegistrationReceipt:
+    subject_id: str
+    epoch: int
+    subject_digest: str
+
+    @property
+    def digest(self) -> str:
+        return canonical_digest(
+            {
+                "schema": "DRIFTGUARD_SUBJECT_EPOCH_REGISTRATION_V1",
+                "subject_id": self.subject_id,
+                "epoch": self.epoch,
+                "subject_digest": self.subject_digest,
+            }
+        )
+
+
+@dataclass(frozen=True)
+class SubjectEpochTransitionReceipt:
+    transition_digest: str
+    transition_id: str
+    subject_id: str
+    predecessor_epoch: int
+    predecessor_digest: str
+    successor_epoch: int
+    successor_digest: str
+    reason: str
+    transition_claim: str
 
 
 @dataclass(frozen=True)
@@ -107,6 +140,26 @@ class DriftLedger:
                     manifest_json TEXT NOT NULL,
                     PRIMARY KEY(subject_id, epoch)
                 );
+
+                CREATE TABLE IF NOT EXISTS subject_epoch_transitions (
+                    transition_digest TEXT PRIMARY KEY,
+                    transition_id TEXT NOT NULL UNIQUE,
+                    subject_id TEXT NOT NULL,
+                    predecessor_epoch INTEGER NOT NULL CHECK (predecessor_epoch >= 0),
+                    predecessor_digest TEXT NOT NULL,
+                    successor_epoch INTEGER NOT NULL CHECK (successor_epoch >= 1),
+                    successor_digest TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    transition_claim TEXT NOT NULL,
+                    FOREIGN KEY(subject_id, predecessor_epoch)
+                        REFERENCES subject_epochs(subject_id, epoch),
+                    FOREIGN KEY(subject_id, successor_epoch)
+                        REFERENCES subject_epochs(subject_id, epoch)
+                );
+
+                CREATE UNIQUE INDEX IF NOT EXISTS
+                    subject_epoch_transitions_successor_uq
+                    ON subject_epoch_transitions(subject_id, successor_epoch);
 
                 CREATE TABLE IF NOT EXISTS evaluation_events (
                     event_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -289,57 +342,264 @@ class DriftLedger:
             separators=(",", ":"),
         )
 
-    def _bind_subject_epoch(
+    def register_subject_epoch(
         self,
+        subject: MonitoredSubject,
+    ) -> SubjectEpochRegistrationReceipt:
+        """Explicitly bootstrap one monitored subject lineage at epoch zero."""
+        if type(subject) is not MonitoredSubject:
+            raise ValueError("subject must be exact MonitoredSubject")
+        if subject.epoch != 0:
+            raise StaleGenerationError(
+                "subject bootstrap registration requires epoch 0"
+            )
+        manifest_json = self._subject_manifest_json(subject)
+        with closing(self._connect()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            rows = db.execute(
+                """
+                SELECT * FROM subject_epochs
+                 WHERE subject_id=?
+                 ORDER BY epoch
+                """,
+                (subject.subject_id,),
+            ).fetchall()
+            if rows:
+                if (
+                    len(rows) == 1
+                    and int(rows[0]["epoch"]) == 0
+                    and str(rows[0]["subject_digest"])
+                    == subject.configuration_digest
+                    and str(rows[0]["manifest_json"]) == manifest_json
+                ):
+                    return SubjectEpochRegistrationReceipt(
+                        subject_id=subject.subject_id,
+                        epoch=0,
+                        subject_digest=subject.configuration_digest,
+                    )
+                raise StaleGenerationError(
+                    "subject lineage is already registered"
+                )
+            db.execute(
+                """
+                INSERT INTO subject_epochs(
+                    subject_id,epoch,subject_digest,manifest_json
+                ) VALUES(?,?,?,?)
+                """,
+                (
+                    subject.subject_id,
+                    subject.epoch,
+                    subject.configuration_digest,
+                    manifest_json,
+                ),
+            )
+            return SubjectEpochRegistrationReceipt(
+                subject_id=subject.subject_id,
+                epoch=subject.epoch,
+                subject_digest=subject.configuration_digest,
+            )
+
+    def transition_subject_epoch(
+        self,
+        *,
+        predecessor: MonitoredSubject,
+        successor: MonitoredSubject,
+        transition: SubjectEpochTransition,
+    ) -> SubjectEpochTransitionReceipt:
+        """Explicitly advance one registered subject lineage by one epoch."""
+        if type(predecessor) is not MonitoredSubject:
+            raise ValueError("predecessor must be exact MonitoredSubject")
+        if type(successor) is not MonitoredSubject:
+            raise ValueError("successor must be exact MonitoredSubject")
+        if type(transition) is not SubjectEpochTransition:
+            raise ValueError(
+                "transition must be exact SubjectEpochTransition"
+            )
+        if predecessor.subject_id != successor.subject_id:
+            raise ValueError(
+                "subject transition predecessor/successor subject id mismatch"
+            )
+        if transition.subject_id != predecessor.subject_id:
+            raise ValueError("subject transition subject id mismatch")
+        if transition.predecessor_epoch != predecessor.epoch:
+            raise ValueError("subject transition predecessor epoch mismatch")
+        if transition.successor_epoch != successor.epoch:
+            raise ValueError("subject transition successor epoch mismatch")
+        if (
+            transition.predecessor_digest
+            != predecessor.configuration_digest
+        ):
+            raise ValueError("subject transition predecessor digest mismatch")
+        if transition.successor_digest != successor.configuration_digest:
+            raise ValueError("subject transition successor digest mismatch")
+
+        predecessor_manifest = self._subject_manifest_json(predecessor)
+        successor_manifest = self._subject_manifest_json(successor)
+        with closing(self._connect()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            if db.execute(
+                """
+                SELECT 1 FROM subject_epoch_transitions
+                 WHERE transition_id=? OR transition_digest=?
+                """,
+                (transition.transition_id, transition.digest),
+            ).fetchone():
+                raise StaleGenerationError(
+                    "subject epoch transition has already been consumed"
+                )
+
+            latest = db.execute(
+                """
+                SELECT * FROM subject_epochs
+                 WHERE subject_id=?
+                 ORDER BY epoch DESC
+                 LIMIT 1
+                """,
+                (predecessor.subject_id,),
+            ).fetchone()
+            if latest is None:
+                raise StaleGenerationError(
+                    "subject epoch transition requires registered predecessor"
+                )
+            if int(latest["epoch"]) != predecessor.epoch:
+                raise StaleGenerationError(
+                    "subject epoch transition predecessor is stale"
+                )
+            if (
+                str(latest["subject_digest"])
+                != predecessor.configuration_digest
+                or str(latest["manifest_json"]) != predecessor_manifest
+            ):
+                raise StaleGenerationError(
+                    "subject epoch transition predecessor binding mismatch"
+                )
+            if successor.epoch != predecessor.epoch + 1:
+                raise StaleGenerationError(
+                    "subject epoch transition must advance exactly one"
+                )
+            if db.execute(
+                """
+                SELECT 1 FROM subject_epochs
+                 WHERE subject_id=? AND epoch=?
+                """,
+                (successor.subject_id, successor.epoch),
+            ).fetchone():
+                raise StaleGenerationError(
+                    "subject epoch transition successor already exists"
+                )
+
+            db.execute(
+                """
+                INSERT INTO subject_epochs(
+                    subject_id,epoch,subject_digest,manifest_json
+                ) VALUES(?,?,?,?)
+                """,
+                (
+                    successor.subject_id,
+                    successor.epoch,
+                    successor.configuration_digest,
+                    successor_manifest,
+                ),
+            )
+            db.execute(
+                """
+                INSERT INTO subject_epoch_transitions(
+                    transition_digest,transition_id,subject_id,
+                    predecessor_epoch,predecessor_digest,
+                    successor_epoch,successor_digest,reason,
+                    transition_claim
+                ) VALUES(?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    transition.digest,
+                    transition.transition_id,
+                    transition.subject_id,
+                    transition.predecessor_epoch,
+                    transition.predecessor_digest,
+                    transition.successor_epoch,
+                    transition.successor_digest,
+                    transition.reason,
+                    transition.transition_claim,
+                ),
+            )
+            row = db.execute(
+                """
+                SELECT * FROM subject_epoch_transitions
+                 WHERE transition_digest=?
+                """,
+                (transition.digest,),
+            ).fetchone()
+            if row is None:
+                raise StaleGenerationError(
+                    "subject epoch transition readback missing"
+                )
+            return self._transition_row_to_receipt(row)
+
+    @staticmethod
+    def _transition_row_to_receipt(
+        row: sqlite3.Row,
+    ) -> SubjectEpochTransitionReceipt:
+        return SubjectEpochTransitionReceipt(
+            transition_digest=str(row["transition_digest"]),
+            transition_id=str(row["transition_id"]),
+            subject_id=str(row["subject_id"]),
+            predecessor_epoch=int(row["predecessor_epoch"]),
+            predecessor_digest=str(row["predecessor_digest"]),
+            successor_epoch=int(row["successor_epoch"]),
+            successor_digest=str(row["successor_digest"]),
+            reason=str(row["reason"]),
+            transition_claim=str(row["transition_claim"]),
+        )
+
+    def subject_epoch_transition_receipt(
+        self,
+        transition_id: str,
+    ) -> SubjectEpochTransitionReceipt | None:
+        if type(transition_id) is not str or not transition_id.strip():
+            raise ValueError(
+                "transition_id must be a non-empty exact string"
+            )
+        with closing(self._connect()) as db, db:
+            row = db.execute(
+                """
+                SELECT * FROM subject_epoch_transitions
+                 WHERE transition_id=?
+                """,
+                (transition_id,),
+            ).fetchone()
+            return (
+                self._transition_row_to_receipt(row)
+                if row is not None
+                else None
+            )
+
+    @classmethod
+    def _assert_registered_subject_exact(
+        cls,
         db: sqlite3.Connection,
         subject: MonitoredSubject,
     ) -> None:
-        manifest_json = self._subject_manifest_json(subject)
-        existing = db.execute(
+        row = db.execute(
             """
             SELECT * FROM subject_epochs
              WHERE subject_id=? AND epoch=?
             """,
             (subject.subject_id, subject.epoch),
         ).fetchone()
-        if existing is not None:
-            if (
-                str(existing["subject_digest"]) != subject.configuration_digest
-                or str(existing["manifest_json"]) != manifest_json
-            ):
-                raise StaleGenerationError(
-                    "subject epoch cannot be rebound to a different configuration"
-                )
-            return
-
-        latest = db.execute(
-            """
-            SELECT MAX(epoch) AS max_epoch
-              FROM subject_epochs
-             WHERE subject_id=?
-            """,
-            (subject.subject_id,),
-        ).fetchone()
-        if latest is not None and latest["max_epoch"] is not None:
-            expected_next = int(latest["max_epoch"]) + 1
-            if subject.epoch != expected_next:
-                raise StaleGenerationError(
-                    "new subject epoch must advance exactly one beyond "
-                    f"the latest registered epoch {expected_next - 1}"
-                )
-        db.execute(
-            """
-            INSERT INTO subject_epochs(
-                subject_id,epoch,subject_digest,manifest_json
-            ) VALUES(?,?,?,?)
-            """,
-            (
-                subject.subject_id,
-                subject.epoch,
-                subject.configuration_digest,
-                manifest_json,
-            ),
-        )
+        if row is None:
+            raise StaleGenerationError(
+                "monitored subject epoch is not registered; "
+                "use explicit registration/transition first"
+            )
+        if (
+            str(row["subject_digest"]) != subject.configuration_digest
+            or str(row["manifest_json"])
+            != cls._subject_manifest_json(subject)
+        ):
+            raise StaleGenerationError(
+                "registered monitored subject binding mismatch"
+            )
+        cls._assert_subject_epoch_current(db, subject)
 
     @staticmethod
     def _assert_subject_epoch_current(
@@ -429,8 +689,7 @@ class DriftLedger:
             ).fetchone()
             if row is None:
                 if subject is not None:
-                    self._bind_subject_epoch(db, subject)
-                    self._assert_subject_epoch_current(db, subject)
+                    self._assert_registered_subject_exact(db, subject)
                 if expected_generation != 0:
                     raise StaleGenerationError(
                         "new session requires expected_generation=0"
@@ -495,7 +754,7 @@ class DriftLedger:
                         "monitored subject epoch changed inside an existing session"
                     )
                 if subject is not None:
-                    self._assert_subject_epoch_current(db, subject)
+                    self._assert_registered_subject_exact(db, subject)
 
             if turn_index <= last_turn:
                 raise StaleGenerationError(

@@ -28,6 +28,10 @@ from driftguard.model import raw_bytes_digest
 
 CAL = SourceBinding("calibration://r10", "v1")
 CAL_DIGEST = raw_bytes_digest(b"r10-calibration")
+PH_PARAMS = SourceBinding("comparison://page-hinkley", "v1")
+PH_PARAMS_DIGEST = raw_bytes_digest(b"r10-page-hinkley-parameters")
+EWMA_PARAMS = SourceBinding("comparison://ewma", "v1")
+EWMA_PARAMS_DIGEST = raw_bytes_digest(b"r10-ewma-parameters")
 
 
 def cusum_spec():
@@ -138,6 +142,8 @@ def candidates(spec, *, ph_threshold=0.50, ewma_threshold=0.50):
         DetectorCandidate(
             candidate_id="page-hinkley",
             algorithm=DetectorAlgorithm.PAGE_HINKLEY,
+            parameterization=PH_PARAMS,
+            parameterization_digest=PH_PARAMS_DIGEST,
             page_hinkley=(
                 PageHinkleyDimensionPolicy(
                     "d",
@@ -150,6 +156,8 @@ def candidates(spec, *, ph_threshold=0.50, ewma_threshold=0.50):
         DetectorCandidate(
             candidate_id="ewma",
             algorithm=DetectorAlgorithm.EWMA,
+            parameterization=EWMA_PARAMS,
+            parameterization_digest=EWMA_PARAMS_DIGEST,
             ewma=(
                 EwmaDimensionPolicy(
                     "d",
@@ -280,6 +288,8 @@ class DetectorComparisonTests(unittest.TestCase):
             DetectorCandidate(
                 candidate_id="ewma-sweep",
                 algorithm=DetectorAlgorithm.EWMA,
+                parameterization=SourceBinding("comparison://ewma-sweep", "v1"),
+                parameterization_digest=raw_bytes_digest(b"ewma-sweep"),
                 ewma=(
                     EwmaDimensionPolicy(
                         "d",
@@ -328,6 +338,8 @@ class DetectorComparisonTests(unittest.TestCase):
         bad_ph = DetectorCandidate(
             candidate_id="page-hinkley",
             algorithm=DetectorAlgorithm.PAGE_HINKLEY,
+            parameterization=PH_PARAMS,
+            parameterization_digest=PH_PARAMS_DIGEST,
             page_hinkley=(
                 PageHinkleyDimensionPolicy(
                     "other",
@@ -352,6 +364,57 @@ class DetectorComparisonTests(unittest.TestCase):
                 corpus=c,
                 cusum_spec=spec,
             )
+
+    def test_non_cusum_parameterization_provenance_is_required(self):
+        with self.assertRaisesRegex(
+            ValueError,
+            "parameterization SourceBinding",
+        ):
+            DetectorCandidate(
+                candidate_id="page-hinkley",
+                algorithm=DetectorAlgorithm.PAGE_HINKLEY,
+                page_hinkley=(
+                    PageHinkleyDimensionPolicy(
+                        "d",
+                        delta=0.01,
+                        alarm_threshold=0.50,
+                        burn_in=1,
+                    ),
+                ),
+            )
+
+    def test_burn_in_cannot_hide_pre_shift_exposure(self):
+        with self.assertRaisesRegex(
+            ValueError,
+            "cannot suppress any frozen qualification exposure",
+        ):
+            PageHinkleyDimensionPolicy(
+                "d",
+                delta=0.01,
+                alarm_threshold=0.50,
+                burn_in=5,
+            )
+        with self.assertRaisesRegex(
+            ValueError,
+            "cannot suppress any frozen qualification exposure",
+        ):
+            EwmaDimensionPolicy(
+                "d",
+                baseline_mean=0.10,
+                smoothing=0.80,
+                alarm_threshold=0.50,
+                burn_in=5,
+            )
+
+    def test_r10_requires_exact_declared_algorithm_set(self):
+        spec = cusum_spec()
+        c = corpus()
+        cal = calibration_plan(c, spec)
+        with self.assertRaisesRegex(
+            ValueError,
+            "requires exactly CUSUM, PAGE_HINKLEY, and EWMA",
+        ):
+            comparison_plan(c, cal, candidates(spec)[:2])
 
     def test_candidate_parameter_mutation_moves_comparison_plan_digest(self):
         spec = cusum_spec()

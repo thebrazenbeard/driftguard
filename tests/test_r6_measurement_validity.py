@@ -476,6 +476,19 @@ class R6MeasurementValidityTests(unittest.TestCase):
                 receipt.behavioral_decision,
             )
             self.assertIsNone(receipt.aggregate_drift)
+            self.assertEqual(
+                commit.evaluation.dimension_scores,
+                receipt.dimension_scores,
+            )
+            self.assertEqual(
+                commit.evaluation.evidence_trace,
+                receipt.evidence_trace,
+            )
+            self.assertEqual(2, len(receipt.evidence_trace))
+            self.assertEqual(
+                {"probe://judge-a", "probe://judge-b"},
+                {item[2] for item in receipt.evidence_trace},
+            )
         finally:
             os.unlink(handle.name)
 

@@ -321,6 +321,49 @@ class ActuatorDisposition(StrEnum):
     READBACK_REQUIRED = "READBACK_REQUIRED"
 
 
+class BehavioralReplayDisposition(StrEnum):
+    STABLE = "STABLE"
+    DEGRADED = "DEGRADED"
+    RELAPSE = "RELAPSE"
+    INDETERMINATE = "INDETERMINATE"
+
+
+def classify_behavioral_evaluation(
+    *,
+    state: SaveState,
+    evaluation: Evaluation,
+) -> BehavioralReplayDisposition:
+    """Classify observed behavior independently of reload scheduling.
+
+    reload_required is an operational directive. A periodic reload can be
+    due while the admitted behavior remains below every drift threshold.
+    """
+    if type(state) is not SaveState:
+        raise ValueError("state must be exact SaveState")
+    if type(evaluation) is not Evaluation:
+        raise ValueError("evaluation must be exact Evaluation")
+    if evaluation.state_digest != state.digest:
+        raise ValueError("behavioral evaluation state digest mismatch")
+    if type(evaluation.decision) is not Decision:
+        raise ValueError("evaluation decision must be exact Decision")
+
+    reasons = set(evaluation.reasons)
+    if "critical_dimension_breach" in reasons:
+        return BehavioralReplayDisposition.RELAPSE
+    if (
+        evaluation.decision is Decision.UNKNOWN
+        or evaluation.aggregate_drift is None
+    ):
+        return BehavioralReplayDisposition.INDETERMINATE
+
+    aggregate = float(evaluation.aggregate_drift)
+    if aggregate >= state.policy.reload_threshold:
+        return BehavioralReplayDisposition.RELAPSE
+    if aggregate >= state.policy.warn_threshold:
+        return BehavioralReplayDisposition.DEGRADED
+    return BehavioralReplayDisposition.STABLE
+
+
 @dataclass(frozen=True)
 class ActuatorReconciliation:
     disposition: ActuatorDisposition
@@ -436,11 +479,14 @@ class BehavioralRecoveryReceipt:
 def qualify_post_reload_behavior(
     *,
     session_id: str,
+    state: SaveState,
     acknowledgement: ReloadAcknowledgement,
     acknowledgement_result: AcknowledgementResult,
     replay_commit: CommitResult,
     ledger: DriftLedger,
 ) -> BehavioralRecoveryReceipt:
+    if type(state) is not SaveState:
+        raise ValueError("state must be exact SaveState")
     if type(acknowledgement) is not ReloadAcknowledgement:
         raise ValueError("acknowledgement must be exact ReloadAcknowledgement")
     if type(acknowledgement_result) is not AcknowledgementResult:
@@ -487,6 +533,8 @@ def qualify_post_reload_behavior(
         or replay_receipt.reload_required is not replay.reload_required
     ):
         raise ValueError("behavioral replay does not match durable ledger receipt")
+    if state.digest != acknowledgement.state_digest:
+        raise ValueError("behavioral recovery state does not match acknowledgement")
     if replay.state_digest != acknowledgement.state_digest:
         raise ValueError("behavioral replay state digest mismatch")
     if replay.turn_index <= acknowledgement.turn_index:
@@ -495,8 +543,15 @@ def qualify_post_reload_behavior(
         raise ValueError("behavioral replay generation does not follow acknowledgement")
     if replay_commit.successor_generation != replay.generation + 1:
         raise ValueError("behavioral replay commit generation mismatch")
-    if replay.decision is not Decision.STABLE or replay.reload_required is not False:
-        raise ValueError("behavioral replay did not establish stable bounded recovery")
+    behavioral = classify_behavioral_evaluation(
+        state=state,
+        evaluation=replay,
+    )
+    if behavioral is not BehavioralReplayDisposition.STABLE:
+        raise ValueError(
+            "behavioral replay did not establish stable bounded recovery: "
+            f"{behavioral.value}"
+        )
 
     return BehavioralRecoveryReceipt(
         ack_id=acknowledgement.ack_id,
@@ -564,6 +619,7 @@ __all__ = [
     "ActuatorReceipt",
     "ActuatorReconciliation",
     "BehavioralRecoveryReceipt",
+    "BehavioralReplayDisposition",
     "EvaluatorProbeContract",
     "ExternalEvaluatorRequest",
     "ExternalReceiptChainEntry",
@@ -572,6 +628,7 @@ __all__ = [
     "build_evaluator_request",
     "commit_evaluator_response",
     "build_reload_directive",
+    "classify_behavioral_evaluation",
     "qualify_post_reload_behavior",
     "reconcile_actuator_receipt",
     "validate_evaluator_response",

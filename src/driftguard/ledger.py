@@ -131,6 +131,8 @@ class DriftLedger:
                     registration_event_id INTEGER NOT NULL
                         CHECK (registration_event_id >= 1),
                     registration_evaluation_digest TEXT NOT NULL,
+                    expected_session_generation INTEGER NOT NULL
+                        CHECK (expected_session_generation >= 0),
                     generation INTEGER NOT NULL CHECK (generation >= 0),
                     last_evaluation_event_id INTEGER NOT NULL
                         CHECK (last_evaluation_event_id >= 1),
@@ -157,6 +159,9 @@ class DriftLedger:
                     observation_count INTEGER NOT NULL,
                     consecutive_unknown INTEGER NOT NULL,
                     gap_invalid INTEGER NOT NULL,
+                    session_generation_before INTEGER NOT NULL,
+                    session_generation_after INTEGER NOT NULL,
+                    turn_gap INTEGER NOT NULL,
                     dimension_scores TEXT NOT NULL,
                     cusum_values TEXT NOT NULL,
                     alarm_dimensions TEXT NOT NULL,
@@ -767,10 +772,11 @@ class DriftLedger:
                     subject_epoch,registration_digest,
                     registration_session_generation,
                     registration_event_id,registration_evaluation_digest,
-                    generation,last_evaluation_event_id,last_turn,
+                    expected_session_generation,generation,
+                    last_evaluation_event_id,last_turn,
                     observation_count,consecutive_unknown,gap_invalid,
                     cusum_values,alarm_dimensions
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     spec.detector_id,
@@ -785,6 +791,7 @@ class DriftLedger:
                     registration.session_generation,
                     registration.anchor_event_id,
                     registration.anchor_evaluation_digest,
+                    registration.session_generation,
                     0,
                     registration.anchor_event_id,
                     int(anchor["turn_index"]),
@@ -881,6 +888,17 @@ class DriftLedger:
                 raise StaleGenerationError(
                     "sequential evaluation subject epoch mismatch"
                 )
+            expected_session_generation = int(
+                detector["expected_session_generation"]
+            )
+            session_generation_before = int(event["generation_before"])
+            session_generation_after = int(event["generation_after"])
+            turn_gap = int(event["turn_index"]) - int(detector["last_turn"])
+            session_discontinuity = (
+                session_generation_before != expected_session_generation
+            )
+            turn_gap_exceeded = turn_gap > spec.max_turn_gap
+
             behavioral = event["behavioral_decision"]
             if behavioral is None:
                 raise StaleGenerationError(
@@ -909,6 +927,19 @@ class DriftLedger:
                 updated_cusum = previous_cusum
                 alarm_dimensions = prior_alarms
                 reasons = ("detector_evidence_gap_invalid",)
+            elif session_discontinuity or turn_gap_exceeded:
+                gap_invalid = True
+                status = SequentialStatus.INVALID_GAP
+                updated_cusum = previous_cusum
+                alarm_dimensions = prior_alarms
+                continuity_reasons = []
+                if session_discontinuity:
+                    continuity_reasons.append(
+                        "session_generation_discontinuity"
+                    )
+                if turn_gap_exceeded:
+                    continuity_reasons.append("turn_gap_exceeded")
+                reasons = tuple(continuity_reasons)
             elif Decision(str(behavioral)) is Decision.UNKNOWN:
                 consecutive_unknown += 1
                 updated_cusum = previous_cusum
@@ -955,6 +986,7 @@ class DriftLedger:
                    SET generation=?, last_evaluation_event_id=?,
                        last_turn=?, observation_count=?,
                        consecutive_unknown=?,gap_invalid=?,
+                       expected_session_generation=?,
                        cusum_values=?, alarm_dimensions=?
                  WHERE detector_id=? AND generation=?
                 """,
@@ -965,6 +997,7 @@ class DriftLedger:
                     observation_count,
                     consecutive_unknown,
                     int(gap_invalid),
+                    session_generation_after,
                     json.dumps(updated_cusum),
                     json.dumps(alarm_dimensions),
                     spec.detector_id,
@@ -989,6 +1022,9 @@ class DriftLedger:
                 observation_count=observation_count,
                 consecutive_unknown=consecutive_unknown,
                 gap_invalid=gap_invalid,
+                session_generation_before=session_generation_before,
+                session_generation_after=session_generation_after,
+                turn_gap=turn_gap,
                 dimension_scores=scores,
                 cusum_values=updated_cusum,
                 alarm_dimensions=alarm_dimensions,
@@ -1001,9 +1037,11 @@ class DriftLedger:
                     generation_before,generation_after,
                     evaluation_event_id,evaluation_digest,turn_index,
                     status,observation_count,consecutive_unknown,
-                    gap_invalid,dimension_scores,cusum_values,
+                    gap_invalid,session_generation_before,
+                    session_generation_after,turn_gap,
+                    dimension_scores,cusum_values,
                     alarm_dimensions,reasons
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     receipt.digest,
@@ -1018,6 +1056,9 @@ class DriftLedger:
                     receipt.observation_count,
                     receipt.consecutive_unknown,
                     int(receipt.gap_invalid),
+                    receipt.session_generation_before,
+                    receipt.session_generation_after,
+                    receipt.turn_gap,
                     json.dumps(receipt.dimension_scores),
                     json.dumps(receipt.cusum_values),
                     json.dumps(receipt.alarm_dimensions),

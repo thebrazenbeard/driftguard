@@ -231,6 +231,157 @@ class DetectorComparisonTests(unittest.TestCase):
         self.assertEqual(r9.family_metrics, cusum.family_metrics)
         self.assertEqual(r9.reasons, cusum.reasons)
 
+    def test_mixed_target_and_unrelated_alarm_is_collateral_for_all_candidates(self):
+        spec = SequentialDetectorSpec(
+            detector_id="r10-cusum-mixed",
+            session_id="r10-session",
+            state_digest=raw_bytes_digest(b"r10-state-mixed"),
+            measurement_digest=raw_bytes_digest(b"r10-measurement-mixed"),
+            subject_digest=raw_bytes_digest(b"r10-subject-mixed"),
+            subject_epoch=0,
+            calibration=CAL,
+            calibration_digest=CAL_DIGEST,
+            max_consecutive_unknown=1,
+            max_turn_gap=2,
+            dimensions=(
+                CusumDimensionPolicy(
+                    "d",
+                    baseline_mean=0.10,
+                    allowance=0.05,
+                    alarm_threshold=0.50,
+                ),
+                CusumDimensionPolicy(
+                    "e",
+                    baseline_mean=0.10,
+                    allowance=0.05,
+                    alarm_threshold=0.50,
+                ),
+            ),
+        )
+        rows = []
+        for index in range(25):
+            rows.append(
+                CalibrationTrajectory(
+                    trajectory_id=f"mixed-stable-{index}",
+                    family_id="mixed",
+                    regime=CalibrationTrajectoryRegime.STABLE,
+                    samples=tuple(
+                        (("d", 0.10), ("e", 0.10))
+                        for _ in range(8)
+                    ),
+                )
+            )
+            rows.append(
+                CalibrationTrajectory(
+                    trajectory_id=f"mixed-shifted-{index}",
+                    family_id="mixed",
+                    regime=CalibrationTrajectoryRegime.SHIFTED,
+                    samples=tuple(
+                        (("d", 0.10), ("e", 0.10))
+                        for _ in range(4)
+                    )
+                    + tuple(
+                        (("d", 0.80), ("e", 0.80))
+                        for _ in range(4)
+                    ),
+                    shift_index=4,
+                    shift_dimensions=("d",),
+                )
+            )
+        c = CalibrationCorpus(
+            corpus_id="r10-mixed-corpus",
+            version="1",
+            role=CalibrationCorpusRole.HOLDOUT_QUALIFICATION,
+            trajectories=tuple(rows),
+        )
+        policy = CalibrationFamilyPolicy(
+            family_id="mixed",
+            minimum_stable_trajectories=20,
+            minimum_shifted_trajectories=20,
+            stable_horizon_observations=8,
+            pre_shift_horizon_observations=4,
+            post_shift_horizon_observations=4,
+            maximum_stable_false_alarm_rate=0.15,
+            maximum_pre_shift_false_alarm_rate=0.15,
+            maximum_wrong_dimension_alarm_rate=0.15,
+            minimum_detection_rate=0.85,
+            maximum_mean_detection_delay=1.5,
+        )
+        cal = CalibrationPlan(
+            plan_id="r10-mixed-calibration",
+            detector_spec_digest=spec.digest,
+            corpus_digest=c.digest,
+            corpus_role=c.role,
+            family_policies=(policy,),
+        )
+        rows_candidates = (
+            DetectorCandidate(
+                candidate_id="cusum",
+                algorithm=DetectorAlgorithm.CUSUM,
+                cusum_spec_digest=spec.digest,
+            ),
+            DetectorCandidate(
+                candidate_id="page-hinkley",
+                algorithm=DetectorAlgorithm.PAGE_HINKLEY,
+                parameterization=PH_PARAMS,
+                parameterization_digest=PH_PARAMS_DIGEST,
+                page_hinkley=(
+                    PageHinkleyDimensionPolicy(
+                        "d",
+                        delta=0.01,
+                        alarm_threshold=0.50,
+                        burn_in=1,
+                    ),
+                    PageHinkleyDimensionPolicy(
+                        "e",
+                        delta=0.01,
+                        alarm_threshold=0.50,
+                        burn_in=1,
+                    ),
+                ),
+            ),
+            DetectorCandidate(
+                candidate_id="ewma",
+                algorithm=DetectorAlgorithm.EWMA,
+                parameterization=EWMA_PARAMS,
+                parameterization_digest=EWMA_PARAMS_DIGEST,
+                ewma=(
+                    EwmaDimensionPolicy(
+                        "d",
+                        baseline_mean=0.10,
+                        smoothing=0.80,
+                        alarm_threshold=0.50,
+                        burn_in=1,
+                    ),
+                    EwmaDimensionPolicy(
+                        "e",
+                        baseline_mean=0.10,
+                        smoothing=0.80,
+                        alarm_threshold=0.50,
+                        burn_in=1,
+                    ),
+                ),
+            ),
+        )
+        receipt = compare_detectors(
+            plan=comparison_plan(c, cal, rows_candidates),
+            calibration_plan=cal,
+            corpus=c,
+            cusum_spec=spec,
+        )
+        for result in receipt.candidate_results:
+            metrics = result.family_metrics[0]
+            self.assertEqual(25, metrics.detection.successes)
+            self.assertEqual(25, metrics.wrong_dimension_alarm.successes)
+            self.assertEqual(
+                25,
+                metrics.mixed_target_wrong_dimension_alarms,
+            )
+            self.assertIn(
+                "mixed:wrong_dimension_alarm_upper_bound_exceeded",
+                result.reasons,
+            )
+
     def test_design_comparison_never_qualifies_or_promotes(self):
         spec = cusum_spec()
         c = corpus(role=CalibrationCorpusRole.DESIGN)

@@ -10,6 +10,7 @@ from .model import (
     DriftEvidence,
     MonitoredSubject,
     ReloadAcknowledgement,
+    SubjectEpochTransition,
     SaveState,
     raw_bytes_digest,
 )
@@ -86,6 +87,16 @@ def main(argv: list[str] | None = None) -> int:
     subject_digest = sub.add_parser("subject-digest")
     subject_digest.add_argument("--subject", required=True)
 
+    register_subject = sub.add_parser("register-subject")
+    register_subject.add_argument("--subject", required=True)
+    register_subject.add_argument("--db", required=True)
+
+    transition_subject = sub.add_parser("transition-subject")
+    transition_subject.add_argument("--predecessor", required=True)
+    transition_subject.add_argument("--successor", required=True)
+    transition_subject.add_argument("--transition", required=True)
+    transition_subject.add_argument("--db", required=True)
+
     restore = sub.add_parser("restore-packet")
     restore.add_argument("--state", required=True)
 
@@ -123,6 +134,50 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "subject-digest":
         print(_subject(args.subject).configuration_digest)
+        return 0
+    if args.command == "register-subject":
+        ledger = DriftLedger(args.db)
+        receipt = ledger.register_subject_epoch(_subject(args.subject))
+        print(
+            json.dumps(
+                {
+                    "registration_digest": receipt.digest,
+                    "subject_id": receipt.subject_id,
+                    "epoch": receipt.epoch,
+                    "subject_digest": receipt.subject_digest,
+                },
+                sort_keys=True,
+                indent=2,
+            )
+        )
+        return 0
+    if args.command == "transition-subject":
+        ledger = DriftLedger(args.db)
+        transition = SubjectEpochTransition.from_mapping(
+            _load_json(args.transition)
+        )
+        receipt = ledger.transition_subject_epoch(
+            predecessor=_subject(args.predecessor),
+            successor=_subject(args.successor),
+            transition=transition,
+        )
+        print(
+            json.dumps(
+                {
+                    "transition_digest": receipt.transition_digest,
+                    "transition_id": receipt.transition_id,
+                    "subject_id": receipt.subject_id,
+                    "predecessor_epoch": receipt.predecessor_epoch,
+                    "predecessor_digest": receipt.predecessor_digest,
+                    "successor_epoch": receipt.successor_epoch,
+                    "successor_digest": receipt.successor_digest,
+                    "reason": receipt.reason,
+                    "transition_claim": receipt.transition_claim,
+                },
+                sort_keys=True,
+                indent=2,
+            )
+        )
         return 0
 
     state = _state(args.state)

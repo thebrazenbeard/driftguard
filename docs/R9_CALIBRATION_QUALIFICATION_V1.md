@@ -70,6 +70,7 @@ Every family policy freezes:
 - exact post-shift horizon;
 - maximum stable false-alarm rate;
 - maximum pre-shift false-alarm rate;
+- maximum wrong-dimension alarm rate;
 - minimum detection rate;
 - maximum mean detection delay.
 
@@ -146,14 +147,15 @@ For every shifted trajectory:
 R9 records:
 
 - pre-shift false-alarm rate + 95% Wilson interval;
+- wrong-dimension alarm rate + 95% Wilson interval;
 - detection rate + 95% Wilson interval;
 - detection delays;
-- mean detection delay;
-- wrong-dimension alarm count.
+- mean detection delay.
 
 Acceptance uses:
 
 - the **upper** Wilson bound for pre-shift false alarms;
+- the **upper** Wilson bound for wrong-dimension alarms;
 - the **lower** Wilson bound for detection rate;
 - the observed mean delay against its frozen maximum.
 

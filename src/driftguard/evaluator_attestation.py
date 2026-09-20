@@ -220,8 +220,6 @@ class EvaluatorAttestationVerification:
         turn_index: int,
         generation_before: int,
         evidence_digest: str,
-        subject_digest: str | None,
-        subject_epoch: int | None,
         request_digest: str,
         response_digest: str,
         policy_digest: str,
@@ -231,6 +229,8 @@ class EvaluatorAttestationVerification:
         algorithm: EvaluatorAttestationAlgorithm,
         signature_sha256: str,
         covered_sources: tuple[SourceBinding, ...],
+        subject_digest: str | None = None,
+        subject_epoch: int | None = None,
         _verified_token: object | None = None,
     ) -> None:
         if _verified_token is not _VERIFIED_ATTESTATION_TOKEN:

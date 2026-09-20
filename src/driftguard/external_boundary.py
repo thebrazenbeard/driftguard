@@ -34,6 +34,7 @@ class EvaluatorProbeContract:
     dimensions: tuple[str, ...]
     calibration_ref: str | None = None
     calibration_version: str | None = None
+    calibration_digest: str | None = None
     correlation_group: str | None = None
     score_scale: str | None = None
 
@@ -54,6 +55,11 @@ class EvaluatorProbeContract:
         if self.calibration_ref is not None:
             _nonempty(self.calibration_ref, "calibration_ref")
             _nonempty(self.calibration_version, "calibration_version")
+        if self.calibration_digest is not None:
+            require_sha256_digest(
+                self.calibration_digest,
+                "calibration_digest",
+            )
         if self.correlation_group is not None:
             _nonempty(self.correlation_group, "correlation_group")
         if self.score_scale is not None:
@@ -75,6 +81,8 @@ class EvaluatorProbeContract:
                 "ref": self.calibration_ref,
                 "version": self.calibration_version,
             }
+        if self.calibration_digest is not None:
+            payload["calibration_digest"] = self.calibration_digest
         if self.correlation_group is not None:
             payload["correlation_group"] = self.correlation_group
         if self.score_scale is not None:
@@ -212,6 +220,7 @@ def build_evaluator_request(
                         if source.calibration is not None
                         else None
                     ),
+                    source.calibration_digest,
                     source.correlation_group,
                     source.score_scale,
                 )

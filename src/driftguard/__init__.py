@@ -64,6 +64,18 @@ __all__ = [
     "EwmaDimensionPolicy",
     "PageHinkleyDimensionPolicy",
     "compare_detectors",
+    "BenchmarkCorpusManifest",
+    "BenchmarkFamilyManifest",
+    "BenchmarkPhenomenon",
+    "BenchmarkPrecommitPlan",
+    "BenchmarkRunReceipt",
+    "BenchmarkRunResult",
+    "HoldoutCorpusSeal",
+    "HoldoutRevealReceipt",
+    "canonical_corpus_artifact_bytes",
+    "trajectory_content_digest",
+    "reveal_holdout",
+    "run_precommitted_holdout",
 ]
 
 from .sequential import (
@@ -98,4 +110,19 @@ from .comparison import (
     EwmaDimensionPolicy,
     PageHinkleyDimensionPolicy,
     compare_detectors,
+)
+
+from .benchmark import (
+    BenchmarkCorpusManifest,
+    BenchmarkFamilyManifest,
+    BenchmarkPhenomenon,
+    BenchmarkPrecommitPlan,
+    BenchmarkRunReceipt,
+    BenchmarkRunResult,
+    HoldoutCorpusSeal,
+    HoldoutRevealReceipt,
+    canonical_corpus_artifact_bytes,
+    trajectory_content_digest,
+    reveal_holdout,
+    run_precommitted_holdout,
 )

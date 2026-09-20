@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import closing
 from dataclasses import dataclass
+import json
 import sqlite3
 
 from .core import DriftGuardEngine, StaleGenerationError
@@ -44,7 +45,11 @@ class EvaluationEventReceipt:
     reload_required: bool
     aggregate_drift: float | None
     reasons: tuple[str, ...]
+    dimension_scores: tuple[tuple[str, float], ...] = ()
     behavioral_decision: Decision | None = None
+    evidence_trace: tuple[
+        tuple[str, str, str, str, float, str, str], ...
+    ] = ()
 
 
 @dataclass(frozen=True)
@@ -104,7 +109,9 @@ class DriftLedger:
                     reload_required INTEGER NOT NULL DEFAULT 0,
                     aggregate_drift REAL NULL,
                     reasons TEXT NOT NULL,
+                    dimension_scores TEXT NULL,
                     behavioral_decision TEXT NULL,
+                    evidence_trace TEXT NULL,
                     FOREIGN KEY(session_id) REFERENCES sessions(session_id)
                 );
 
@@ -199,10 +206,20 @@ class DriftLedger:
                 "ALTER TABLE evaluation_events "
                 "ADD COLUMN reload_required INTEGER NOT NULL DEFAULT 0"
             )
+        if "dimension_scores" not in event_columns:
+            db.execute(
+                "ALTER TABLE evaluation_events "
+                "ADD COLUMN dimension_scores TEXT NULL"
+            )
         if "behavioral_decision" not in event_columns:
             db.execute(
                 "ALTER TABLE evaluation_events "
                 "ADD COLUMN behavioral_decision TEXT NULL"
+            )
+        if "evidence_trace" not in event_columns:
+            db.execute(
+                "ALTER TABLE evaluation_events "
+                "ADD COLUMN evidence_trace TEXT NULL"
             )
 
     def evaluate_and_commit(
@@ -316,8 +333,9 @@ class DriftLedger:
                     session_id,generation_before,generation_after,turn_index,
                     state_digest,observation_digest,evidence_digest,
                     evaluation_digest,decision,reload_required,
-                    aggregate_drift,reasons,behavioral_decision
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    aggregate_drift,reasons,dimension_scores,
+                    behavioral_decision,evidence_trace
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     session_id,
@@ -332,9 +350,15 @@ class DriftLedger:
                     int(evaluation.reload_required),
                     evaluation.aggregate_drift,
                     "|".join(evaluation.reasons),
+                    json.dumps(evaluation.dimension_scores),
                     (
                         evaluation.behavioral_decision.value
                         if evaluation.behavioral_decision is not None
+                        else None
+                    ),
+                    (
+                        json.dumps(evaluation.evidence_trace)
+                        if evaluation.evidence_trace
                         else None
                     ),
                 ),
@@ -502,10 +526,34 @@ class DriftLedger:
                     for item in str(row["reasons"]).split("|")
                     if item
                 ),
+                dimension_scores=(
+                    tuple(
+                        (str(item[0]), float(item[1]))
+                        for item in json.loads(str(row["dimension_scores"]))
+                    )
+                    if row["dimension_scores"] is not None
+                    else ()
+                ),
                 behavioral_decision=(
                     Decision(str(row["behavioral_decision"]))
                     if row["behavioral_decision"] is not None
                     else None
+                ),
+                evidence_trace=(
+                    tuple(
+                        (
+                            str(item[0]),
+                            str(item[1]),
+                            str(item[2]),
+                            str(item[3]),
+                            float(item[4]),
+                            str(item[5]),
+                            str(item[6]),
+                        )
+                        for item in json.loads(str(row["evidence_trace"]))
+                    )
+                    if row["evidence_trace"] is not None
+                    else ()
                 ),
             )
 

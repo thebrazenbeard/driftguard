@@ -28,10 +28,14 @@ The signed subject binds:
 - exact evaluator response digest;
 - exact attestation-policy digest;
 - governed key id;
+- SHA-256 fingerprint of the exact key material;
+- positive key epoch;
 - exact algorithm id.
 
 The reference implementation uses HMAC-SHA256 and requires at least 32 bytes of key
-material. It uses constant-time tag comparison.
+material. The policy digest binds SHA-256(key_material) plus a positive key epoch.
+The builder and verifier reject supplied key material whose fingerprint does not
+match the frozen policy. Tag comparison is constant-time.
 
 The policy additionally binds the exact source/version identities that the key is
 allowed to authenticate. Every source present in the evaluator response must be
@@ -63,7 +67,11 @@ This does **not** prove:
 - model identity, consciousness, or hidden state;
 - provider-side execution or token consumption.
 
-Key custody, key-to-provider identity binding, rotation, revocation, hardware-backed
+The key fingerprint proves that the same frozen key material was used; it still does
+not establish who controls that key. The epoch makes explicit key rotation move the
+policy/attestation subject.
+
+Key custody, key-to-provider identity binding, revocation, hardware-backed
 attestation, and remote trust roots remain external governance problems.
 
 ## Compatibility
@@ -74,6 +82,20 @@ Existing structural evaluator-response validation remains available and retains 
 existing claim ceiling. A caller must explicitly use
 `commit_attested_evaluator_response()` to obtain the stronger key-possession
 verification result.
+
+The attested commit path writes a dedicated immutable ledger receipt bound to the
+exact session, committed evaluation digest, evaluator request/response digests,
+attestation policy digest, key id, key fingerprint, key epoch, algorithm,
+signature digest, and covered source/version set. Readback equality is part of the
+stronger claim. An ordinary evaluator commit has no such receipt and therefore
+remains ordinary.
+
+If structural evaluation commit succeeds but attestation persistence does not, the
+evaluation is not silently upgraded: absence of the durable attestation receipt is
+authoritative for the attested/unattested distinction.
+
+The stronger verification and attested-commit objects are verifier/factory-created
+only; ordinary direct construction is rejected.
 
 This source candidate performs no network call, provider mutation, credential
 change, reload effect, deployment, or runtime cutover.

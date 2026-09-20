@@ -18,6 +18,7 @@ class SequentialStatus(StrEnum):
     MONITORING = "MONITORING"
     ALARM = "ALARM"
     SKIPPED_UNKNOWN = "SKIPPED_UNKNOWN"
+    INVALID_GAP = "INVALID_GAP"
 
 
 def _nonempty(value: Any, label: str) -> str:
@@ -76,6 +77,7 @@ class SequentialDetectorSpec:
     subject_epoch: int
     calibration: SourceBinding
     calibration_digest: str
+    max_consecutive_unknown: int
     dimensions: tuple[CusumDimensionPolicy, ...]
 
     def __post_init__(self) -> None:
@@ -106,6 +108,14 @@ class SequentialDetectorSpec:
             self.calibration_digest,
             "detector calibration digest",
         )
+        if (
+            type(self.max_consecutive_unknown) is not int
+            or isinstance(self.max_consecutive_unknown, bool)
+            or self.max_consecutive_unknown < 0
+        ):
+            raise ValueError(
+                "max_consecutive_unknown must be a non-negative integer"
+            )
         if type(self.dimensions) is not tuple or not self.dimensions:
             raise ValueError(
                 "detector dimensions must be a non-empty tuple"
@@ -133,6 +143,7 @@ class SequentialDetectorSpec:
             "subject_epoch": self.subject_epoch,
             "calibration": asdict(self.calibration),
             "calibration_digest": self.calibration_digest,
+            "max_consecutive_unknown": self.max_consecutive_unknown,
             "dimensions": [
                 item.payload()
                 for item in sorted(
@@ -177,6 +188,74 @@ class SequentialDetectorSpec:
 
 
 @dataclass(frozen=True)
+class SequentialRegistrationReceipt:
+    detector_id: str
+    spec_digest: str
+    session_id: str
+    session_generation: int
+    anchor_event_id: int
+    anchor_evaluation_digest: str
+    subject_digest: str
+    subject_epoch: int
+
+    def __post_init__(self) -> None:
+        _nonempty(self.detector_id, "registration detector id")
+        require_sha256_digest(
+            self.spec_digest,
+            "registration spec digest",
+        )
+        _nonempty(self.session_id, "registration session id")
+        if (
+            type(self.session_generation) is not int
+            or isinstance(self.session_generation, bool)
+            or self.session_generation < 0
+        ):
+            raise ValueError(
+                "registration session generation must be non-negative int"
+            )
+        if (
+            type(self.anchor_event_id) is not int
+            or isinstance(self.anchor_event_id, bool)
+            or self.anchor_event_id < 1
+        ):
+            raise ValueError(
+                "registration anchor_event_id must be >= 1"
+            )
+        require_sha256_digest(
+            self.anchor_evaluation_digest,
+            "registration anchor evaluation digest",
+        )
+        require_sha256_digest(
+            self.subject_digest,
+            "registration subject digest",
+        )
+        if (
+            type(self.subject_epoch) is not int
+            or isinstance(self.subject_epoch, bool)
+            or self.subject_epoch < 0
+        ):
+            raise ValueError(
+                "registration subject epoch must be non-negative int"
+            )
+
+    @property
+    def digest(self) -> str:
+        return canonical_digest(
+            {
+                "schema": "DRIFTGUARD_SEQUENTIAL_REGISTRATION_V1",
+                "detector_id": self.detector_id,
+                "spec_digest": self.spec_digest,
+                "session_id": self.session_id,
+                "session_generation": self.session_generation,
+                "anchor_event_id": self.anchor_event_id,
+                "anchor_evaluation_digest": self.anchor_evaluation_digest,
+                "subject_digest": self.subject_digest,
+                "subject_epoch": self.subject_epoch,
+            }
+        )
+
+
+@dataclass(frozen=True)
 class SequentialDetectionReceipt:
     detector_id: str
     spec_digest: str
@@ -188,6 +267,8 @@ class SequentialDetectionReceipt:
     turn_index: int
     status: SequentialStatus
     observation_count: int
+    consecutive_unknown: int
+    gap_invalid: bool
     dimension_scores: tuple[tuple[str, float], ...]
     cusum_values: tuple[tuple[str, float], ...]
     alarm_dimensions: tuple[str, ...]
@@ -203,6 +284,7 @@ class SequentialDetectionReceipt:
             (self.evaluation_event_id, "receipt evaluation event id"),
             (self.turn_index, "receipt turn index"),
             (self.observation_count, "receipt observation count"),
+            (self.consecutive_unknown, "receipt consecutive unknown"),
         ):
             if type(value) is not int or isinstance(value, bool) or value < 0:
                 raise ValueError(f"{label} must be a non-negative integer")
@@ -210,6 +292,8 @@ class SequentialDetectionReceipt:
             raise ValueError(
                 "receipt generation must advance exactly one"
             )
+        if type(self.gap_invalid) is not bool:
+            raise ValueError("receipt gap_invalid must be exact bool")
         require_sha256_digest(
             self.evaluation_digest,
             "receipt evaluation digest",
@@ -234,6 +318,8 @@ class SequentialDetectionReceipt:
                 "turn_index": self.turn_index,
                 "status": self.status.value,
                 "observation_count": self.observation_count,
+                "consecutive_unknown": self.consecutive_unknown,
+                "gap_invalid": self.gap_invalid,
                 "dimension_scores": self.dimension_scores,
                 "cusum_values": self.cusum_values,
                 "alarm_dimensions": self.alarm_dimensions,

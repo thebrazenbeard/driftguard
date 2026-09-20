@@ -319,7 +319,10 @@ class ExternalActuatorBoundaryTests(unittest.TestCase):
             receipt.retry_disposition,
             RetryDisposition.EFFECT_ALREADY_ASSERTED_DO_NOT_RETRY,
         )
-        acknowledgement = acknowledgement_from_actuator_receipt(receipt=receipt)
+        acknowledgement = acknowledgement_from_actuator_receipt(
+            attempt=self.attempt,
+            receipt=receipt,
+        )
         result = self.ledger.acknowledge_reload(
             session_id="session",
             state=self.state,
@@ -338,7 +341,10 @@ class ExternalActuatorBoundaryTests(unittest.TestCase):
             attempt=self.attempt,
             receipt=self.receipt(ActuatorOutcome.CONSUMED_UNVERIFIED),
         )
-        acknowledgement_from_actuator_receipt(receipt=receipt)
+        acknowledgement_from_actuator_receipt(
+            attempt=self.attempt,
+            receipt=receipt,
+        )
         after = self.ledger.session_row("session")
         self.assertEqual(before, after)
 

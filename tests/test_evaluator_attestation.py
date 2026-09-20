@@ -8,9 +8,13 @@ from driftguard import (
     DriftEvidence,
     DriftPolicy,
     EvidenceIndependence,
+    MonitoredSubject,
     ProbeSource,
     SaveState,
     SourceBinding,
+    StaleGenerationError,
+    SubjectComponent,
+    SubjectEpochTransition,
 )
 from driftguard.evaluator_attestation import (
     AttestedEvaluatorCommit,
@@ -35,6 +39,41 @@ SOURCE_B = SourceBinding("probe://attested-b", "v1")
 OBS = raw_bytes_digest(b"attested observation")
 KEY = b"a" * 32
 OTHER_KEY = b"b" * 32
+REQUIRED_SUBJECT_COMPONENTS = (
+    "provider",
+    "model",
+    "instructions",
+    "tools",
+    "retrieval",
+    "memory",
+    "inference",
+    "harness",
+)
+
+
+def monitored_subject(*, epoch: int = 0, model_payload: str = "model-v1"):
+    rows = []
+    for component_id in REQUIRED_SUBJECT_COMPONENTS:
+        payload = (
+            model_payload
+            if component_id == "model"
+            else f"{component_id}:v1"
+        )
+        rows.append(
+            SubjectComponent(
+                component_id=component_id,
+                binding=SourceBinding(
+                    f"subject://attested/{component_id}",
+                    "v1",
+                ),
+                digest=raw_bytes_digest(payload.encode("utf-8")),
+            )
+        )
+    return MonitoredSubject(
+        subject_id="attested-runtime",
+        epoch=epoch,
+        components=tuple(rows),
+    )
 
 
 def state(*, include_b: bool = False) -> SaveState:
@@ -75,6 +114,7 @@ def evidence(
     source: SourceBinding = SOURCE_A,
     turn: int = 0,
     score: float = 0.0,
+    monitored: MonitoredSubject | None = None,
 ) -> tuple[DriftEvidence, ...]:
     return (
         DriftEvidence(
@@ -87,6 +127,12 @@ def evidence(
             s.digest,
             OBS,
             turn,
+            (
+                monitored.configuration_digest
+                if monitored is not None
+                else None
+            ),
+            monitored.epoch if monitored is not None else None,
         ),
     )
 
@@ -96,6 +142,7 @@ def request_for(
     *,
     generation: int = 0,
     turn: int = 0,
+    monitored: MonitoredSubject | None = None,
 ):
     return build_evaluator_request(
         session_id="session",
@@ -103,6 +150,7 @@ def request_for(
         observation_digest=OBS,
         turn_index=turn,
         expected_generation=generation,
+        subject=monitored,
     )
 
 
@@ -162,6 +210,176 @@ class EvaluatorAttestationTests(unittest.TestCase):
             verification.verification_claim,
         )
         self.assertEqual(64, len(verification.digest))
+
+    def test_subject_bound_attested_commit_persists_exact_subject(self):
+        handle = tempfile.NamedTemporaryFile(delete=False)
+        handle.close()
+        try:
+            ledger = DriftLedger(handle.name)
+            monitored = monitored_subject()
+            ledger.register_subject_epoch(monitored)
+            s = state()
+            req = request_for(s, monitored=monitored)
+            resp = response_for(
+                req,
+                evidence(s, monitored=monitored),
+            )
+            pol = policy()
+            attestation = build_hmac_evaluator_attestation(
+                request=req,
+                response=resp,
+                policy=pol,
+                key_material=KEY,
+            )
+            result = commit_attested_evaluator_response(
+                request=req,
+                state=s,
+                response=resp,
+                policy=pol,
+                attestation=attestation,
+                key_material=KEY,
+                ledger=ledger,
+                subject=monitored,
+            )
+            self.assertEqual(
+                monitored.configuration_digest,
+                result.attestation.subject_digest,
+            )
+            self.assertEqual(0, result.attestation.subject_epoch)
+            self.assertEqual(
+                monitored.configuration_digest,
+                result.durable_receipt.subject_digest,
+            )
+            self.assertEqual(0, result.durable_receipt.subject_epoch)
+            reopened = DriftLedger(handle.name)
+            durable = reopened.evaluator_attestation_receipt(
+                session_id=req.session_id,
+                evaluation_digest=result.commit.evaluation.digest,
+            )
+            self.assertEqual(
+                monitored.configuration_digest,
+                durable.subject_digest,
+            )
+            self.assertEqual(0, durable.subject_epoch)
+        finally:
+            os.unlink(handle.name)
+
+    def test_subject_bound_attested_commit_rejects_omitted_subject(self):
+        handle = tempfile.NamedTemporaryFile(delete=False)
+        handle.close()
+        try:
+            ledger = DriftLedger(handle.name)
+            monitored = monitored_subject()
+            ledger.register_subject_epoch(monitored)
+            s = state()
+            req = request_for(s, monitored=monitored)
+            resp = response_for(req, evidence(s, monitored=monitored))
+            pol = policy()
+            attestation = build_hmac_evaluator_attestation(
+                request=req,
+                response=resp,
+                policy=pol,
+                key_material=KEY,
+            )
+            with self.assertRaisesRegex(
+                ValueError,
+                "subject digest no longer matches subject",
+            ):
+                commit_attested_evaluator_response(
+                    request=req,
+                    state=s,
+                    response=resp,
+                    policy=pol,
+                    attestation=attestation,
+                    key_material=KEY,
+                    ledger=ledger,
+                )
+        finally:
+            os.unlink(handle.name)
+
+    def test_subject_bound_attested_commit_rejects_changed_subject(self):
+        handle = tempfile.NamedTemporaryFile(delete=False)
+        handle.close()
+        try:
+            ledger = DriftLedger(handle.name)
+            monitored = monitored_subject()
+            ledger.register_subject_epoch(monitored)
+            s = state()
+            req = request_for(s, monitored=monitored)
+            resp = response_for(req, evidence(s, monitored=monitored))
+            pol = policy()
+            attestation = build_hmac_evaluator_attestation(
+                request=req,
+                response=resp,
+                policy=pol,
+                key_material=KEY,
+            )
+            changed = monitored_subject(model_payload="model-v2")
+            with self.assertRaisesRegex(
+                ValueError,
+                "subject digest no longer matches subject",
+            ):
+                commit_attested_evaluator_response(
+                    request=req,
+                    state=s,
+                    response=resp,
+                    policy=pol,
+                    attestation=attestation,
+                    key_material=KEY,
+                    ledger=ledger,
+                    subject=changed,
+                )
+        finally:
+            os.unlink(handle.name)
+
+    def test_subject_superseded_after_attestation_fails_commit(self):
+        handle = tempfile.NamedTemporaryFile(delete=False)
+        handle.close()
+        try:
+            ledger = DriftLedger(handle.name)
+            current = monitored_subject(epoch=0)
+            successor = monitored_subject(epoch=1)
+            ledger.register_subject_epoch(current)
+            s = state()
+            req = request_for(s, monitored=current)
+            resp = response_for(req, evidence(s, monitored=current))
+            pol = policy()
+            attestation = build_hmac_evaluator_attestation(
+                request=req,
+                response=resp,
+                policy=pol,
+                key_material=KEY,
+            )
+            transition = SubjectEpochTransition(
+                transition_id="attested-subject-transition",
+                subject_id=current.subject_id,
+                predecessor_epoch=0,
+                predecessor_digest=current.configuration_digest,
+                successor_epoch=1,
+                successor_digest=successor.configuration_digest,
+                reason="supersede before commit",
+            )
+            ledger.transition_subject_epoch(
+                predecessor=current,
+                successor=successor,
+                transition=transition,
+            )
+            with self.assertRaisesRegex(
+                StaleGenerationError,
+                "epoch has been superseded",
+            ):
+                commit_attested_evaluator_response(
+                    request=req,
+                    state=s,
+                    response=resp,
+                    policy=pol,
+                    attestation=attestation,
+                    key_material=KEY,
+                    ledger=ledger,
+                    subject=current,
+                )
+        finally:
+            os.unlink(handle.name)
 
     def test_wrong_key_fails_closed(self):
         s = state()

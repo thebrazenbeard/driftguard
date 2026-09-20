@@ -141,7 +141,9 @@ For every shifted trajectory:
 
 - an alarm before the declared shift is a pre-shift false alarm;
 - no alarm is a missed detection;
-- an alarm after shift counts as detection only if the first alarm includes an expected shifted dimension;
+- an alarm after shift counts as detection if the first alarm includes an expected shifted dimension;
+- any unrelated dimension present on that same first post-shift alarm is also recorded as a wrong-dimension alarm;
+- therefore a mixed first alarm containing both expected and unrelated dimensions counts as both a detection and a collateral wrong-dimension alarm;
 - an alarm on only unrelated dimensions is recorded as a wrong-dimension alarm and is not counted as a successful detection.
 
 R9 records:
@@ -182,8 +184,10 @@ For stable trajectories, the first alarm determines the false-alarm run length.
 For shifted trajectories:
 
 - first alarm before shift => pre-shift false alarm;
-- first alarm after shift on an expected shifted dimension => detection;
-- first alarm after shift only on unrelated dimensions => wrong-dimension failure.
+- first alarm after shift containing an expected shifted dimension => detection;
+- any unrelated dimension on that same post-shift first alarm => wrong-dimension alarm;
+- mixed expected + unrelated first alarms therefore count in both detection and wrong-dimension statistics;
+- first alarm after shift only on unrelated dimensions => wrong-dimension failure without detection.
 
 This avoids laundering an early false alarm by pointing to a later correct alarm.
 
@@ -227,7 +231,7 @@ A `CalibrationQualificationReceipt` binds:
 - detector-spec digest;
 - corpus role;
 - disposition;
-- family metrics;
+- family metrics, including explicit mixed target/wrong-dimension overlap counts;
 - failure reasons.
 
 Possible dispositions:

@@ -78,6 +78,7 @@ class SequentialDetectorSpec:
     calibration: SourceBinding
     calibration_digest: str
     max_consecutive_unknown: int
+    max_turn_gap: int
     dimensions: tuple[CusumDimensionPolicy, ...]
 
     def __post_init__(self) -> None:
@@ -116,6 +117,12 @@ class SequentialDetectorSpec:
             raise ValueError(
                 "max_consecutive_unknown must be a non-negative integer"
             )
+        if (
+            type(self.max_turn_gap) is not int
+            or isinstance(self.max_turn_gap, bool)
+            or self.max_turn_gap < 1
+        ):
+            raise ValueError("max_turn_gap must be an integer >= 1")
         if type(self.dimensions) is not tuple or not self.dimensions:
             raise ValueError(
                 "detector dimensions must be a non-empty tuple"
@@ -144,6 +151,7 @@ class SequentialDetectorSpec:
             "calibration": asdict(self.calibration),
             "calibration_digest": self.calibration_digest,
             "max_consecutive_unknown": self.max_consecutive_unknown,
+            "max_turn_gap": self.max_turn_gap,
             "dimensions": [
                 item.payload()
                 for item in sorted(
@@ -269,6 +277,9 @@ class SequentialDetectionReceipt:
     observation_count: int
     consecutive_unknown: int
     gap_invalid: bool
+    session_generation_before: int
+    session_generation_after: int
+    turn_gap: int
     dimension_scores: tuple[tuple[str, float], ...]
     cusum_values: tuple[tuple[str, float], ...]
     alarm_dimensions: tuple[str, ...]
@@ -285,6 +296,15 @@ class SequentialDetectionReceipt:
             (self.turn_index, "receipt turn index"),
             (self.observation_count, "receipt observation count"),
             (self.consecutive_unknown, "receipt consecutive unknown"),
+            (
+                self.session_generation_before,
+                "receipt session generation before",
+            ),
+            (
+                self.session_generation_after,
+                "receipt session generation after",
+            ),
+            (self.turn_gap, "receipt turn gap"),
         ):
             if type(value) is not int or isinstance(value, bool) or value < 0:
                 raise ValueError(f"{label} must be a non-negative integer")
@@ -294,6 +314,15 @@ class SequentialDetectionReceipt:
             )
         if type(self.gap_invalid) is not bool:
             raise ValueError("receipt gap_invalid must be exact bool")
+        if (
+            self.session_generation_after
+            != self.session_generation_before + 1
+        ):
+            raise ValueError(
+                "receipt session generation must advance exactly one"
+            )
+        if self.turn_gap < 1:
+            raise ValueError("receipt turn gap must be >= 1")
         require_sha256_digest(
             self.evaluation_digest,
             "receipt evaluation digest",
@@ -320,6 +349,13 @@ class SequentialDetectionReceipt:
                 "observation_count": self.observation_count,
                 "consecutive_unknown": self.consecutive_unknown,
                 "gap_invalid": self.gap_invalid,
+                "session_generation_before": (
+                    self.session_generation_before
+                ),
+                "session_generation_after": (
+                    self.session_generation_after
+                ),
+                "turn_gap": self.turn_gap,
                 "dimension_scores": self.dimension_scores,
                 "cusum_values": self.cusum_values,
                 "alarm_dimensions": self.alarm_dimensions,

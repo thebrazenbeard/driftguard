@@ -679,7 +679,8 @@ class SubjectEffectCompositionTests(unittest.TestCase):
 
     def test_durable_evaluation_subject_mismatch_fails(self):
         directive = self.directive()
-        with sqlite3.connect(self.path) as db:
+        db = sqlite3.connect(self.path)
+        try:
             db.execute(
                 "UPDATE evaluation_events SET subject_digest=? "
                 "WHERE session_id=? AND evaluation_digest=?",
@@ -689,6 +690,9 @@ class SubjectEffectCompositionTests(unittest.TestCase):
                     directive.evaluation_digest,
                 ),
             )
+            db.commit()
+        finally:
+            db.close()
         with self.assertRaisesRegex(
             ValueError,
             "durable reload-required evaluation",
@@ -702,11 +706,15 @@ class SubjectEffectCompositionTests(unittest.TestCase):
 
     def test_durable_session_subject_mismatch_fails(self):
         directive = self.directive()
-        with sqlite3.connect(self.path) as db:
+        db = sqlite3.connect(self.path)
+        try:
             db.execute(
                 "UPDATE sessions SET subject_epoch=? WHERE session_id=?",
                 (9, directive.session_id),
             )
+            db.commit()
+        finally:
+            db.close()
         with self.assertRaisesRegex(
             ValueError,
             "current session subject epoch mismatch",

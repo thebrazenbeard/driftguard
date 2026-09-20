@@ -200,6 +200,82 @@ class MonitoredSubject:
 
 
 @dataclass(frozen=True)
+class SubjectEpochTransition:
+    transition_id: str
+    subject_id: str
+    predecessor_epoch: int
+    predecessor_digest: str
+    successor_epoch: int
+    successor_digest: str
+    reason: str
+    transition_claim: str = (
+        "CALLER_EXPLICIT_SUBJECT_EPOCH_TRANSITION_NOT_PROVIDER_AUTHORITY"
+    )
+
+    def __post_init__(self) -> None:
+        _require_nonempty_str(self.transition_id, "subject transition id")
+        _require_nonempty_str(self.subject_id, "subject transition subject id")
+        for value, label in (
+            (self.predecessor_epoch, "subject transition predecessor epoch"),
+            (self.successor_epoch, "subject transition successor epoch"),
+        ):
+            if type(value) is not int or isinstance(value, bool) or value < 0:
+                raise ValueError(f"{label} must be a non-negative integer")
+        if self.successor_epoch != self.predecessor_epoch + 1:
+            raise ValueError(
+                "subject transition successor epoch must advance exactly one"
+            )
+        require_sha256_digest(
+            self.predecessor_digest,
+            "subject transition predecessor digest",
+        )
+        require_sha256_digest(
+            self.successor_digest,
+            "subject transition successor digest",
+        )
+        _require_nonempty_str(self.reason, "subject transition reason")
+        if self.transition_claim != (
+            "CALLER_EXPLICIT_SUBJECT_EPOCH_TRANSITION_NOT_PROVIDER_AUTHORITY"
+        ):
+            raise ValueError("unsupported subject transition claim")
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any]) -> "SubjectEpochTransition":
+        if type(data) is not dict:
+            raise ValueError("subject epoch transition must be an object")
+        return cls(
+            transition_id=data.get("transition_id"),
+            subject_id=data.get("subject_id"),
+            predecessor_epoch=data.get("predecessor_epoch"),
+            predecessor_digest=data.get("predecessor_digest"),
+            successor_epoch=data.get("successor_epoch"),
+            successor_digest=data.get("successor_digest"),
+            reason=data.get("reason"),
+            transition_claim=data.get(
+                "transition_claim",
+                "CALLER_EXPLICIT_SUBJECT_EPOCH_TRANSITION_NOT_PROVIDER_AUTHORITY",
+            ),
+        )
+
+    def payload(self) -> dict[str, Any]:
+        return {
+            "schema": "DRIFTGUARD_SUBJECT_EPOCH_TRANSITION_V1",
+            "transition_id": self.transition_id,
+            "subject_id": self.subject_id,
+            "predecessor_epoch": self.predecessor_epoch,
+            "predecessor_digest": self.predecessor_digest,
+            "successor_epoch": self.successor_epoch,
+            "successor_digest": self.successor_digest,
+            "reason": self.reason,
+            "transition_claim": self.transition_claim,
+        }
+
+    @property
+    def digest(self) -> str:
+        return canonical_digest(self.payload())
+
+
+@dataclass(frozen=True)
 class ProbeSource:
     binding: SourceBinding
     max_independence: EvidenceIndependence

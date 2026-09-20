@@ -1,6 +1,9 @@
+import io
+import json
 import os
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 
 from driftguard import (
     BehaviorDimension,
@@ -15,6 +18,7 @@ from driftguard import (
     SourceBinding,
     StaleGenerationError,
 )
+from driftguard.cli import main
 from driftguard.ledger import DriftLedger
 from driftguard.model import raw_bytes_digest
 
@@ -283,6 +287,53 @@ class RecoveryReplayTests(unittest.TestCase):
                 replay_digest=replay.evaluation.digest,
                 generation=3,
             )
+
+
+    def test_verify_recovery_cli_emits_digest_bound_receipt(self):
+        self.acknowledged_reload()
+        replay = self.evaluate(turn=6, generation=3, score=0.0)
+        state_file = tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            delete=False,
+            suffix=".json",
+        )
+        try:
+            json.dump(self.state.canonical_payload(), state_file)
+            state_file.close()
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                code = main(
+                    [
+                        "verify-recovery",
+                        "--state",
+                        state_file.name,
+                        "--db",
+                        self.path,
+                        "--session",
+                        "s",
+                        "--ack-id",
+                        "ack-recovery",
+                        "--replay-evaluation-digest",
+                        replay.evaluation.digest,
+                        "--expected-generation",
+                        "4",
+                    ]
+                )
+            self.assertEqual(code, 0)
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(payload["status"], "VERIFIED_STABLE")
+            self.assertEqual(
+                payload["replay_evaluation_digest"],
+                replay.evaluation.digest,
+            )
+            self.assertEqual(payload["generation_before"], 4)
+            self.assertEqual(payload["generation_after"], 5)
+            self.assertEqual(len(payload["verification_digest"]), 64)
+        finally:
+            if not state_file.closed:
+                state_file.close()
+            os.unlink(state_file.name)
 
 
 if __name__ == "__main__":

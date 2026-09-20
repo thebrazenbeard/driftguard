@@ -33,6 +33,23 @@ def _nonempty(value: Any, label: str) -> str:
     return value
 
 
+def trajectory_content_digest(corpus: CalibrationCorpus) -> str:
+    if type(corpus) is not CalibrationCorpus:
+        raise ValueError("corpus must be exact CalibrationCorpus")
+    return canonical_digest(
+        {
+            "schema": "DRIFTGUARD_BENCHMARK_TRAJECTORY_CONTENT_V1",
+            "trajectories": [
+                item.payload()
+                for item in sorted(
+                    corpus.trajectories,
+                    key=lambda row: row.trajectory_id,
+                )
+            ],
+        }
+    )
+
+
 def canonical_corpus_artifact_bytes(corpus: CalibrationCorpus) -> bytes:
     if type(corpus) is not CalibrationCorpus:
         raise ValueError("corpus must be exact CalibrationCorpus")
@@ -152,6 +169,7 @@ class BenchmarkCorpusManifest:
     corpus_version: str
     corpus_role: CalibrationCorpusRole
     corpus_digest: str
+    trajectory_content_digest: str
     artifact: SourceBinding
     artifact_digest: str
     families: tuple[BenchmarkFamilyManifest, ...]
@@ -168,6 +186,10 @@ class BenchmarkCorpusManifest:
         require_sha256_digest(
             self.corpus_digest,
             "benchmark corpus digest",
+        )
+        require_sha256_digest(
+            self.trajectory_content_digest,
+            "benchmark trajectory content digest",
         )
         if type(self.artifact) is not SourceBinding:
             raise ValueError("benchmark artifact must be exact SourceBinding")
@@ -229,6 +251,7 @@ class BenchmarkCorpusManifest:
             "corpus_version": self.corpus_version,
             "corpus_role": self.corpus_role.value,
             "corpus_digest": self.corpus_digest,
+            "trajectory_content_digest": self.trajectory_content_digest,
             "artifact": {
                 "ref": self.artifact.ref,
                 "version": self.artifact.version,
@@ -253,6 +276,10 @@ class BenchmarkCorpusManifest:
             raise ValueError("benchmark corpus role mismatch")
         if corpus.digest != self.corpus_digest:
             raise ValueError("benchmark corpus digest mismatch")
+        if trajectory_content_digest(corpus) != self.trajectory_content_digest:
+            raise ValueError(
+                "benchmark trajectory content digest mismatch"
+            )
 
         by_family = {item.family_id: item for item in self.families}
         observed_families = {item.family_id for item in corpus.trajectories}
@@ -303,6 +330,9 @@ class HoldoutCorpusSeal:
             "manifest_digest": self.manifest.digest,
             "portfolio_digest": self.manifest.portfolio_digest,
             "corpus_digest": self.manifest.corpus_digest,
+            "trajectory_content_digest": (
+                self.manifest.trajectory_content_digest
+            ),
             "artifact": {
                 "ref": self.manifest.artifact.ref,
                 "version": self.manifest.artifact.version,
@@ -347,6 +377,22 @@ class BenchmarkPrecommitPlan:
         ):
             raise ValueError(
                 "design and holdout benchmark portfolio contracts must match"
+            )
+        if (
+            self.design_manifest.trajectory_content_digest
+            == self.holdout_seal.manifest.trajectory_content_digest
+        ):
+            raise ValueError(
+                "design and holdout cannot reuse identical trajectory content"
+            )
+        if (
+            self.design_manifest.artifact_digest
+            == self.holdout_seal.manifest.artifact_digest
+            or self.design_manifest.artifact
+            == self.holdout_seal.manifest.artifact
+        ):
+            raise ValueError(
+                "design and holdout must bind distinct corpus artifacts"
             )
         require_sha256_digest(
             self.cusum_spec_digest,
@@ -765,5 +811,6 @@ __all__ = [
     "SELECTION_RULE",
     "reveal_holdout",
     "canonical_corpus_artifact_bytes",
+    "trajectory_content_digest",
     "run_precommitted_holdout",
 ]

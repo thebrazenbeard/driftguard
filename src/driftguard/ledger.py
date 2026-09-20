@@ -146,6 +146,10 @@ class DriftLedger:
                     FOREIGN KEY(session_id) REFERENCES sessions(session_id)
                 );
 
+                CREATE UNIQUE INDEX IF NOT EXISTS
+                    sequential_detectors_session_uq
+                    ON sequential_detectors(session_id);
+
                 CREATE TABLE IF NOT EXISTS sequential_detection_events (
                     receipt_digest TEXT PRIMARY KEY,
                     detector_id TEXT NOT NULL,
@@ -713,6 +717,20 @@ class DriftLedger:
                     ),
                     subject_digest=spec.subject_digest,
                     subject_epoch=spec.subject_epoch,
+                )
+
+            session_detector = db.execute(
+                """
+                SELECT * FROM sequential_detectors
+                 WHERE session_id=?
+                """,
+                (spec.session_id,),
+            ).fetchone()
+            if session_detector is not None:
+                raise StaleGenerationError(
+                    "session is already bound to a sequential detector; "
+                    "start a new explicit session/time-series boundary "
+                    "instead of resetting detector state"
                 )
 
             anchor = db.execute(

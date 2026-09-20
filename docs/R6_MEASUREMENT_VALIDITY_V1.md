@@ -10,7 +10,7 @@ That is safe only if the score scales are calibrated and commensurable. A source
 
 R6 therefore separates three identities:
 
-`BEHAVIOR_SPEC != MEASUREMENT_SPEC != DETECTION_POLICY`
+`BEHAVIOR_SPEC != MEASUREMENT_SPEC != DETECTION_POLICY != CONTROL_POLICY`
 
 Changing an evaluator or calibration must not silently mean the desired behavior changed. Changing an alert threshold must not silently mean the measurement instrument changed.
 
@@ -30,16 +30,18 @@ Strict mode requires every measured dimension to declare:
 Every eligible probe source must declare:
 
 - exact source ref/version;
-- an exact calibration ref/version;
+- an exact calibration ref/version plus immutable calibration-artifact SHA-256 digest;
 - a correlation group;
 - the score scale it emits;
 - its existing maximum independence ceiling and dimension scope.
 
-A score is admitted only when source scope, observation/state/turn binding, independence, calibration metadata, score scale, source uniqueness, source quorum, and correlation-group quorum all satisfy the frozen save-state.
+A score is admitted only when source scope, observation/state/turn binding, independence, calibration metadata/digest, score scale, source uniqueness, source quorum, and correlation-group quorum all satisfy the frozen save-state.
+
+Measurement-triggered critical reloads do not bypass the declared source/correlation quorum. Once the dimension quorum is satisfied, a critical member breach remains a conservative fail-safe.
 
 ## No cross-dimension arithmetic
 
-Strict mode does not compute an aggregate drift score.
+Strict mode does not compute an aggregate drift score and rejects legacy dimension weights rather than retaining an inert weighting knob.
 
 Each dimension is evaluated on its own governed calibrated scale and against its own frozen thresholds. Multiple admitted sources for one dimension are combined by a deterministic median after quorum admission.
 
@@ -67,11 +69,12 @@ Two probes with the same ancestry/correlation group cannot satisfy a two-group r
 
 Strict save-states expose:
 
-- `behavior_digest` — behavioral referent/restore content and dimension descriptions;
+- `behavior_digest` — the measured behavioral dimension contract only;
 - `measurement_digest` — measurement mode, source/calibration/correlation contracts, score scales, and quorum requirements;
-- `detection_policy_digest` — per-dimension thresholds and scheduling/cooldown policy.
+- `detection_policy_digest` — criticality, per-dimension thresholds, and scheduling/cooldown policy;
+- `control_policy_digest` — the restore/control text used when an intervention is requested.
 
-The full save-state digest still binds all three for session pinning.
+The full save-state digest still binds all four for session pinning. Changing restore wording therefore changes the control/full-state identity without pretending that the measured behavior itself changed.
 
 External evaluator request V2 binds all three split digests in addition to the full state, observation, turn, generation, and probe contract.
 
@@ -93,7 +96,7 @@ When all new optional fields remain at legacy defaults, canonical V1 save-state 
 
 This candidate improves measurement admission and semantic separation. It does not establish:
 
-- that a referenced calibration artifact is scientifically valid;
+- that a referenced calibration artifact is scientifically valid merely because its exact digest is bound;
 - cryptographic evaluator identity or provider honesty;
 - statistical independence merely from declared correlation metadata;
 - exact monitored-runtime/model/instruction/tool/memory identity over time;

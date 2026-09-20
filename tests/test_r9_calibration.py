@@ -115,6 +115,9 @@ def family_policy(family="iid-like", *, min_count=20):
         family_id=family,
         minimum_stable_trajectories=min_count,
         minimum_shifted_trajectories=min_count,
+        stable_horizon_observations=8,
+        pre_shift_horizon_observations=4,
+        post_shift_horizon_observations=4,
         maximum_stable_false_alarm_rate=0.15,
         maximum_pre_shift_false_alarm_rate=0.15,
         minimum_detection_rate=0.85,
@@ -180,6 +183,9 @@ class CalibrationQualificationTests(unittest.TestCase):
             family_id="iid-like",
             minimum_stable_trajectories=1,
             minimum_shifted_trajectories=1,
+            stable_horizon_observations=8,
+            pre_shift_horizon_observations=4,
+            post_shift_horizon_observations=4,
             maximum_stable_false_alarm_rate=0.20,
             maximum_pre_shift_false_alarm_rate=0.20,
             minimum_detection_rate=0.80,
@@ -335,6 +341,57 @@ class CalibrationQualificationTests(unittest.TestCase):
                 corpus=c,
                 detector_spec=spec,
             )
+
+    def test_short_stable_horizon_cannot_game_false_alarm_rate(self):
+        spec = detector()
+        rows = [
+            stable_trajectory(index, length=2)
+            for index in range(25)
+        ] + [
+            shifted_trajectory(index)
+            for index in range(25)
+        ]
+        c = CalibrationCorpus(
+            "short-stable",
+            "1",
+            CalibrationCorpusRole.HOLDOUT_QUALIFICATION,
+            tuple(rows),
+        )
+        receipt = qualify_calibration(
+            plan=plan(c, spec),
+            corpus=c,
+            detector_spec=spec,
+        )
+        self.assertEqual(CalibrationDisposition.FAIL, receipt.disposition)
+        metrics = receipt.family_metrics[0]
+        self.assertEqual(25, metrics.horizon_violations)
+        self.assertIn(
+            "iid-like:trajectory_horizon_mismatch",
+            receipt.reasons,
+        )
+
+    def test_shift_horizon_must_match_frozen_plan(self):
+        spec = detector()
+        rows = [
+            stable_trajectory(index)
+            for index in range(25)
+        ] + [
+            shifted_trajectory(index, prefix=2, suffix=6)
+            for index in range(25)
+        ]
+        c = CalibrationCorpus(
+            "shift-horizon",
+            "1",
+            CalibrationCorpusRole.HOLDOUT_QUALIFICATION,
+            tuple(rows),
+        )
+        receipt = qualify_calibration(
+            plan=plan(c, spec),
+            corpus=c,
+            detector_spec=spec,
+        )
+        self.assertEqual(CalibrationDisposition.FAIL, receipt.disposition)
+        self.assertEqual(25, receipt.family_metrics[0].horizon_violations)
 
     def test_minimum_trajectory_counts_are_enforced(self):
         spec = detector()

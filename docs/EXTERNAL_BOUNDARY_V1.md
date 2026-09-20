@@ -21,7 +21,9 @@ The boundary is deliberately dependency-free. It does not perform network I/O.
 - maximum source independence;
 - authorized dimension scope.
 
-Returned `DriftEvidence` must bind the same state digest, observation digest, and turn, and may cite only probe bindings present in the request. `commit_evaluator_response()` is the safe bridge into the ledger: it validates the response and commits with the request's exact `expected_generation`, so a delayed evaluator response cannot silently ride a later generation. DriftGuard's existing core admission remains authoritative for dimension coverage, independence ceilings, duplicate execution ids, and decision logic.
+An `ExternalEvaluatorResponse` binds the exact evaluator request digest plus the canonical evidence-set digest. The same response object therefore cannot be replayed across another session/request even when state, observation, turn, probe scope, and generation otherwise match. Its `DriftEvidence` must bind the same state digest, observation digest, and turn, and may cite only probe bindings present in the request. `commit_evaluator_response()` accepts only this exact request-bound response and commits with the request's exact `expected_generation`, so a delayed evaluator response cannot silently ride a later generation.
+
+The response envelope is structural binding, not cryptographic evaluator attestation. A dishonest caller that can forge an entirely new response remains outside the current trust claim. DriftGuard's existing core admission remains authoritative for dimension coverage, independence ceilings, duplicate execution ids, and decision logic.
 
 An evaluator request or response does not prove evaluator identity honesty or actual independence.
 
@@ -36,7 +38,9 @@ An evaluator request or response does not prove evaluator identity honesty or ac
 - expected post-decision generation;
 - exact restore packet bytes and SHA-256.
 
-The directive is a request for an external effect. It is not evidence that the effect happened.
+The directive is a request for an external effect. It is constructible only while that reload-required evaluation is still the session's current durable generation and last evaluation. A historical reload event cannot be replayed into a new effect request after acknowledgement or later evaluation moves the session forward.
+
+The directive is not evidence that the effect happened.
 
 ## Ambiguous delivery
 
@@ -49,10 +53,10 @@ The directive is a request for an external effect. It is not evidence that the e
 Reconciliation is fail-closed:
 
 - `APPLIED` -> construct a digest-bound `ReloadAcknowledgement` candidate;
-- `NOT_APPLIED` -> retry may be allowed by the caller;
-- `UNKNOWN` -> `READBACK_REQUIRED`; blind retry is not authorized.
+- `NOT_APPLIED` -> `READBACK_REQUIRED`;
+- `UNKNOWN` -> `READBACK_REQUIRED`.
 
-This module does not perform retries. A provider-specific adapter must reconcile an ambiguous outcome through provider readback before retry.
+A bare generic receipt never grants retry authority. This module does not perform retries. A provider-specific adapter must establish independently verified non-application through provider readback before any later layer may authorize a retry.
 
 ## Acknowledgement is not recovery
 

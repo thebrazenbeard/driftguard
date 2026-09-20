@@ -441,6 +441,83 @@ class CalibrationQualificationTests(unittest.TestCase):
             receipt.reasons,
         )
 
+    def test_multiple_collateral_dimensions_count_one_wrong_incidence_per_trajectory(self):
+        spec = SequentialDetectorSpec(
+            detector_id="r9-three-dim-mixed",
+            session_id="r9-session",
+            state_digest=raw_bytes_digest(b"r9-state-three-mixed"),
+            measurement_digest=raw_bytes_digest(b"r9-measurement-three-mixed"),
+            subject_digest=raw_bytes_digest(b"r9-subject-three-mixed"),
+            subject_epoch=0,
+            calibration=CAL,
+            calibration_digest=CAL_DIGEST,
+            max_consecutive_unknown=1,
+            max_turn_gap=2,
+            dimensions=(
+                CusumDimensionPolicy("a", 0.10, 0.05, 0.50),
+                CusumDimensionPolicy("b", 0.10, 0.05, 0.50),
+                CusumDimensionPolicy("target", 0.10, 0.05, 0.50),
+            ),
+        )
+        rows = []
+        baseline = (("a", 0.10), ("b", 0.10), ("target", 0.10))
+        shifted = (("a", 0.80), ("b", 0.80), ("target", 0.80))
+        for index in range(25):
+            rows.append(
+                CalibrationTrajectory(
+                    trajectory_id=f"multi-wrong-stable-{index}",
+                    family_id="multi-wrong",
+                    regime=CalibrationTrajectoryRegime.STABLE,
+                    samples=tuple(baseline for _ in range(8)),
+                )
+            )
+            rows.append(
+                CalibrationTrajectory(
+                    trajectory_id=f"multi-wrong-shifted-{index}",
+                    family_id="multi-wrong",
+                    regime=CalibrationTrajectoryRegime.SHIFTED,
+                    samples=tuple(baseline for _ in range(4))
+                    + tuple(shifted for _ in range(4)),
+                    shift_index=4,
+                    shift_dimensions=("target",),
+                )
+            )
+        c = CalibrationCorpus(
+            "multi-wrong",
+            "1",
+            CalibrationCorpusRole.HOLDOUT_QUALIFICATION,
+            tuple(rows),
+        )
+        policy = CalibrationFamilyPolicy(
+            family_id="multi-wrong",
+            minimum_stable_trajectories=20,
+            minimum_shifted_trajectories=20,
+            stable_horizon_observations=8,
+            pre_shift_horizon_observations=4,
+            post_shift_horizon_observations=4,
+            maximum_stable_false_alarm_rate=0.15,
+            maximum_pre_shift_false_alarm_rate=0.15,
+            maximum_wrong_dimension_alarm_rate=0.15,
+            minimum_detection_rate=0.85,
+            maximum_mean_detection_delay=1.5,
+        )
+        receipt = qualify_calibration(
+            plan=CalibrationPlan(
+                "multi-wrong-plan",
+                spec.digest,
+                c.digest,
+                c.role,
+                (policy,),
+            ),
+            corpus=c,
+            detector_spec=spec,
+        )
+        metrics = receipt.family_metrics[0]
+        self.assertEqual(25, metrics.detection.successes)
+        self.assertEqual(25, metrics.wrong_dimension_alarm.successes)
+        self.assertEqual(25, metrics.wrong_dimension_alarms)
+        self.assertEqual(25, metrics.mixed_target_wrong_dimension_alarms)
+
     def test_corpus_mutation_invalidates_frozen_plan(self):
         spec = detector()
         c = corpus()

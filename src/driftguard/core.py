@@ -191,7 +191,12 @@ class DriftGuardEngine:
         valid_critical_breach = any(
             dimension.critical
             and any(
-                float(item.drift_score) >= state.policy.critical_reload_threshold
+                float(item.drift_score)
+                >= (
+                    float(dimension.critical_reload_threshold)
+                    if strict
+                    else state.policy.critical_reload_threshold
+                )
                 for item, _ in by_dimension.get(dimension.dimension_id, [])
             )
             for dimension in state.dimensions
@@ -239,13 +244,13 @@ class DriftGuardEngine:
                 dimension.dimension_id
                 for dimension in state.dimensions
                 if dimension_scores[dimension.dimension_id]
-                >= state.policy.reload_threshold
+                >= float(dimension.reload_threshold)
             ]
             warn_dimensions = [
                 dimension.dimension_id
                 for dimension in state.dimensions
                 if dimension_scores[dimension.dimension_id]
-                >= state.policy.warn_threshold
+                >= float(dimension.warn_threshold)
             ]
             if valid_critical_breach or reload_dimensions:
                 behavioral_decision = Decision.RELOAD

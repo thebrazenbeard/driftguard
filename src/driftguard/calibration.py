@@ -194,6 +194,7 @@ class CalibrationFamilyPolicy:
     post_shift_horizon_observations: int
     maximum_stable_false_alarm_rate: float
     maximum_pre_shift_false_alarm_rate: float
+    maximum_wrong_dimension_alarm_rate: float
     minimum_detection_rate: float
     maximum_mean_detection_delay: float
 
@@ -231,6 +232,10 @@ class CalibrationFamilyPolicy:
             self.maximum_pre_shift_false_alarm_rate,
             "maximum pre-shift false alarm rate",
         )
+        _unit(
+            self.maximum_wrong_dimension_alarm_rate,
+            "maximum wrong-dimension alarm rate",
+        )
         _unit(self.minimum_detection_rate, "minimum detection rate")
         if (
             type(self.maximum_mean_detection_delay) not in (int, float)
@@ -265,6 +270,9 @@ class CalibrationFamilyPolicy:
             ),
             "maximum_pre_shift_false_alarm_rate": float(
                 self.maximum_pre_shift_false_alarm_rate
+            ),
+            "maximum_wrong_dimension_alarm_rate": float(
+                self.maximum_wrong_dimension_alarm_rate
             ),
             "minimum_detection_rate": float(self.minimum_detection_rate),
             "maximum_mean_detection_delay": float(
@@ -383,6 +391,7 @@ class CalibrationFamilyMetrics:
     family_id: str
     stable_false_alarm: BinomialEstimate
     pre_shift_false_alarm: BinomialEstimate
+    wrong_dimension_alarm: BinomialEstimate
     detection: BinomialEstimate
     stable_alarm_run_lengths: tuple[int, ...]
     detection_delays: tuple[int, ...]
@@ -400,6 +409,7 @@ class CalibrationFamilyMetrics:
             "family_id": self.family_id,
             "stable_false_alarm": self.stable_false_alarm.payload(),
             "pre_shift_false_alarm": self.pre_shift_false_alarm.payload(),
+            "wrong_dimension_alarm": self.wrong_dimension_alarm.payload(),
             "detection": self.detection.payload(),
             "stable_alarm_run_lengths": list(
                 self.stable_alarm_run_lengths
@@ -595,6 +605,10 @@ def _family_metrics(
         pre_shift_false_alarms,
         len(shifted),
     )
+    wrong_dimension_estimate = BinomialEstimate.from_counts(
+        wrong_dimension_alarms,
+        len(shifted),
+    )
     detection_estimate = BinomialEstimate.from_counts(
         detections,
         len(shifted),
@@ -622,6 +636,11 @@ def _family_metrics(
         > policy.maximum_pre_shift_false_alarm_rate
     ):
         failures.append("pre_shift_false_alarm_upper_bound_exceeded")
+    if (
+        wrong_dimension_estimate.wilson_high_95
+        > policy.maximum_wrong_dimension_alarm_rate
+    ):
+        failures.append("wrong_dimension_alarm_upper_bound_exceeded")
     if detection_estimate.wilson_low_95 < policy.minimum_detection_rate:
         failures.append("detection_lower_bound_below_minimum")
     if (
@@ -634,6 +653,7 @@ def _family_metrics(
         family_id=policy.family_id,
         stable_false_alarm=stable_estimate,
         pre_shift_false_alarm=pre_shift_estimate,
+        wrong_dimension_alarm=wrong_dimension_estimate,
         detection=detection_estimate,
         stable_alarm_run_lengths=tuple(stable_alarm_run_lengths),
         detection_delays=tuple(detection_delays),

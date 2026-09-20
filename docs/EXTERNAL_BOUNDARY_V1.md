@@ -27,7 +27,7 @@ An evaluator request or response does not prove evaluator identity honesty or ac
 
 ## Reload actuator directive
 
-`ReloadDirective` is constructible only from a committed reload-required evaluation. It binds:
+`ReloadDirective` is constructible only when the supplied reload-required `CommitResult` exactly matches a durable `evaluation_events` row read back through the same `DriftLedger`. A bare in-memory dataclass is insufficient. It binds:
 
 - session id;
 - evaluation digest;
@@ -60,7 +60,7 @@ An actuator `APPLIED` receipt may support a reload acknowledgement. That acknowl
 
 It still does not prove behavioral recovery.
 
-`qualify_post_reload_behavior()` requires a later committed evaluation that:
+`qualify_post_reload_behavior()` requires the acknowledgement and the later replay to be present in the same `DriftLedger`; bare caller-constructed result objects are insufficient. The later committed evaluation must:
 
 - binds the same save-state;
 - occurs after the acknowledgement turn;
@@ -76,7 +76,7 @@ This receipt says the governed replay was stable at that later turn. It does not
 
 `ExternalReceiptChainEntry` provides a hash-linked subject suitable for persistence in an external append-only or independently anchored store.
 
-The hash chain is tamper-evident only relative to a trusted external anchor. Keeping both the mutable SQLite ledger and the only copy of the receipt-chain root under the same local administrator does not create tamper-proof storage.
+The SQLite cross-check prevents ordinary caller-side laundering of unrecorded dataclasses into effect/recovery claims, but it does not defend against a local administrator who can rewrite the database. The hash chain is tamper-evident only relative to a trusted external anchor. Keeping both the mutable SQLite ledger and the only copy of the receipt-chain root under the same local administrator does not create tamper-proof storage.
 
 ## Non-effects
 

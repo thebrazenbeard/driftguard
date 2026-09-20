@@ -21,6 +21,7 @@ Changing an evaluator or calibration must not silently mean the desired behavior
 Strict mode requires every measured dimension to declare:
 
 - an explicit score scale;
+- a calibration-derived maximum tolerated source spread;
 - an explicit warning threshold;
 - an explicit reload threshold;
 - an explicit critical threshold when the dimension is critical;
@@ -35,7 +36,7 @@ Every eligible probe source must declare:
 - the score scale it emits;
 - its existing maximum independence ceiling and dimension scope.
 
-A score is admitted only when source scope, observation/state/turn binding, independence, calibration metadata/digest, score scale, source uniqueness, source quorum, and correlation-group quorum all satisfy the frozen save-state.
+A score is admitted only when source scope, observation/state/turn binding, independence, calibration metadata/digest, score scale, source uniqueness, source quorum, correlation-group quorum, and frozen disagreement tolerance all satisfy the save-state.
 
 Measurement-triggered critical reloads do not bypass the declared source/correlation quorum. Once the dimension quorum is satisfied, a critical member breach remains a conservative fail-safe.
 
@@ -47,7 +48,7 @@ Each dimension is evaluated on its own governed calibrated scale and against its
 
 This removes the unsupported assumption that, for example, `0.4` truthfulness drift and `0.4` style drift are cardinally interchangeable.
 
-The median is not a truth oracle. It is a bounded deterministic estimator over already-admitted measurements.
+The median is not a truth oracle. It is a bounded deterministic estimator over already-admitted measurements. If admitted calibrated sources disagree beyond the frozen per-dimension spread tolerance, strict behavior is epistemically `UNKNOWN` rather than allowing the median to wash the disagreement away.
 
 ## Independence semantics
 
@@ -61,7 +62,7 @@ Actual corroboration is now represented separately by:
 - per-dimension source quorum;
 - per-dimension correlation-group quorum.
 
-Two probes with the same ancestry/correlation group cannot satisfy a two-group requirement merely because they have different names.
+Two probes with the same ancestry/correlation group cannot satisfy a two-group requirement merely because they have different names. A flat correlation group is still only governed provenance metadata, not proof of statistical independence.
 
 `DIFFERENT_SOURCE_ID != INDEPENDENT_EVIDENCE`
 
@@ -77,6 +78,12 @@ Strict save-states expose:
 The full save-state digest still binds all four for session pinning. Changing restore wording therefore changes the control/full-state identity without pretending that the measured behavior itself changed.
 
 External evaluator request V2 binds all three split digests in addition to the full state, observation, turn, generation, and probe contract.
+
+## Durable longitudinal evidence
+
+Strict evaluation receipts persist both the calibrated per-dimension scores and the admitted per-source score/provenance trace. The raw trace is digest-bound into the Evaluation and stored in the durable ledger.
+
+This prevents a future sequential detector from receiving only a final label or an irreversible evidence hash. Evaluator disagreement remains inspectable after the original call.
 
 ## Typed behavioral disposition
 

@@ -370,6 +370,7 @@ class BehavioralRecoveryBoundaryTests(LedgerHarness):
             with self.assertRaisesRegex(ValueError, "ledger acknowledgement receipt"):
                 qualify_post_reload_behavior(
                     session_id="session",
+                    state=self.s,
                     acknowledgement=ack,
                     acknowledgement_result=ack_result,
                     replay_commit=replay,
@@ -436,6 +437,7 @@ class BehavioralRecoveryBoundaryTests(LedgerHarness):
         with self.assertRaisesRegex(ValueError, "stable bounded recovery"):
             qualify_post_reload_behavior(
                 session_id="session",
+                state=self.s,
                 acknowledgement=ack,
                 acknowledgement_result=ack_result,
                 replay_commit=replay,

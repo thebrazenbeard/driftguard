@@ -40,6 +40,9 @@ def strict_single_dimension(*, same_group=False, min_sources=2, min_groups=2):
                 min_sources=min_sources,
                 min_correlation_groups=min_groups,
                 score_scale="calibrated-drift-v1",
+                warn_threshold=0.25,
+                reload_threshold=0.45,
+                critical_reload_threshold=0.40,
             ),
         ),
         probe_sources=(
@@ -101,11 +104,15 @@ def strict_two_dimension():
                 "truth",
                 "Truth discipline.",
                 score_scale="calibrated-drift-v1",
+                warn_threshold=0.20,
+                reload_threshold=0.50,
             ),
             BehaviorDimension(
                 "style",
                 "Direct style.",
                 score_scale="calibrated-drift-v1",
+                warn_threshold=0.25,
+                reload_threshold=0.60,
             ),
         ),
         (
@@ -152,7 +159,8 @@ class R6MeasurementValidityTests(unittest.TestCase):
         self.assertEqual(Decision.STABLE, result.decision)
         self.assertEqual(Decision.STABLE, result.behavioral_decision)
         self.assertIsNone(result.aggregate_drift)
-        self.assertEqual((("truthfulness", 0.15),), result.dimension_scores)
+        self.assertEqual("truthfulness", result.dimension_scores[0][0])
+        self.assertAlmostEqual(0.15, result.dimension_scores[0][1])
 
     def test_missing_second_source_fails_closed(self):
         state = strict_single_dimension()
@@ -173,6 +181,9 @@ class R6MeasurementValidityTests(unittest.TestCase):
             min_sources=2,
             min_correlation_groups=2,
             score_scale="calibrated-drift-v1",
+            warn_threshold=0.25,
+            reload_threshold=0.45,
+            critical_reload_threshold=0.40,
         )
         with self.assertRaisesRegex(
             ValueError,
@@ -228,6 +239,8 @@ class R6MeasurementValidityTests(unittest.TestCase):
                         "d",
                         "dimension",
                         score_scale="scale-v1",
+                        warn_threshold=0.25,
+                        reload_threshold=0.45,
                     ),
                 ),
                 (
@@ -253,6 +266,8 @@ class R6MeasurementValidityTests(unittest.TestCase):
                         "d",
                         "dimension",
                         score_scale="scale-a",
+                        warn_threshold=0.25,
+                        reload_threshold=0.45,
                     ),
                 ),
                 (

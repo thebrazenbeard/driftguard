@@ -5,7 +5,7 @@ from enum import StrEnum
 from typing import Iterable
 
 from .external_boundary import BehavioralRecoveryReceipt
-from .ledger import CommitResult
+from .ledger import CommitResult, DriftLedger
 from .model import Decision, Evaluation, canonical_digest, require_sha256_digest
 
 
@@ -23,7 +23,10 @@ class RecoveryWindowPolicy:
     minimum_turn_span: int = 4
 
     def __post_init__(self) -> None:
-        if type(self.minimum_stable_checkpoints) is not int or self.minimum_stable_checkpoints < 2:
+        if (
+            type(self.minimum_stable_checkpoints) is not int
+            or self.minimum_stable_checkpoints < 2
+        ):
             raise ValueError("minimum_stable_checkpoints must be an integer >= 2")
         if type(self.minimum_turn_span) is not int or self.minimum_turn_span < 1:
             raise ValueError("minimum_turn_span must be an integer >= 1")
@@ -72,9 +75,56 @@ class RecoveryWindowReceipt:
         )
 
 
+def _validate_initial_recovery(
+    *,
+    session_id: str,
+    initial_recovery: BehavioralRecoveryReceipt,
+    ledger: DriftLedger,
+) -> None:
+    ack = ledger.acknowledgement_receipt(ack_id=initial_recovery.ack_id)
+    if ack is None:
+        raise ValueError(
+            "recovery window requires durable ledger acknowledgement receipt"
+        )
+    if (
+        ack.session_id != session_id
+        or ack.evaluation_digest
+        != initial_recovery.acknowledged_evaluation_digest
+        or ack.state_digest != initial_recovery.state_digest
+        or ack.turn_index != initial_recovery.acknowledgement_turn_index
+        or ack.generation_after != initial_recovery.replay_generation
+    ):
+        raise ValueError(
+            "initial recovery does not match durable acknowledgement receipt"
+        )
+
+    replay = ledger.evaluation_receipt(
+        session_id=session_id,
+        evaluation_digest=initial_recovery.replay_evaluation_digest,
+    )
+    if replay is None:
+        raise ValueError("recovery window requires durable ledger replay receipt")
+    if (
+        replay.generation_before != initial_recovery.replay_generation
+        or replay.generation_after != initial_recovery.replay_generation + 1
+        or replay.turn_index != initial_recovery.replay_turn_index
+        or replay.state_digest != initial_recovery.state_digest
+        or replay.observation_digest
+        != initial_recovery.replay_observation_digest
+        or replay.evidence_digest != initial_recovery.replay_evidence_digest
+        or replay.decision is not Decision.STABLE
+        or replay.reload_required is not False
+    ):
+        raise ValueError(
+            "initial recovery does not match durable behavioral replay receipt"
+        )
+
+
 def _validate_commit(
     commit: CommitResult,
     *,
+    session_id: str,
+    ledger: DriftLedger,
     state_digest: str,
     previous_turn: int,
     expected_generation: int,
@@ -97,9 +147,15 @@ def _validate_commit(
     require_sha256_digest(evaluation.evidence_digest, "evidence digest")
     if type(evaluation.turn_index) is not int or evaluation.turn_index <= previous_turn:
         raise ValueError("recovery checkpoints must advance turn_index strictly")
-    if type(evaluation.generation) is not int or evaluation.generation != expected_generation:
+    if (
+        type(evaluation.generation) is not int
+        or evaluation.generation != expected_generation
+    ):
         raise ValueError("recovery checkpoint generation is not contiguous")
-    if type(commit.successor_generation) is not int or commit.successor_generation != evaluation.generation + 1:
+    if (
+        type(commit.successor_generation) is not int
+        or commit.successor_generation != evaluation.generation + 1
+    ):
         raise ValueError("recovery checkpoint successor generation mismatch")
     if evaluation.decision is Decision.STABLE and evaluation.reload_required:
         raise ValueError("STABLE evaluation cannot require reload")
@@ -107,22 +163,56 @@ def _validate_commit(
         raise ValueError("WARN evaluation cannot require reload")
     if evaluation.decision is Decision.RELOAD and not evaluation.reload_required:
         raise ValueError("RELOAD evaluation must require reload")
+
+    receipt = ledger.evaluation_receipt(
+        session_id=session_id,
+        evaluation_digest=evaluation.digest,
+    )
+    if receipt is None:
+        raise ValueError(
+            "recovery checkpoint requires durable ledger evaluation receipt"
+        )
+    if (
+        receipt.generation_before != evaluation.generation
+        or receipt.generation_after != commit.successor_generation
+        or receipt.turn_index != evaluation.turn_index
+        or receipt.state_digest != evaluation.state_digest
+        or receipt.observation_digest != evaluation.observation_digest
+        or receipt.evidence_digest != evaluation.evidence_digest
+        or receipt.evaluation_digest != evaluation.digest
+        or receipt.decision is not evaluation.decision
+        or receipt.reload_required is not evaluation.reload_required
+    ):
+        raise ValueError(
+            "recovery checkpoint does not match durable ledger evaluation receipt"
+        )
     return evaluation
 
 
 def qualify_recovery_window(
     *,
+    session_id: str,
     initial_recovery: BehavioralRecoveryReceipt,
     subsequent_commits: Iterable[CommitResult],
+    ledger: DriftLedger,
     policy: RecoveryWindowPolicy = RecoveryWindowPolicy(),
 ) -> RecoveryWindowReceipt:
+    if type(session_id) is not str or not session_id.strip():
+        raise ValueError("session_id must be a non-empty exact string")
     if type(initial_recovery) is not BehavioralRecoveryReceipt:
         raise ValueError("initial_recovery must be exact BehavioralRecoveryReceipt")
+    if type(ledger) is not DriftLedger:
+        raise ValueError("ledger must be exact DriftLedger")
     if type(policy) is not RecoveryWindowPolicy:
         raise ValueError("policy must be exact RecoveryWindowPolicy")
 
     require_sha256_digest(initial_recovery.digest, "initial recovery digest")
     require_sha256_digest(initial_recovery.state_digest, "state digest")
+    _validate_initial_recovery(
+        session_id=session_id,
+        initial_recovery=initial_recovery,
+        ledger=ledger,
+    )
 
     evaluation_digests = [initial_recovery.replay_evaluation_digest]
     decision_trace = [Decision.STABLE.value]
@@ -137,6 +227,8 @@ def qualify_recovery_window(
     for commit in tuple(subsequent_commits):
         evaluation = _validate_commit(
             commit,
+            session_id=session_id,
+            ledger=ledger,
             state_digest=initial_recovery.state_digest,
             previous_turn=previous_turn,
             expected_generation=expected_generation,

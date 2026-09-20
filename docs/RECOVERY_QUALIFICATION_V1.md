@@ -22,6 +22,16 @@ A recovery window starts only from an existing BehavioralRecoveryReceipt. That r
 
 Later checkpoints must be committed DriftGuard evaluations.
 
+The recovery-window qualifier therefore requires an exact `session_id` and the
+same `DriftLedger` that contains the acknowledgement/replay chain. It re-reads
+the initial acknowledgement row, the initial stable replay row, and every later
+checkpoint row before classification. Caller-constructed dataclasses are not
+durable evidence and cannot mint a recovery-window receipt by themselves.
+
+**IN-MEMORY COMMIT != DURABLE CHECKPOINT**
+
+**CROSS-SESSION ROW != CURRENT RECOVERY SUBJECT**
+
 The default reference policy requires:
 
 - at least 3 stable checkpoints, including the initial replay;

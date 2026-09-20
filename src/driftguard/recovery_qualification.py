@@ -129,6 +129,7 @@ def _validate_initial_recovery(
         decision=replay.decision,
         aggregate_drift=replay.aggregate_drift,
         reasons=replay.reasons,
+        behavioral_decision=replay.behavioral_decision,
     )
     if behavioral is not BehavioralReplayDisposition.STABLE:
         raise ValueError(
@@ -202,6 +203,7 @@ def _validate_commit(
         or receipt.reload_required is not evaluation.reload_required
         or receipt.aggregate_drift != evaluation.aggregate_drift
         or receipt.reasons != evaluation.reasons
+        or receipt.behavioral_decision is not evaluation.behavioral_decision
     ):
         raise ValueError(
             "recovery checkpoint does not match durable ledger evaluation receipt"

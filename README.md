@@ -1,4 +1,4 @@
-﻿# DriftGuard
+# DriftGuard
 
 DriftGuard is a deterministic behavioral-drift monitor for AI systems.
 

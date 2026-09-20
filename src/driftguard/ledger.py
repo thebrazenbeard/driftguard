@@ -10,6 +10,7 @@ from .model import (
     Decision,
     DriftEvidence,
     Evaluation,
+    MonitoredSubject,
     RecoveryStatus,
     RecoveryVerification,
     ReloadAcknowledgement,
@@ -50,6 +51,8 @@ class EvaluationEventReceipt:
     evidence_trace: tuple[
         tuple[str, str, str, str, float, str, str], ...
     ] = ()
+    subject_digest: str | None = None
+    subject_epoch: int | None = None
 
 
 @dataclass(frozen=True)
@@ -92,7 +95,9 @@ class DriftLedger:
                     last_turn INTEGER NOT NULL CHECK (last_turn >= -1),
                     restore_anchor_turn INTEGER NOT NULL CHECK (restore_anchor_turn >= 0),
                     last_reload_decision_turn INTEGER NULL,
-                    last_evaluation_digest TEXT NULL
+                    last_evaluation_digest TEXT NULL,
+                    subject_digest TEXT NULL,
+                    subject_epoch INTEGER NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS evaluation_events (
@@ -112,6 +117,8 @@ class DriftLedger:
                     dimension_scores TEXT NULL,
                     behavioral_decision TEXT NULL,
                     evidence_trace TEXT NULL,
+                    subject_digest TEXT NULL,
+                    subject_epoch INTEGER NULL,
                     FOREIGN KEY(session_id) REFERENCES sessions(session_id)
                 );
 
@@ -196,6 +203,15 @@ class DriftLedger:
                     """
                 )
 
+        if "subject_digest" not in session_columns:
+            db.execute(
+                "ALTER TABLE sessions ADD COLUMN subject_digest TEXT NULL"
+            )
+        if "subject_epoch" not in session_columns:
+            db.execute(
+                "ALTER TABLE sessions ADD COLUMN subject_epoch INTEGER NULL"
+            )
+
         event_columns = self._columns(db, "evaluation_events")
         if "observation_digest" not in event_columns:
             db.execute(
@@ -221,6 +237,16 @@ class DriftLedger:
                 "ALTER TABLE evaluation_events "
                 "ADD COLUMN evidence_trace TEXT NULL"
             )
+        if "subject_digest" not in event_columns:
+            db.execute(
+                "ALTER TABLE evaluation_events "
+                "ADD COLUMN subject_digest TEXT NULL"
+            )
+        if "subject_epoch" not in event_columns:
+            db.execute(
+                "ALTER TABLE evaluation_events "
+                "ADD COLUMN subject_epoch INTEGER NULL"
+            )
 
     def evaluate_and_commit(
         self,
@@ -231,6 +257,7 @@ class DriftLedger:
         observation_digest: str,
         turn_index: int,
         expected_generation: int,
+        subject: MonitoredSubject | None = None,
         engine: DriftGuardEngine | None = None,
     ) -> CommitResult:
         if type(session_id) is not str or not session_id.strip():
@@ -238,6 +265,12 @@ class DriftLedger:
         require_sha256_digest(observation_digest, "observation digest")
         if type(expected_generation) is not int or expected_generation < 0:
             raise ValueError("expected_generation must be non-negative int")
+        if subject is not None and type(subject) is not MonitoredSubject:
+            raise ValueError("subject must be exact MonitoredSubject or None")
+        subject_digest = (
+            subject.configuration_digest if subject is not None else None
+        )
+        subject_epoch = subject.epoch if subject is not None else None
         engine = engine or DriftGuardEngine()
 
         with closing(self._connect()) as db, db:
@@ -258,8 +291,9 @@ class DriftLedger:
                     """
                     INSERT INTO sessions(
                         session_id,state_digest,generation,first_turn,last_turn,
-                        restore_anchor_turn,last_reload_decision_turn
-                    ) VALUES(?,?,?,?,?,?,?)
+                        restore_anchor_turn,last_reload_decision_turn,
+                        subject_digest,subject_epoch
+                    ) VALUES(?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         session_id,
@@ -269,6 +303,8 @@ class DriftLedger:
                         last_turn,
                         restore_anchor_turn,
                         None,
+                        subject_digest,
+                        subject_epoch,
                     ),
                 )
             else:
@@ -288,6 +324,24 @@ class DriftLedger:
                     raise StaleGenerationError(
                         "save-state digest changed inside an existing session"
                     )
+                stored_subject_digest = (
+                    str(row["subject_digest"])
+                    if row["subject_digest"] is not None
+                    else None
+                )
+                stored_subject_epoch = (
+                    int(row["subject_epoch"])
+                    if row["subject_epoch"] is not None
+                    else None
+                )
+                if stored_subject_digest != subject_digest:
+                    raise StaleGenerationError(
+                        "monitored subject changed inside an existing session"
+                    )
+                if stored_subject_epoch != subject_epoch:
+                    raise StaleGenerationError(
+                        "monitored subject epoch changed inside an existing session"
+                    )
 
             if turn_index <= last_turn:
                 raise StaleGenerationError(
@@ -302,6 +356,7 @@ class DriftLedger:
                 generation=generation,
                 restore_anchor_turn=restore_anchor_turn,
                 last_reload_decision_turn=last_reload_decision_turn,
+                subject=subject,
             )
             successor = generation + 1
             next_reload_decision = (
@@ -334,8 +389,9 @@ class DriftLedger:
                     state_digest,observation_digest,evidence_digest,
                     evaluation_digest,decision,reload_required,
                     aggregate_drift,reasons,dimension_scores,
-                    behavioral_decision,evidence_trace
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    behavioral_decision,evidence_trace,
+                    subject_digest,subject_epoch
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     session_id,
@@ -361,6 +417,8 @@ class DriftLedger:
                         if evaluation.evidence_trace
                         else None
                     ),
+                    evaluation.subject_digest,
+                    evaluation.subject_epoch,
                 ),
             )
             return CommitResult(
@@ -554,6 +612,16 @@ class DriftLedger:
                     )
                     if row["evidence_trace"] is not None
                     else ()
+                ),
+                subject_digest=(
+                    str(row["subject_digest"])
+                    if row["subject_digest"] is not None
+                    else None
+                ),
+                subject_epoch=(
+                    int(row["subject_epoch"])
+                    if row["subject_epoch"] is not None
+                    else None
                 ),
             )
 

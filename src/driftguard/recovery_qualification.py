@@ -203,6 +203,8 @@ def _validate_commit(
         or receipt.reload_required is not evaluation.reload_required
         or receipt.aggregate_drift != evaluation.aggregate_drift
         or receipt.reasons != evaluation.reasons
+        or receipt.subject_digest != evaluation.subject_digest
+        or receipt.subject_epoch != evaluation.subject_epoch
         or receipt.behavioral_decision is not evaluation.behavioral_decision
         or (
             evaluation.behavioral_decision is not None

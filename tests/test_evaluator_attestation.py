@@ -1,4 +1,4 @@
-from dataclasses import replace
+﻿from dataclasses import replace
 import os
 import tempfile
 import unittest
@@ -13,10 +13,13 @@ from driftguard import (
     SourceBinding,
 )
 from driftguard.evaluator_attestation import (
+    AttestedEvaluatorCommit,
     EvaluatorAttestationAlgorithm,
     EvaluatorAttestationPolicy,
+    EvaluatorAttestationVerification,
     build_hmac_evaluator_attestation,
     commit_attested_evaluator_response,
+    key_fingerprint_sha256,
     verify_evaluator_attestation,
 )
 from driftguard.external_boundary import (
@@ -110,10 +113,19 @@ def response_for(request, rows) -> ExternalEvaluatorResponse:
 def policy(
     *sources: SourceBinding,
     key_id: str = "attestation-key-1",
+    key_material: bytes = KEY,
+    key_epoch: int = 1,
+    key_fingerprint: str | None = None,
 ) -> EvaluatorAttestationPolicy:
     return EvaluatorAttestationPolicy(
         policy_id="attestation-policy-1",
         key_id=key_id,
+        key_fingerprint_sha256=(
+            key_fingerprint
+            if key_fingerprint is not None
+            else key_fingerprint_sha256(key_material)
+        ),
+        key_epoch=key_epoch,
         algorithm=EvaluatorAttestationAlgorithm.HMAC_SHA256_V1,
         authorized_sources=tuple(sources or (SOURCE_A,)),
     )
@@ -163,7 +175,7 @@ class EvaluatorAttestationTests(unittest.TestCase):
             key_material=KEY,
         )
 
-        with self.assertRaisesRegex(ValueError, "signature mismatch"):
+        with self.assertRaisesRegex(ValueError, "fingerprint mismatch"):
             verify_evaluator_attestation(
                 request=req,
                 response=resp,
@@ -280,10 +292,69 @@ class EvaluatorAttestationTests(unittest.TestCase):
                 key_material=KEY,
             )
 
-    def test_policy_digest_moves_with_key_identity(self):
-        a = policy(SOURCE_A, key_id="key-a")
-        b = policy(SOURCE_A, key_id="key-b")
-        self.assertNotEqual(a.digest, b.digest)
+    def test_policy_digest_moves_with_key_identity_fingerprint_and_epoch(self):
+        base = policy(SOURCE_A, key_id="key-a", key_material=KEY, key_epoch=1)
+        renamed = policy(SOURCE_A, key_id="key-b", key_material=KEY, key_epoch=1)
+        rotated = policy(
+            SOURCE_A,
+            key_id="key-a",
+            key_material=OTHER_KEY,
+            key_epoch=2,
+        )
+        epoch_only = policy(
+            SOURCE_A,
+            key_id="key-a",
+            key_material=KEY,
+            key_epoch=2,
+        )
+        self.assertNotEqual(base.digest, renamed.digest)
+        self.assertNotEqual(base.digest, rotated.digest)
+        self.assertNotEqual(base.digest, epoch_only.digest)
+        self.assertNotEqual(
+            base.key_fingerprint_sha256,
+            rotated.key_fingerprint_sha256,
+        )
+
+    def test_same_key_id_with_different_key_material_fails_before_signature_check(self):
+        s = state()
+        req = request_for(s)
+        resp = response_for(req, evidence(s))
+        pol = policy(key_material=KEY)
+        attestation = build_hmac_evaluator_attestation(
+            request=req,
+            response=resp,
+            policy=pol,
+            key_material=KEY,
+        )
+        with self.assertRaisesRegex(ValueError, "fingerprint mismatch"):
+            verify_evaluator_attestation(
+                request=req,
+                response=resp,
+                policy=pol,
+                attestation=attestation,
+                key_material=OTHER_KEY,
+            )
+
+    def test_attestation_cannot_rebind_key_epoch(self):
+        s = state()
+        req = request_for(s)
+        resp = response_for(req, evidence(s))
+        pol = policy(key_epoch=1)
+        attestation = build_hmac_evaluator_attestation(
+            request=req,
+            response=resp,
+            policy=pol,
+            key_material=KEY,
+        )
+        forged = replace(attestation, key_epoch=2)
+        with self.assertRaisesRegex(ValueError, "key epoch mismatch"):
+            verify_evaluator_attestation(
+                request=req,
+                response=resp,
+                policy=pol,
+                attestation=forged,
+                key_material=KEY,
+            )
 
     def test_policy_source_order_is_canonical(self):
         first = policy(SOURCE_A, SOURCE_B)
@@ -317,6 +388,73 @@ class EvaluatorAttestationTests(unittest.TestCase):
         self.assertFalse(hasattr(verification, "provider_honest"))
         self.assertFalse(hasattr(verification, "independence_proven"))
 
+    def test_verification_object_cannot_be_directly_constructed(self):
+        with self.assertRaisesRegex(ValueError, "must come from verifier"):
+            EvaluatorAttestationVerification(
+                request_digest="1" * 64,
+                response_digest="2" * 64,
+                policy_digest="3" * 64,
+                key_id="key",
+                key_fingerprint_sha256="4" * 64,
+                key_epoch=1,
+                algorithm=EvaluatorAttestationAlgorithm.HMAC_SHA256_V1,
+                signature_sha256="5" * 64,
+                covered_sources=(SOURCE_A,),
+            )
+
+    def test_attested_commit_cannot_be_directly_constructed(self):
+        s = state()
+        req = request_for(s)
+        resp = response_for(req, evidence(s))
+        pol = policy()
+        attestation = build_hmac_evaluator_attestation(
+            request=req,
+            response=resp,
+            policy=pol,
+            key_material=KEY,
+        )
+        verification = verify_evaluator_attestation(
+            request=req,
+            response=resp,
+            policy=pol,
+            attestation=attestation,
+            key_material=KEY,
+        )
+        handle = tempfile.NamedTemporaryFile(delete=False)
+        handle.close()
+        try:
+            ledger = DriftLedger(handle.name)
+            from driftguard.external_boundary import commit_evaluator_response
+
+            commit = commit_evaluator_response(
+                request=req,
+                state=s,
+                response=resp,
+                ledger=ledger,
+            )
+            receipt = ledger.record_evaluator_attestation(
+                session_id="session",
+                evaluation_digest=commit.evaluation.digest,
+                verification_digest=verification.digest,
+                request_digest=verification.request_digest,
+                response_digest=verification.response_digest,
+                policy_digest=verification.policy_digest,
+                key_id=verification.key_id,
+                key_fingerprint_sha256=verification.key_fingerprint_sha256,
+                key_epoch=verification.key_epoch,
+                algorithm=verification.algorithm.value,
+                signature_sha256=verification.signature_sha256,
+                covered_sources=verification.covered_sources,
+            )
+            with self.assertRaisesRegex(ValueError, "durable commit path"):
+                AttestedEvaluatorCommit(
+                    commit=commit,
+                    attestation=verification,
+                    durable_receipt=receipt,
+                )
+        finally:
+            os.unlink(handle.name)
+
     def test_attested_commit_preserves_existing_ledger_admission(self):
         handle = tempfile.NamedTemporaryFile(delete=False)
         handle.close()
@@ -346,7 +484,7 @@ class EvaluatorAttestationTests(unittest.TestCase):
             self.assertEqual(1, result.commit.successor_generation)
             self.assertEqual(req.digest, result.attestation.request_digest)
             self.assertEqual(
-                "STRUCTURAL_EVALUATION_COMMIT_PLUS_KEY_POSSESSION_VERIFICATION",
+                "STRUCTURAL_EVALUATION_COMMIT_PLUS_DURABLE_KEY_POSSESSION_VERIFICATION",
                 result.commit_claim,
             )
             row = ledger.session_row("session")
@@ -355,6 +493,99 @@ class EvaluatorAttestationTests(unittest.TestCase):
                 result.commit.evaluation.digest,
                 row["last_evaluation_digest"],
             )
+            self.assertEqual(
+                result.attestation.digest,
+                result.durable_receipt.verification_digest,
+            )
+            self.assertEqual(
+                result.commit.evaluation.digest,
+                result.durable_receipt.evaluation_digest,
+            )
+            self.assertEqual(
+                pol.key_fingerprint_sha256,
+                result.durable_receipt.key_fingerprint_sha256,
+            )
+            self.assertEqual(
+                pol.key_epoch,
+                result.durable_receipt.key_epoch,
+            )
+
+            reopened = DriftLedger(handle.name)
+            readback = reopened.evaluator_attestation_receipt(
+                session_id="session",
+                evaluation_digest=result.commit.evaluation.digest,
+            )
+            self.assertEqual(result.durable_receipt, readback)
+        finally:
+            os.unlink(handle.name)
+
+
+    def test_ordinary_evaluator_commit_has_no_attestation_receipt(self):
+        handle = tempfile.NamedTemporaryFile(delete=False)
+        handle.close()
+        try:
+            ledger = DriftLedger(handle.name)
+            s = state()
+            req = request_for(s)
+            resp = response_for(req, evidence(s))
+            from driftguard.external_boundary import commit_evaluator_response
+
+            commit = commit_evaluator_response(
+                request=req,
+                state=s,
+                response=resp,
+                ledger=ledger,
+            )
+            self.assertIsNone(
+                ledger.evaluator_attestation_receipt(
+                    session_id="session",
+                    evaluation_digest=commit.evaluation.digest,
+                )
+            )
+        finally:
+            os.unlink(handle.name)
+
+    def test_durable_attestation_cannot_be_rebound_for_same_evaluation(self):
+        handle = tempfile.NamedTemporaryFile(delete=False)
+        handle.close()
+        try:
+            ledger = DriftLedger(handle.name)
+            s = state()
+            req = request_for(s)
+            resp = response_for(req, evidence(s))
+            pol = policy()
+            attestation = build_hmac_evaluator_attestation(
+                request=req,
+                response=resp,
+                policy=pol,
+                key_material=KEY,
+            )
+            result = commit_attested_evaluator_response(
+                request=req,
+                state=s,
+                response=resp,
+                policy=pol,
+                attestation=attestation,
+                key_material=KEY,
+                ledger=ledger,
+            )
+            with self.assertRaisesRegex(ValueError, "diverges"):
+                ledger.record_evaluator_attestation(
+                    session_id="session",
+                    evaluation_digest=result.commit.evaluation.digest,
+                    verification_digest="f" * 64,
+                    request_digest=result.attestation.request_digest,
+                    response_digest=result.attestation.response_digest,
+                    policy_digest=result.attestation.policy_digest,
+                    key_id=result.attestation.key_id,
+                    key_fingerprint_sha256=(
+                        result.attestation.key_fingerprint_sha256
+                    ),
+                    key_epoch=result.attestation.key_epoch,
+                    algorithm=result.attestation.algorithm.value,
+                    signature_sha256=result.attestation.signature_sha256,
+                    covered_sources=result.attestation.covered_sources,
+                )
         finally:
             os.unlink(handle.name)
 

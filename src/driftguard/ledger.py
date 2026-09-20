@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import closing
 from dataclasses import dataclass
+import json
 import sqlite3
 
 from .core import DriftGuardEngine, StaleGenerationError
@@ -13,6 +14,7 @@ from .model import (
     RecoveryVerification,
     ReloadAcknowledgement,
     SaveState,
+    SourceBinding,
     require_sha256_digest,
 )
 
@@ -44,6 +46,48 @@ class EvaluationEventReceipt:
     reload_required: bool
     aggregate_drift: float | None
     reasons: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class EvaluatorAttestationEventReceipt:
+    verification_digest: str
+    session_id: str
+    evaluation_digest: str
+    request_digest: str
+    response_digest: str
+    policy_digest: str
+    key_id: str
+    key_fingerprint_sha256: str
+    key_epoch: int
+    algorithm: str
+    signature_sha256: str
+    covered_sources: tuple[SourceBinding, ...]
+
+    def __post_init__(self) -> None:
+        for value, label in (
+            (self.verification_digest, "verification_digest"),
+            (self.evaluation_digest, "evaluation_digest"),
+            (self.request_digest, "request_digest"),
+            (self.response_digest, "response_digest"),
+            (self.policy_digest, "policy_digest"),
+            (self.key_fingerprint_sha256, "key_fingerprint_sha256"),
+            (self.signature_sha256, "signature_sha256"),
+        ):
+            require_sha256_digest(value, label)
+        if type(self.session_id) is not str or not self.session_id.strip():
+            raise ValueError("session_id must be a non-empty exact string")
+        if type(self.key_id) is not str or not self.key_id.strip():
+            raise ValueError("key_id must be a non-empty exact string")
+        if type(self.key_epoch) is not int or isinstance(self.key_epoch, bool) or self.key_epoch < 1:
+            raise ValueError("key_epoch must be a positive exact integer")
+        if type(self.algorithm) is not str or not self.algorithm.strip():
+            raise ValueError("algorithm must be a non-empty exact string")
+        if type(self.covered_sources) is not tuple:
+            raise ValueError("covered_sources must be an exact tuple")
+        if any(type(item) is not SourceBinding for item in self.covered_sources):
+            raise ValueError("covered_sources must contain exact SourceBinding values")
+        if len(self.covered_sources) != len(set(self.covered_sources)):
+            raise ValueError("covered_sources must be unique")
 
 
 @dataclass(frozen=True)
@@ -109,6 +153,26 @@ class DriftLedger:
                 CREATE UNIQUE INDEX IF NOT EXISTS
                     evaluation_events_session_digest_uq
                     ON evaluation_events(session_id, evaluation_digest);
+
+                CREATE TABLE IF NOT EXISTS evaluator_attestations (
+                    verification_digest TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    evaluation_digest TEXT NOT NULL,
+                    request_digest TEXT NOT NULL,
+                    response_digest TEXT NOT NULL,
+                    policy_digest TEXT NOT NULL,
+                    key_id TEXT NOT NULL,
+                    key_fingerprint_sha256 TEXT NOT NULL,
+                    key_epoch INTEGER NOT NULL CHECK (key_epoch >= 1),
+                    algorithm TEXT NOT NULL,
+                    signature_sha256 TEXT NOT NULL,
+                    covered_sources_json TEXT NOT NULL,
+                    FOREIGN KEY(session_id) REFERENCES sessions(session_id)
+                );
+
+                CREATE UNIQUE INDEX IF NOT EXISTS
+                    evaluator_attestations_session_evaluation_uq
+                    ON evaluator_attestations(session_id, evaluation_digest);
 
                 CREATE TABLE IF NOT EXISTS reload_acknowledgements (
                     ack_id TEXT PRIMARY KEY,
@@ -491,6 +555,162 @@ class DriftLedger:
                     if item
                 ),
             )
+
+    @staticmethod
+    def _attestation_row_to_receipt(row: sqlite3.Row) -> EvaluatorAttestationEventReceipt:
+        raw_sources = json.loads(str(row["covered_sources_json"]))
+        if type(raw_sources) is not list:
+            raise ValueError("covered_sources_json must decode to a list")
+        sources = tuple(
+            SourceBinding(
+                ref=item.get("ref"),
+                version=item.get("version"),
+            )
+            for item in raw_sources
+            if type(item) is dict
+        )
+        if len(sources) != len(raw_sources):
+            raise ValueError("covered_sources_json contains invalid source row")
+        return EvaluatorAttestationEventReceipt(
+            verification_digest=str(row["verification_digest"]),
+            session_id=str(row["session_id"]),
+            evaluation_digest=str(row["evaluation_digest"]),
+            request_digest=str(row["request_digest"]),
+            response_digest=str(row["response_digest"]),
+            policy_digest=str(row["policy_digest"]),
+            key_id=str(row["key_id"]),
+            key_fingerprint_sha256=str(row["key_fingerprint_sha256"]),
+            key_epoch=int(row["key_epoch"]),
+            algorithm=str(row["algorithm"]),
+            signature_sha256=str(row["signature_sha256"]),
+            covered_sources=tuple(sorted(sources)),
+        )
+
+    def record_evaluator_attestation(
+        self,
+        *,
+        session_id: str,
+        evaluation_digest: str,
+        verification_digest: str,
+        request_digest: str,
+        response_digest: str,
+        policy_digest: str,
+        key_id: str,
+        key_fingerprint_sha256: str,
+        key_epoch: int,
+        algorithm: str,
+        signature_sha256: str,
+        covered_sources: tuple[SourceBinding, ...],
+    ) -> EvaluatorAttestationEventReceipt:
+        candidate = EvaluatorAttestationEventReceipt(
+            verification_digest=verification_digest,
+            session_id=session_id,
+            evaluation_digest=evaluation_digest,
+            request_digest=request_digest,
+            response_digest=response_digest,
+            policy_digest=policy_digest,
+            key_id=key_id,
+            key_fingerprint_sha256=key_fingerprint_sha256,
+            key_epoch=key_epoch,
+            algorithm=algorithm,
+            signature_sha256=signature_sha256,
+            covered_sources=tuple(sorted(covered_sources)),
+        )
+        if self.evaluation_receipt(
+            session_id=session_id,
+            evaluation_digest=evaluation_digest,
+        ) is None:
+            raise ValueError(
+                "evaluator attestation requires durable evaluation receipt"
+            )
+        covered_json = json.dumps(
+            [
+                {"ref": item.ref, "version": item.version}
+                for item in candidate.covered_sources
+            ],
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+
+        with closing(self._connect()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            existing = db.execute(
+                """
+                SELECT * FROM evaluator_attestations
+                 WHERE session_id=? AND evaluation_digest=?
+                """,
+                (session_id, evaluation_digest),
+            ).fetchone()
+            if existing is not None:
+                receipt = self._attestation_row_to_receipt(existing)
+                if receipt != candidate:
+                    raise ValueError(
+                        "durable evaluator attestation diverges from candidate"
+                    )
+                return receipt
+
+            db.execute(
+                """
+                INSERT INTO evaluator_attestations(
+                    verification_digest,session_id,evaluation_digest,
+                    request_digest,response_digest,policy_digest,key_id,
+                    key_fingerprint_sha256,key_epoch,algorithm,
+                    signature_sha256,covered_sources_json
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    candidate.verification_digest,
+                    candidate.session_id,
+                    candidate.evaluation_digest,
+                    candidate.request_digest,
+                    candidate.response_digest,
+                    candidate.policy_digest,
+                    candidate.key_id,
+                    candidate.key_fingerprint_sha256,
+                    candidate.key_epoch,
+                    candidate.algorithm,
+                    candidate.signature_sha256,
+                    covered_json,
+                ),
+            )
+            readback = db.execute(
+                """
+                SELECT * FROM evaluator_attestations
+                 WHERE verification_digest=?
+                """,
+                (candidate.verification_digest,),
+            ).fetchone()
+            if readback is None:
+                raise ValueError("evaluator attestation readback missing")
+            receipt = self._attestation_row_to_receipt(readback)
+            if receipt != candidate:
+                raise ValueError(
+                    "evaluator attestation readback diverges from candidate"
+                )
+            return receipt
+
+    def evaluator_attestation_receipt(
+        self,
+        *,
+        session_id: str,
+        evaluation_digest: str,
+    ) -> EvaluatorAttestationEventReceipt | None:
+        if type(session_id) is not str or not session_id.strip():
+            raise ValueError("session_id must be a non-empty exact string")
+        require_sha256_digest(evaluation_digest, "evaluation digest")
+        with closing(self._connect()) as db, db:
+            row = db.execute(
+                """
+                SELECT * FROM evaluator_attestations
+                 WHERE session_id=? AND evaluation_digest=?
+                """,
+                (session_id, evaluation_digest),
+            ).fetchone()
+            if row is None:
+                return None
+            return self._attestation_row_to_receipt(row)
 
     def acknowledgement_receipt(
         self,

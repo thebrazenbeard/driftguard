@@ -24,7 +24,11 @@ from .external_boundary import (
     commit_evaluator_response,
     validate_evaluator_response,
 )
-from .ledger import CommitResult, DriftLedger
+from .ledger import (
+    CommitResult,
+    DriftLedger,
+    EvaluatorAttestationEventReceipt,
+)
 from .model import SaveState, SourceBinding, canonical_digest, require_sha256_digest
 
 
@@ -42,6 +46,11 @@ def _require_key_material(value: bytes) -> bytes:
     return value
 
 
+def key_fingerprint_sha256(key_material: bytes) -> str:
+    key = _require_key_material(key_material)
+    return sha256(key).hexdigest()
+
+
 def _canonical_bytes(payload: dict[str, Any]) -> bytes:
     return json.dumps(
         payload,
@@ -56,10 +65,16 @@ class EvaluatorAttestationAlgorithm(StrEnum):
     HMAC_SHA256_V1 = "HMAC_SHA256_V1"
 
 
+_VERIFIED_ATTESTATION_TOKEN = object()
+_ATTESTED_COMMIT_TOKEN = object()
+
+
 @dataclass(frozen=True)
 class EvaluatorAttestationPolicy:
     policy_id: str
     key_id: str
+    key_fingerprint_sha256: str
+    key_epoch: int
     algorithm: EvaluatorAttestationAlgorithm
     authorized_sources: tuple[SourceBinding, ...]
     policy_claim: str = (
@@ -69,6 +84,16 @@ class EvaluatorAttestationPolicy:
     def __post_init__(self) -> None:
         _nonempty(self.policy_id, "policy_id")
         _nonempty(self.key_id, "key_id")
+        require_sha256_digest(
+            self.key_fingerprint_sha256,
+            "key_fingerprint_sha256",
+        )
+        if (
+            type(self.key_epoch) is not int
+            or isinstance(self.key_epoch, bool)
+            or self.key_epoch < 1
+        ):
+            raise ValueError("key_epoch must be a positive exact integer")
         if type(self.algorithm) is not EvaluatorAttestationAlgorithm:
             raise ValueError(
                 "algorithm must be exact EvaluatorAttestationAlgorithm"
@@ -96,6 +121,8 @@ class EvaluatorAttestationPolicy:
             "schema": "DRIFTGUARD_EVALUATOR_ATTESTATION_POLICY_V1",
             "policy_id": self.policy_id,
             "key_id": self.key_id,
+            "key_fingerprint_sha256": self.key_fingerprint_sha256,
+            "key_epoch": self.key_epoch,
             "algorithm": self.algorithm.value,
             "authorized_sources": [
                 {"ref": item.ref, "version": item.version}
@@ -115,6 +142,8 @@ class EvaluatorAttestation:
     response_digest: str
     policy_digest: str
     key_id: str
+    key_fingerprint_sha256: str
+    key_epoch: int
     algorithm: EvaluatorAttestationAlgorithm
     signature_hex: str
     attestation_claim: str = "DETACHED_KEY_POSSESSION_TAG_ONLY"
@@ -124,6 +153,16 @@ class EvaluatorAttestation:
         require_sha256_digest(self.response_digest, "response_digest")
         require_sha256_digest(self.policy_digest, "policy_digest")
         _nonempty(self.key_id, "key_id")
+        require_sha256_digest(
+            self.key_fingerprint_sha256,
+            "key_fingerprint_sha256",
+        )
+        if (
+            type(self.key_epoch) is not int
+            or isinstance(self.key_epoch, bool)
+            or self.key_epoch < 1
+        ):
+            raise ValueError("key_epoch must be a positive exact integer")
         if type(self.algorithm) is not EvaluatorAttestationAlgorithm:
             raise ValueError(
                 "algorithm must be exact EvaluatorAttestationAlgorithm"
@@ -139,22 +178,62 @@ class EvaluatorAttestation:
             "response_digest": self.response_digest,
             "policy_digest": self.policy_digest,
             "key_id": self.key_id,
+            "key_fingerprint_sha256": self.key_fingerprint_sha256,
+            "key_epoch": self.key_epoch,
             "algorithm": self.algorithm.value,
         }
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class EvaluatorAttestationVerification:
     request_digest: str
     response_digest: str
     policy_digest: str
     key_id: str
+    key_fingerprint_sha256: str
+    key_epoch: int
     algorithm: EvaluatorAttestationAlgorithm
     signature_sha256: str
     covered_sources: tuple[SourceBinding, ...]
-    verification_claim: str = (
-        "KEY_POSSESSION_VERIFIED_NOT_PROVIDER_HONESTY_OR_INDEPENDENCE"
-    )
+    verification_claim: str
+
+    def __init__(
+        self,
+        *,
+        request_digest: str,
+        response_digest: str,
+        policy_digest: str,
+        key_id: str,
+        key_fingerprint_sha256: str,
+        key_epoch: int,
+        algorithm: EvaluatorAttestationAlgorithm,
+        signature_sha256: str,
+        covered_sources: tuple[SourceBinding, ...],
+        _verified_token: object | None = None,
+    ) -> None:
+        if _verified_token is not _VERIFIED_ATTESTATION_TOKEN:
+            raise ValueError(
+                "EvaluatorAttestationVerification must come from verifier"
+            )
+        object.__setattr__(self, "request_digest", request_digest)
+        object.__setattr__(self, "response_digest", response_digest)
+        object.__setattr__(self, "policy_digest", policy_digest)
+        object.__setattr__(self, "key_id", key_id)
+        object.__setattr__(
+            self,
+            "key_fingerprint_sha256",
+            key_fingerprint_sha256,
+        )
+        object.__setattr__(self, "key_epoch", key_epoch)
+        object.__setattr__(self, "algorithm", algorithm)
+        object.__setattr__(self, "signature_sha256", signature_sha256)
+        object.__setattr__(self, "covered_sources", covered_sources)
+        object.__setattr__(
+            self,
+            "verification_claim",
+            "KEY_POSSESSION_VERIFIED_NOT_PROVIDER_HONESTY_OR_INDEPENDENCE",
+        )
+        self.__post_init__()
 
     def __post_init__(self) -> None:
         for value, label in (
@@ -165,6 +244,16 @@ class EvaluatorAttestationVerification:
         ):
             require_sha256_digest(value, label)
         _nonempty(self.key_id, "key_id")
+        require_sha256_digest(
+            self.key_fingerprint_sha256,
+            "key_fingerprint_sha256",
+        )
+        if (
+            type(self.key_epoch) is not int
+            or isinstance(self.key_epoch, bool)
+            or self.key_epoch < 1
+        ):
+            raise ValueError("key_epoch must be a positive exact integer")
         if type(self.algorithm) is not EvaluatorAttestationAlgorithm:
             raise ValueError(
                 "algorithm must be exact EvaluatorAttestationAlgorithm"
@@ -189,6 +278,8 @@ class EvaluatorAttestationVerification:
             "response_digest": self.response_digest,
             "policy_digest": self.policy_digest,
             "key_id": self.key_id,
+            "key_fingerprint_sha256": self.key_fingerprint_sha256,
+            "key_epoch": self.key_epoch,
             "algorithm": self.algorithm.value,
             "signature_sha256": self.signature_sha256,
             "covered_sources": [
@@ -203,13 +294,34 @@ class EvaluatorAttestationVerification:
         return canonical_digest(self.payload())
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class AttestedEvaluatorCommit:
     commit: CommitResult
     attestation: EvaluatorAttestationVerification
-    commit_claim: str = (
-        "STRUCTURAL_EVALUATION_COMMIT_PLUS_KEY_POSSESSION_VERIFICATION"
-    )
+    durable_receipt: EvaluatorAttestationEventReceipt
+    commit_claim: str
+
+    def __init__(
+        self,
+        *,
+        commit: CommitResult,
+        attestation: EvaluatorAttestationVerification,
+        durable_receipt: EvaluatorAttestationEventReceipt,
+        _commit_token: object | None = None,
+    ) -> None:
+        if _commit_token is not _ATTESTED_COMMIT_TOKEN:
+            raise ValueError(
+                "AttestedEvaluatorCommit must come from durable commit path"
+            )
+        object.__setattr__(self, "commit", commit)
+        object.__setattr__(self, "attestation", attestation)
+        object.__setattr__(self, "durable_receipt", durable_receipt)
+        object.__setattr__(
+            self,
+            "commit_claim",
+            "STRUCTURAL_EVALUATION_COMMIT_PLUS_DURABLE_KEY_POSSESSION_VERIFICATION",
+        )
+        self.__post_init__()
 
     def __post_init__(self) -> None:
         if type(self.commit) is not CommitResult:
@@ -218,8 +330,40 @@ class AttestedEvaluatorCommit:
             raise ValueError(
                 "attestation must be exact EvaluatorAttestationVerification"
             )
+        if type(self.durable_receipt) is not EvaluatorAttestationEventReceipt:
+            raise ValueError(
+                "durable_receipt must be exact EvaluatorAttestationEventReceipt"
+            )
+        if self.durable_receipt.evaluation_digest != self.commit.evaluation.digest:
+            raise ValueError("durable attestation evaluation mismatch")
+        if self.durable_receipt.verification_digest != self.attestation.digest:
+            raise ValueError("durable attestation verification mismatch")
+        if self.durable_receipt.request_digest != self.attestation.request_digest:
+            raise ValueError("durable attestation request mismatch")
+        if self.durable_receipt.response_digest != self.attestation.response_digest:
+            raise ValueError("durable attestation response mismatch")
+        if self.durable_receipt.policy_digest != self.attestation.policy_digest:
+            raise ValueError("durable attestation policy mismatch")
+        if self.durable_receipt.key_id != self.attestation.key_id:
+            raise ValueError("durable attestation key id mismatch")
+        if (
+            self.durable_receipt.key_fingerprint_sha256
+            != self.attestation.key_fingerprint_sha256
+        ):
+            raise ValueError("durable attestation key fingerprint mismatch")
+        if self.durable_receipt.key_epoch != self.attestation.key_epoch:
+            raise ValueError("durable attestation key epoch mismatch")
+        if self.durable_receipt.algorithm != self.attestation.algorithm.value:
+            raise ValueError("durable attestation algorithm mismatch")
+        if (
+            self.durable_receipt.signature_sha256
+            != self.attestation.signature_sha256
+        ):
+            raise ValueError("durable attestation signature mismatch")
+        if self.durable_receipt.covered_sources != self.attestation.covered_sources:
+            raise ValueError("durable attestation covered-source mismatch")
         if self.commit_claim != (
-            "STRUCTURAL_EVALUATION_COMMIT_PLUS_KEY_POSSESSION_VERIFICATION"
+            "STRUCTURAL_EVALUATION_COMMIT_PLUS_DURABLE_KEY_POSSESSION_VERIFICATION"
         ):
             raise ValueError("unsupported attested commit claim")
 
@@ -250,6 +394,8 @@ def _attestation_subject(
         "response_digest": response.digest,
         "policy_digest": policy.digest,
         "key_id": policy.key_id,
+        "key_fingerprint_sha256": policy.key_fingerprint_sha256,
+        "key_epoch": policy.key_epoch,
         "algorithm": policy.algorithm.value,
     }
 
@@ -289,6 +435,9 @@ def build_hmac_evaluator_attestation(
     if type(policy) is not EvaluatorAttestationPolicy:
         raise ValueError("policy must be exact EvaluatorAttestationPolicy")
     key = _require_key_material(key_material)
+    observed_fingerprint = key_fingerprint_sha256(key)
+    if observed_fingerprint != policy.key_fingerprint_sha256:
+        raise ValueError("key material fingerprint mismatch")
     _verify_policy_coverage(
         request=request,
         response=response,
@@ -309,6 +458,8 @@ def build_hmac_evaluator_attestation(
         response_digest=response.digest,
         policy_digest=policy.digest,
         key_id=policy.key_id,
+        key_fingerprint_sha256=policy.key_fingerprint_sha256,
+        key_epoch=policy.key_epoch,
         algorithm=policy.algorithm,
         signature_hex=signature,
     )
@@ -331,6 +482,9 @@ def verify_evaluator_attestation(
     if type(attestation) is not EvaluatorAttestation:
         raise ValueError("attestation must be exact EvaluatorAttestation")
     key = _require_key_material(key_material)
+    observed_fingerprint = key_fingerprint_sha256(key)
+    if observed_fingerprint != policy.key_fingerprint_sha256:
+        raise ValueError("key material fingerprint mismatch")
 
     response_sources = _verify_policy_coverage(
         request=request,
@@ -346,6 +500,10 @@ def verify_evaluator_attestation(
         raise ValueError("evaluator attestation policy digest mismatch")
     if attestation.key_id != policy.key_id:
         raise ValueError("evaluator attestation key id mismatch")
+    if attestation.key_fingerprint_sha256 != policy.key_fingerprint_sha256:
+        raise ValueError("evaluator attestation key fingerprint mismatch")
+    if attestation.key_epoch != policy.key_epoch:
+        raise ValueError("evaluator attestation key epoch mismatch")
     if attestation.algorithm is not policy.algorithm:
         raise ValueError("evaluator attestation algorithm mismatch")
 
@@ -367,11 +525,14 @@ def verify_evaluator_attestation(
         response_digest=response.digest,
         policy_digest=policy.digest,
         key_id=policy.key_id,
+        key_fingerprint_sha256=policy.key_fingerprint_sha256,
+        key_epoch=policy.key_epoch,
         algorithm=policy.algorithm,
         signature_sha256=sha256(
             bytes.fromhex(attestation.signature_hex)
         ).hexdigest(),
         covered_sources=response_sources,
+        _verified_token=_VERIFIED_ATTESTATION_TOKEN,
     )
 
 
@@ -398,9 +559,25 @@ def commit_attested_evaluator_response(
         response=response,
         ledger=ledger,
     )
+    durable_receipt = ledger.record_evaluator_attestation(
+        session_id=request.session_id,
+        evaluation_digest=commit.evaluation.digest,
+        verification_digest=verification.digest,
+        request_digest=verification.request_digest,
+        response_digest=verification.response_digest,
+        policy_digest=verification.policy_digest,
+        key_id=verification.key_id,
+        key_fingerprint_sha256=verification.key_fingerprint_sha256,
+        key_epoch=verification.key_epoch,
+        algorithm=verification.algorithm.value,
+        signature_sha256=verification.signature_sha256,
+        covered_sources=verification.covered_sources,
+    )
     return AttestedEvaluatorCommit(
         commit=commit,
         attestation=verification,
+        durable_receipt=durable_receipt,
+        _commit_token=_ATTESTED_COMMIT_TOKEN,
     )
 
 

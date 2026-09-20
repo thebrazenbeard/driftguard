@@ -55,6 +55,15 @@ __all__ = [
     "CalibrationTrajectory",
     "CalibrationTrajectoryRegime",
     "qualify_calibration",
+    "DetectorAlgorithm",
+    "DetectorCandidate",
+    "DetectorCandidateResult",
+    "DetectorComparisonDisposition",
+    "DetectorComparisonPlan",
+    "DetectorComparisonReceipt",
+    "EwmaDimensionPolicy",
+    "PageHinkleyDimensionPolicy",
+    "compare_detectors",
 ]
 
 from .sequential import (
@@ -77,4 +86,16 @@ from .calibration import (
     CalibrationTrajectory,
     CalibrationTrajectoryRegime,
     qualify_calibration,
+)
+
+from .comparison import (
+    DetectorAlgorithm,
+    DetectorCandidate,
+    DetectorCandidateResult,
+    DetectorComparisonDisposition,
+    DetectorComparisonPlan,
+    DetectorComparisonReceipt,
+    EwmaDimensionPolicy,
+    PageHinkleyDimensionPolicy,
+    compare_detectors,
 )

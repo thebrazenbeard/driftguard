@@ -37,4 +37,15 @@ __all__ = [
     "SourceBinding",
     "SubjectComponent",
     "StaleGenerationError",
+    "CusumDimensionPolicy",
+    "SequentialDetectionReceipt",
+    "SequentialDetectorSpec",
+    "SequentialStatus",
 ]
+
+from .sequential import (
+    CusumDimensionPolicy,
+    SequentialDetectionReceipt,
+    SequentialDetectorSpec,
+    SequentialStatus,
+)

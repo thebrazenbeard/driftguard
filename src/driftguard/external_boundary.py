@@ -156,6 +156,33 @@ def validate_evaluator_response(
     return evidence_set_digest(rows)
 
 
+def commit_evaluator_response(
+    *,
+    request: ExternalEvaluatorRequest,
+    state: SaveState,
+    evidence: Iterable[DriftEvidence],
+    ledger: DriftLedger,
+) -> CommitResult:
+    if type(request) is not ExternalEvaluatorRequest:
+        raise ValueError("request must be exact ExternalEvaluatorRequest")
+    if type(state) is not SaveState:
+        raise ValueError("state must be exact SaveState")
+    if type(ledger) is not DriftLedger:
+        raise ValueError("ledger must be exact DriftLedger")
+    if state.digest != request.state_digest:
+        raise ValueError("evaluator request state digest no longer matches state")
+    rows = tuple(evidence)
+    validate_evaluator_response(request, rows)
+    return ledger.evaluate_and_commit(
+        session_id=request.session_id,
+        state=state,
+        evidence=rows,
+        observation_digest=request.observation_digest,
+        turn_index=request.turn_index,
+        expected_generation=request.expected_generation,
+    )
+
+
 @dataclass(frozen=True)
 class ReloadDirective:
     session_id: str
@@ -543,6 +570,7 @@ __all__ = [
     "ReloadDirective",
     "append_external_receipt",
     "build_evaluator_request",
+    "commit_evaluator_response",
     "build_reload_directive",
     "qualify_post_reload_behavior",
     "reconcile_actuator_receipt",

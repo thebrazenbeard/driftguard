@@ -100,6 +100,14 @@ class DriftLedger:
                     subject_epoch INTEGER NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS subject_epochs (
+                    subject_id TEXT NOT NULL,
+                    epoch INTEGER NOT NULL CHECK (epoch >= 0),
+                    subject_digest TEXT NOT NULL,
+                    manifest_json TEXT NOT NULL,
+                    PRIMARY KEY(subject_id, epoch)
+                );
+
                 CREATE TABLE IF NOT EXISTS evaluation_events (
                     event_id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id TEXT NOT NULL,
@@ -262,6 +270,111 @@ class DriftLedger:
                 "ADD COLUMN subject_epoch INTEGER NULL"
             )
 
+    @staticmethod
+    def _subject_manifest_json(subject: MonitoredSubject) -> str:
+        return json.dumps(
+            {
+                "subject_id": subject.subject_id,
+                "epoch": subject.epoch,
+                "configuration_digest": subject.configuration_digest,
+                "components": [
+                    item.payload()
+                    for item in sorted(
+                        subject.components,
+                        key=lambda row: row.component_id,
+                    )
+                ],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    def _bind_subject_epoch(
+        self,
+        db: sqlite3.Connection,
+        subject: MonitoredSubject,
+    ) -> None:
+        manifest_json = self._subject_manifest_json(subject)
+        existing = db.execute(
+            """
+            SELECT * FROM subject_epochs
+             WHERE subject_id=? AND epoch=?
+            """,
+            (subject.subject_id, subject.epoch),
+        ).fetchone()
+        if existing is not None:
+            if (
+                str(existing["subject_digest"]) != subject.configuration_digest
+                or str(existing["manifest_json"]) != manifest_json
+            ):
+                raise StaleGenerationError(
+                    "subject epoch cannot be rebound to a different configuration"
+                )
+            return
+
+        latest = db.execute(
+            """
+            SELECT MAX(epoch) AS max_epoch
+              FROM subject_epochs
+             WHERE subject_id=?
+            """,
+            (subject.subject_id,),
+        ).fetchone()
+        if latest is not None and latest["max_epoch"] is not None:
+            expected_next = int(latest["max_epoch"]) + 1
+            if subject.epoch != expected_next:
+                raise StaleGenerationError(
+                    "new subject epoch must advance exactly one beyond "
+                    f"the latest registered epoch {expected_next - 1}"
+                )
+        db.execute(
+            """
+            INSERT INTO subject_epochs(
+                subject_id,epoch,subject_digest,manifest_json
+            ) VALUES(?,?,?,?)
+            """,
+            (
+                subject.subject_id,
+                subject.epoch,
+                subject.configuration_digest,
+                manifest_json,
+            ),
+        )
+
+    @staticmethod
+    def _validate_subject_readback(
+        row: sqlite3.Row,
+        subject: MonitoredSubject | None,
+    ) -> None:
+        stored_digest = (
+            str(row["subject_digest"])
+            if row["subject_digest"] is not None
+            else None
+        )
+        stored_epoch = (
+            int(row["subject_epoch"])
+            if row["subject_epoch"] is not None
+            else None
+        )
+        if stored_digest is None:
+            if subject is not None:
+                raise StaleGenerationError(
+                    "legacy session cannot attach monitored subject during effect readback"
+                )
+            return
+        if subject is None:
+            raise StaleGenerationError(
+                "subject-bound session requires current subject readback"
+            )
+        if subject.configuration_digest != stored_digest:
+            raise StaleGenerationError(
+                "current monitored subject does not match durable session"
+            )
+        if subject.epoch != stored_epoch:
+            raise StaleGenerationError(
+                "current monitored subject epoch does not match durable session"
+            )
+
     def evaluate_and_commit(
         self,
         *,
@@ -293,6 +406,8 @@ class DriftLedger:
                 "SELECT * FROM sessions WHERE session_id=?", (session_id,)
             ).fetchone()
             if row is None:
+                if subject is not None:
+                    self._bind_subject_epoch(db, subject)
                 if expected_generation != 0:
                     raise StaleGenerationError(
                         "new session requires expected_generation=0"
@@ -447,6 +562,7 @@ class DriftLedger:
         state: SaveState,
         acknowledgement: ReloadAcknowledgement,
         expected_generation: int,
+        subject: MonitoredSubject | None = None,
     ) -> AcknowledgementResult:
         if type(session_id) is not str or not session_id.strip():
             raise ValueError("session_id must be a non-empty exact string")
@@ -454,6 +570,8 @@ class DriftLedger:
             raise ValueError("acknowledgement must be exact ReloadAcknowledgement")
         if type(expected_generation) is not int or expected_generation < 0:
             raise ValueError("expected_generation must be non-negative int")
+        if subject is not None and type(subject) is not MonitoredSubject:
+            raise ValueError("subject must be exact MonitoredSubject or None")
 
         with closing(self._connect()) as db, db:
             db.execute("BEGIN IMMEDIATE")
@@ -471,6 +589,7 @@ class DriftLedger:
                 raise StaleGenerationError(
                     "save-state digest changed inside an existing session"
                 )
+            self._validate_subject_readback(row, subject)
             if acknowledgement.state_digest != state.digest:
                 raise StaleGenerationError("acknowledgement state digest mismatch")
 
@@ -674,6 +793,7 @@ class DriftLedger:
         ack_id: str,
         replay_evaluation_digest: str,
         expected_generation: int,
+        subject: MonitoredSubject | None = None,
     ) -> RecoveryCommitResult:
         """Bind the first post-acknowledgement evaluation as recovery evidence.
 
@@ -690,6 +810,8 @@ class DriftLedger:
         )
         if type(expected_generation) is not int or expected_generation < 0:
             raise ValueError("expected_generation must be non-negative int")
+        if subject is not None and type(subject) is not MonitoredSubject:
+            raise ValueError("subject must be exact MonitoredSubject or None")
 
         with closing(self._connect()) as db, db:
             db.execute("BEGIN IMMEDIATE")
@@ -710,6 +832,7 @@ class DriftLedger:
                 raise StaleGenerationError(
                     "save-state digest changed inside an existing session"
                 )
+            self._validate_subject_readback(row, subject)
 
             ack = db.execute(
                 """
@@ -909,6 +1032,20 @@ class DriftLedger:
                 "SELECT * FROM sessions WHERE session_id=?", (session_id,)
             ).fetchone()
             return dict(row) if row is not None else None
+
+    def subject_epochs(self, subject_id: str) -> tuple[dict, ...]:
+        if type(subject_id) is not str or not subject_id.strip():
+            raise ValueError("subject_id must be a non-empty exact string")
+        with closing(self._connect()) as db, db:
+            rows = db.execute(
+                """
+                SELECT * FROM subject_epochs
+                 WHERE subject_id=?
+                 ORDER BY epoch
+                """,
+                (subject_id,),
+            ).fetchall()
+            return tuple(dict(row) for row in rows)
 
     def events(self, session_id: str) -> tuple[dict, ...]:
         with closing(self._connect()) as db, db:

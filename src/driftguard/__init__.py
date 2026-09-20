@@ -17,6 +17,7 @@ from .model import (
     SaveState,
     SourceBinding,
     SubjectComponent,
+    SubjectEpochTransition,
 )
 
 __all__ = [
@@ -36,5 +37,6 @@ __all__ = [
     "SaveState",
     "SourceBinding",
     "SubjectComponent",
+    "SubjectEpochTransition",
     "StaleGenerationError",
 ]

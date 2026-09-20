@@ -20,6 +20,7 @@ from driftguard.external_boundary import (
     ActuatorReceipt,
     append_external_receipt,
     build_evaluator_request,
+    commit_evaluator_response,
     build_reload_directive,
     qualify_post_reload_behavior,
     reconcile_actuator_receipt,
@@ -173,6 +174,37 @@ class ExternalEvaluatorBoundaryTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "unrequested source binding"):
             validate_evaluator_response(req, (wrong_source,))
+
+    def test_external_response_commit_enforces_request_generation(self):
+        handle = tempfile.NamedTemporaryFile(delete=False)
+        handle.close()
+        try:
+            ledger = DriftLedger(handle.name)
+            s = state()
+            stale_request = build_evaluator_request(
+                session_id="session",
+                state=s,
+                observation_digest=OBS,
+                turn_index=1,
+                expected_generation=0,
+            )
+            ledger.evaluate_and_commit(
+                session_id="session",
+                state=s,
+                evidence=evidence(s, 0, 0.0),
+                observation_digest=OBS,
+                turn_index=0,
+                expected_generation=0,
+            )
+            with self.assertRaisesRegex(Exception, "expected generation 0, observed 1"):
+                commit_evaluator_response(
+                    request=stale_request,
+                    state=s,
+                    evidence=evidence(s, 1, 0.0),
+                    ledger=ledger,
+                )
+        finally:
+            os.unlink(handle.name)
 
 
 class ExternalActuatorBoundaryTests(LedgerHarness):

@@ -384,6 +384,28 @@ class SubjectLedgerTests(unittest.TestCase):
         )
         self.assertEqual(2, accepted.successor_generation)
 
+    def test_superseded_epoch_session_cannot_continue(self):
+        self.commit(self.subject, turn=0, generation=0)
+        next_epoch = subject(epoch=1)
+        self.ledger.evaluate_and_commit(
+            session_id="new-current-epoch",
+            state=self.state,
+            evidence=evidence(
+                self.state,
+                next_epoch,
+                turn=0,
+            ),
+            observation_digest=OBS,
+            turn_index=0,
+            expected_generation=0,
+            subject=next_epoch,
+        )
+        with self.assertRaisesRegex(
+            StaleGenerationError,
+            "epoch has been superseded",
+        ):
+            self.commit(self.subject, turn=1, generation=1)
+
     def test_prior_epoch_evidence_is_rejected_on_new_epoch(self):
         current = subject(epoch=1)
         stale = evidence(
@@ -493,6 +515,46 @@ class SubjectExternalBoundaryTests(unittest.TestCase):
                 response=response,
                 ledger=self.ledger,
                 subject=changed,
+            )
+
+    def test_superseded_epoch_cannot_mint_reload_directive(self):
+        result = self.ledger.evaluate_and_commit(
+            session_id="old-reload-subject",
+            state=self.state,
+            evidence=evidence(
+                self.state,
+                self.subject,
+                turn=0,
+                score=0.90,
+            ),
+            observation_digest=OBS,
+            turn_index=0,
+            expected_generation=0,
+            subject=self.subject,
+        )
+        next_epoch = subject(epoch=1)
+        self.ledger.evaluate_and_commit(
+            session_id="new-subject",
+            state=self.state,
+            evidence=evidence(
+                self.state,
+                next_epoch,
+                turn=0,
+            ),
+            observation_digest=OBS,
+            turn_index=0,
+            expected_generation=0,
+            subject=next_epoch,
+        )
+        with self.assertRaisesRegex(
+            StaleGenerationError,
+            "epoch has been superseded",
+        ):
+            build_reload_directive(
+                session_id="old-reload-subject",
+                commit=result,
+                ledger=self.ledger,
+                subject=self.subject,
             )
 
     def test_reload_directive_explicitly_binds_subject_epoch(self):

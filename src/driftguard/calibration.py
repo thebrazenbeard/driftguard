@@ -189,6 +189,9 @@ class CalibrationFamilyPolicy:
     family_id: str
     minimum_stable_trajectories: int
     minimum_shifted_trajectories: int
+    stable_horizon_observations: int
+    pre_shift_horizon_observations: int
+    post_shift_horizon_observations: int
     maximum_stable_false_alarm_rate: float
     maximum_pre_shift_false_alarm_rate: float
     minimum_detection_rate: float
@@ -204,6 +207,18 @@ class CalibrationFamilyPolicy:
             (
                 self.minimum_shifted_trajectories,
                 "minimum shifted trajectories",
+            ),
+            (
+                self.stable_horizon_observations,
+                "stable horizon observations",
+            ),
+            (
+                self.pre_shift_horizon_observations,
+                "pre-shift horizon observations",
+            ),
+            (
+                self.post_shift_horizon_observations,
+                "post-shift horizon observations",
             ),
         ):
             if type(value) is not int or isinstance(value, bool) or value < 1:
@@ -235,6 +250,15 @@ class CalibrationFamilyPolicy:
             ),
             "minimum_shifted_trajectories": (
                 self.minimum_shifted_trajectories
+            ),
+            "stable_horizon_observations": (
+                self.stable_horizon_observations
+            ),
+            "pre_shift_horizon_observations": (
+                self.pre_shift_horizon_observations
+            ),
+            "post_shift_horizon_observations": (
+                self.post_shift_horizon_observations
             ),
             "maximum_stable_false_alarm_rate": float(
                 self.maximum_stable_false_alarm_rate
@@ -364,6 +388,7 @@ class CalibrationFamilyMetrics:
     detection_delays: tuple[int, ...]
     mean_detection_delay: float | None
     wrong_dimension_alarms: int
+    horizon_violations: int
     failures: tuple[str, ...]
 
     @property
@@ -382,6 +407,7 @@ class CalibrationFamilyMetrics:
             "detection_delays": list(self.detection_delays),
             "mean_detection_delay": self.mean_detection_delay,
             "wrong_dimension_alarms": self.wrong_dimension_alarms,
+            "horizon_violations": self.horizon_violations,
             "failures": list(self.failures),
             "passed": self.passed,
         }
@@ -511,6 +537,20 @@ def _family_metrics(
         if item.regime is CalibrationTrajectoryRegime.SHIFTED
     )
 
+    horizon_violations = 0
+    for trajectory in stable:
+        if len(trajectory.samples) != policy.stable_horizon_observations:
+            horizon_violations += 1
+    for trajectory in shifted:
+        assert trajectory.shift_index is not None
+        if (
+            trajectory.shift_index
+            != policy.pre_shift_horizon_observations
+            or len(trajectory.samples) - trajectory.shift_index
+            != policy.post_shift_horizon_observations
+        ):
+            horizon_violations += 1
+
     stable_false_alarms = 0
     stable_alarm_run_lengths: list[int] = []
     for trajectory in stable:
@@ -566,6 +606,8 @@ def _family_metrics(
     )
 
     failures: list[str] = []
+    if horizon_violations:
+        failures.append("trajectory_horizon_mismatch")
     if len(stable) < policy.minimum_stable_trajectories:
         failures.append("insufficient_stable_trajectories")
     if len(shifted) < policy.minimum_shifted_trajectories:
@@ -597,6 +639,7 @@ def _family_metrics(
         detection_delays=tuple(detection_delays),
         mean_detection_delay=mean_delay,
         wrong_dimension_alarms=wrong_dimension_alarms,
+        horizon_violations=horizon_violations,
         failures=tuple(failures),
     )
 

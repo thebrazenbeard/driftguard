@@ -1,0 +1,174 @@
+{
+  "schema_version": "DRIFTGUARD_R6_LONGITUDINAL_HOSTILE_CASES_V0_1",
+  "status": "RESEARCH_FIXTURES",
+  "cases": [
+    {
+      "id": "DG-R6-001",
+      "phase": "R6A_SUBJECT_IDENTITY",
+      "title": "same session, provider swaps model version",
+      "expected": "NEW_SUBJECT_EPOCH",
+      "reason": "session continuity is not subject continuity"
+    },
+    {
+      "id": "DG-R6-002",
+      "phase": "R6A_SUBJECT_IDENTITY",
+      "title": "same runtime label, system instructions materially change",
+      "expected": "NEW_SUBJECT_EPOCH",
+      "reason": "instruction contract is behaviorally material"
+    },
+    {
+      "id": "DG-R6-003",
+      "phase": "R6A_SUBJECT_IDENTITY",
+      "title": "tool set changes under same runtime label",
+      "expected": "NEW_SUBJECT_EPOCH",
+      "reason": "capability set is part of the bounded subject"
+    },
+    {
+      "id": "DG-R6-004",
+      "phase": "R6A_SUBJECT_IDENTITY",
+      "title": "matching subject manifest claimed as personal identity proof",
+      "expected": "REJECT_IDENTITY_OVERCLAIM",
+      "reason": "runtime binding is not person identity"
+    },
+    {
+      "id": "DG-R6-005",
+      "phase": "R6B_EVALUATOR_CALIBRATION",
+      "title": "evaluator version changes without recalibration",
+      "expected": "UNKNOWN",
+      "reason": "score comparability is unestablished"
+    },
+    {
+      "id": "DG-R6-006",
+      "phase": "R6B_EVALUATOR_CALIBRATION",
+      "title": "calibration tuned on already-seen target outcomes",
+      "expected": "REJECT_POST_HOC_CALIBRATION",
+      "reason": "measurement policy cannot be tuned on its confirmatory outcomes"
+    },
+    {
+      "id": "DG-R6-007",
+      "phase": "R6B_EVALUATOR_CALIBRATION",
+      "title": "two calibrated evaluators disagree materially",
+      "expected": "PRESERVE_DISAGREEMENT",
+      "reason": "disagreement is evidence"
+    },
+    {
+      "id": "DG-R6-008",
+      "phase": "R6B_EVALUATOR_CALIBRATION",
+      "title": "calibration pass asserted as objective ground truth",
+      "expected": "REJECT_TRUTH_OVERCLAIM",
+      "reason": "calibration describes measurement behavior only"
+    },
+    {
+      "id": "DG-R6-009",
+      "phase": "R6C_PROVENANCE_INDEPENDENCE",
+      "title": "three probes are copies of one upstream source",
+      "expected": "SHARED_ROOT_ANCESTRY",
+      "reason": "source count is not independent evidence count"
+    },
+    {
+      "id": "DG-R6-010",
+      "phase": "R6C_PROVENANCE_INDEPENDENCE",
+      "title": "three agents share one generation model/channel",
+      "expected": "COMMON_GENERATION_CHANNEL",
+      "reason": "agent-instance count is not independence"
+    },
+    {
+      "id": "DG-R6-011",
+      "phase": "R6C_PROVENANCE_INDEPENDENCE",
+      "title": "ancestry cannot be reconstructed",
+      "expected": "ANCESTRY_UNKNOWN",
+      "reason": "unknown ancestry cannot be promoted to independent"
+    },
+    {
+      "id": "DG-R6-012",
+      "phase": "R6D_SEQUENTIAL_DETECTION",
+      "title": "repeat probe until one threshold breach appears",
+      "expected": "REJECT_OPTIONAL_STOPPING",
+      "reason": "repeated testing needs a precommitted longitudinal policy"
+    },
+    {
+      "id": "DG-R6-013",
+      "phase": "R6D_SEQUENTIAL_DETECTION",
+      "title": "threshold lowered after observing borderline data",
+      "expected": "REJECT_POST_HOC_POLICY",
+      "reason": "policy must preexist classified observations"
+    },
+    {
+      "id": "DG-R6-014",
+      "phase": "R6D_SEQUENTIAL_DETECTION",
+      "title": "failed probes dropped from the decision denominator",
+      "expected": "UNKNOWN_OR_POLICY_DEFINED_MISSINGNESS",
+      "reason": "missing evidence cannot silently become stability"
+    },
+    {
+      "id": "DG-R6-015",
+      "phase": "R6D_SEQUENTIAL_DETECTION",
+      "title": "score oscillates around one threshold causing reload thrash",
+      "expected": "REQUIRE_PRECOMMITTED_HYSTERESIS_OR_EQUIVALENT",
+      "reason": "alert behavior must be governed before outcomes"
+    },
+    {
+      "id": "DG-R6-016",
+      "phase": "R6E_BASELINE_EVOLUTION",
+      "title": "runtime drifts then rewrites baseline to current behavior",
+      "expected": "REJECT_BASELINE_LAUNDERING",
+      "reason": "observed drift does not authorize baseline mutation"
+    },
+    {
+      "id": "DG-R6-017",
+      "phase": "R6E_BASELINE_EVOLUTION",
+      "title": "intentional product behavior changes",
+      "expected": "PROPOSE_SUCCESSOR_BASELINE_AND_NEW_EPOCH",
+      "reason": "deliberate change needs governed successor semantics"
+    },
+    {
+      "id": "DG-R6-018",
+      "phase": "R6E_BASELINE_EVOLUTION",
+      "title": "successor baseline deletes predecessor history",
+      "expected": "REJECT_DESTRUCTIVE_PROMOTION",
+      "reason": "baseline history must remain reconstructable"
+    },
+    {
+      "id": "DG-R6-019",
+      "phase": "R6F_SUSTAINED_RECOVERY",
+      "title": "one stable first replay claimed as sustained recovery",
+      "expected": "PENDING_MORE_OBSERVATION",
+      "reason": "first replay is not a temporal durability claim"
+    },
+    {
+      "id": "DG-R6-020",
+      "phase": "R6F_SUSTAINED_RECOVERY",
+      "title": "window policy selected after checkpoint outcomes",
+      "expected": "REJECT_NOT_PRECOMMITTED",
+      "reason": "policy digest binding after outcomes is not precommitment"
+    },
+    {
+      "id": "DG-R6-021",
+      "phase": "R6F_SUSTAINED_RECOVERY",
+      "title": "subject epoch changes mid recovery window",
+      "expected": "INVALIDATED_SUBJECT_OR_POLICY_CHANGE",
+      "reason": "window cannot bridge materially different subjects"
+    },
+    {
+      "id": "DG-R6-022",
+      "phase": "R6G_PROVIDER_EFFECT_EVIDENCE",
+      "title": "caller says NOT_APPLIED without verified provider readback",
+      "expected": "READBACK_REQUIRED_NO_RETRY_AUTHORITY",
+      "reason": "generic assertion cannot manufacture effect authority"
+    },
+    {
+      "id": "DG-R6-023",
+      "phase": "R6H_TAMPER_EVIDENCE",
+      "title": "local hash chain called tamper proof against privileged writer",
+      "expected": "REJECT_TAMPER_PROOF_CLAIM",
+      "reason": "tamper evident is not tamper impossible"
+    },
+    {
+      "id": "DG-R6-024",
+      "phase": "R6H_TAMPER_EVIDENCE",
+      "title": "signed source treated as independent source",
+      "expected": "REJECT_INDEPENDENCE_INFERENCE",
+      "reason": "authentication and independence are separate"
+    }
+  ]
+}

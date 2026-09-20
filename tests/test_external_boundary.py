@@ -276,7 +276,29 @@ class ExternalActuatorBoundaryTests(unittest.TestCase):
             RetryDisposition.RECONCILE_BEFORE_RETRY,
         )
         with self.assertRaisesRegex(ValueError, "CONSUMED_UNVERIFIED"):
-            acknowledgement_from_actuator_receipt(receipt=receipt)
+            acknowledgement_from_actuator_receipt(attempt=self.attempt, receipt=receipt)
+
+    def test_direct_receipt_construction_cannot_bypass_attempt_binding(self):
+        forged = type(
+            admit_actuator_receipt(
+                attempt=self.attempt,
+                receipt=self.receipt(ActuatorOutcome.CONSUMED_UNVERIFIED),
+            )
+        )(
+            attempt_id="0" * 64,
+            actuator_execution_id="forged",
+            outcome=ActuatorOutcome.CONSUMED_UNVERIFIED,
+            evaluation_digest=self.attempt.evaluation_digest,
+            state_digest=self.attempt.state_digest,
+            turn_index=self.attempt.turn_index,
+            generation_after_decision=self.attempt.generation_after_decision,
+            restore_packet_digest=self.attempt.restore_packet_digest,
+        )
+        with self.assertRaisesRegex(ValueError, "exact reload attempt"):
+            acknowledgement_from_actuator_receipt(
+                attempt=self.attempt,
+                receipt=forged,
+            )
 
     def test_rejected_receipt_never_grants_automatic_retry(self):
         receipt = admit_actuator_receipt(

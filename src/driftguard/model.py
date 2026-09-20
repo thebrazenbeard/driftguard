@@ -24,6 +24,11 @@ class EvidenceIndependence(IntEnum):
         return cls[value.upper()]
 
 
+class MeasurementMode(StrEnum):
+    LEGACY_WEIGHTED = "LEGACY_WEIGHTED"
+    CALIBRATED_QUORUM = "CALIBRATED_QUORUM"
+
+
 class Decision(StrEnum):
     STABLE = "STABLE"
     WARN = "WARN"
@@ -87,6 +92,9 @@ class ProbeSource:
     binding: SourceBinding
     max_independence: EvidenceIndependence
     dimensions: tuple[str, ...]
+    calibration: SourceBinding | None = None
+    correlation_group: str | None = None
+    score_scale: str | None = None
 
     def __post_init__(self) -> None:
         if type(self.binding) is not SourceBinding:
@@ -99,6 +107,12 @@ class ProbeSource:
             raise ValueError("probe dimensions must contain non-empty exact strings")
         if len(self.dimensions) != len(set(self.dimensions)):
             raise ValueError("probe dimensions must be unique")
+        if self.calibration is not None and type(self.calibration) is not SourceBinding:
+            raise ValueError("probe calibration must be exact SourceBinding or None")
+        if self.correlation_group is not None:
+            _require_nonempty_str(self.correlation_group, "probe correlation group")
+        if self.score_scale is not None:
+            _require_nonempty_str(self.score_scale, "probe score scale")
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any]) -> "ProbeSource":
@@ -107,6 +121,9 @@ class ProbeSource:
         dimensions = data.get("dimensions")
         if type(dimensions) is not list:
             raise ValueError("probe dimensions must be a JSON array")
+        calibration = data.get("calibration")
+        if calibration is not None and type(calibration) is not dict:
+            raise ValueError("probe calibration must be an object")
         return cls(
             binding=SourceBinding(
                 ref=data.get("ref"),
@@ -116,6 +133,13 @@ class ProbeSource:
                 data.get("max_independence")
             ),
             dimensions=tuple(dimensions),
+            calibration=(
+                SourceBinding.from_mapping(calibration)
+                if calibration is not None
+                else None
+            ),
+            correlation_group=data.get("correlation_group"),
+            score_scale=data.get("score_scale"),
         )
 
 
@@ -126,6 +150,9 @@ class BehaviorDimension:
     weight: float = 1.0
     critical: bool = False
     min_independence: EvidenceIndependence = EvidenceIndependence.SEPARATE_CONTEXT
+    min_sources: int = 1
+    min_correlation_groups: int = 1
+    score_scale: str | None = None
 
     def __post_init__(self) -> None:
         _require_nonempty_str(self.dimension_id, "dimension id")
@@ -138,6 +165,17 @@ class BehaviorDimension:
             raise ValueError("critical must be exact bool")
         if type(self.min_independence) is not EvidenceIndependence:
             raise ValueError("min_independence must be EvidenceIndependence")
+        if type(self.min_sources) is not int or self.min_sources < 1:
+            raise ValueError("min_sources must be an integer >= 1")
+        if (
+            type(self.min_correlation_groups) is not int
+            or self.min_correlation_groups < 1
+        ):
+            raise ValueError("min_correlation_groups must be an integer >= 1")
+        if self.min_correlation_groups > self.min_sources:
+            raise ValueError("min_correlation_groups cannot exceed min_sources")
+        if self.score_scale is not None:
+            _require_nonempty_str(self.score_scale, "dimension score scale")
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any]) -> "BehaviorDimension":
@@ -151,6 +189,9 @@ class BehaviorDimension:
             min_independence=EvidenceIndependence.parse(
                 data.get("min_independence", "SEPARATE_CONTEXT")
             ),
+            min_sources=data.get("min_sources", 1),
+            min_correlation_groups=data.get("min_correlation_groups", 1),
+            score_scale=data.get("score_scale"),
         )
 
 
@@ -199,6 +240,7 @@ class SaveState:
     dimensions: tuple[BehaviorDimension, ...]
     probe_sources: tuple[ProbeSource, ...]
     policy: DriftPolicy = DriftPolicy()
+    measurement_mode: MeasurementMode = MeasurementMode.LEGACY_WEIGHTED
 
     def __post_init__(self) -> None:
         _require_nonempty_str(self.state_id, "state id")
@@ -239,6 +281,64 @@ class SaveState:
                 )
         if type(self.policy) is not DriftPolicy:
             raise ValueError("policy must be exact DriftPolicy")
+        if type(self.measurement_mode) is not MeasurementMode:
+            raise ValueError("measurement_mode must be exact MeasurementMode")
+
+        if self.measurement_mode is MeasurementMode.CALIBRATED_QUORUM:
+            dimension_by_id = {
+                item.dimension_id: item for item in self.dimensions
+            }
+            for dimension in self.dimensions:
+                if dimension.score_scale is None:
+                    raise ValueError(
+                        "calibrated quorum dimensions require explicit score_scale: "
+                        f"{dimension.dimension_id}"
+                    )
+            for source in self.probe_sources:
+                if source.calibration is None:
+                    raise ValueError(
+                        "calibrated quorum probe sources require calibration: "
+                        f"{source.binding.ref}@{source.binding.version}"
+                    )
+                if source.correlation_group is None:
+                    raise ValueError(
+                        "calibrated quorum probe sources require correlation_group: "
+                        f"{source.binding.ref}@{source.binding.version}"
+                    )
+                if source.score_scale is None:
+                    raise ValueError(
+                        "calibrated quorum probe sources require score_scale: "
+                        f"{source.binding.ref}@{source.binding.version}"
+                    )
+                for dimension_id in source.dimensions:
+                    dimension = dimension_by_id[dimension_id]
+                    if source.score_scale != dimension.score_scale:
+                        raise ValueError(
+                            "probe score_scale must match governed dimension scale: "
+                            f"{dimension_id}"
+                        )
+            for dimension in self.dimensions:
+                eligible = [
+                    source
+                    for source in self.probe_sources
+                    if dimension.dimension_id in source.dimensions
+                    and source.max_independence >= dimension.min_independence
+                ]
+                if len(eligible) < dimension.min_sources:
+                    raise ValueError(
+                        "dimension has insufficient eligible calibrated sources: "
+                        f"{dimension.dimension_id}"
+                    )
+                groups = {
+                    source.correlation_group
+                    for source in eligible
+                    if source.correlation_group is not None
+                }
+                if len(groups) < dimension.min_correlation_groups:
+                    raise ValueError(
+                        "dimension has insufficient eligible correlation groups: "
+                        f"{dimension.dimension_id}"
+                    )
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any]) -> "SaveState":
@@ -257,9 +357,12 @@ class SaveState:
                 for item in data.get("probe_sources", ())
             ),
             policy=DriftPolicy.from_mapping(data.get("policy")),
+            measurement_mode=MeasurementMode(
+                data.get("measurement_mode", MeasurementMode.LEGACY_WEIGHTED.value)
+            ),
         )
 
-    def canonical_payload(self) -> dict[str, Any]:
+    def behavior_payload(self) -> dict[str, Any]:
         return {
             "state_id": self.state_id,
             "version": self.version,
@@ -268,9 +371,23 @@ class SaveState:
                 {
                     "dimension_id": item.dimension_id,
                     "description": item.description,
+                }
+                for item in self.dimensions
+            ],
+        }
+
+    def measurement_payload(self) -> dict[str, Any]:
+        return {
+            "measurement_mode": self.measurement_mode.value,
+            "dimensions": [
+                {
+                    "dimension_id": item.dimension_id,
                     "weight": float(item.weight),
                     "critical": item.critical,
                     "min_independence": item.min_independence.name,
+                    "min_sources": item.min_sources,
+                    "min_correlation_groups": item.min_correlation_groups,
+                    "score_scale": item.score_scale,
                 }
                 for item in self.dimensions
             ],
@@ -280,11 +397,71 @@ class SaveState:
                     "version": item.binding.version,
                     "max_independence": item.max_independence.name,
                     "dimensions": list(item.dimensions),
+                    "calibration": (
+                        asdict(item.calibration)
+                        if item.calibration is not None
+                        else None
+                    ),
+                    "correlation_group": item.correlation_group,
+                    "score_scale": item.score_scale,
                 }
                 for item in self.probe_sources
             ],
+        }
+
+    @property
+    def behavior_digest(self) -> str:
+        return canonical_digest(self.behavior_payload())
+
+    @property
+    def measurement_digest(self) -> str:
+        return canonical_digest(self.measurement_payload())
+
+    @property
+    def detection_policy_digest(self) -> str:
+        return canonical_digest(asdict(self.policy))
+
+    def canonical_payload(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "state_id": self.state_id,
+            "version": self.version,
+            "restore_text": self.restore_text,
+            "dimensions": [],
+            "probe_sources": [],
             "policy": asdict(self.policy),
         }
+        for item in self.dimensions:
+            dimension = {
+                "dimension_id": item.dimension_id,
+                "description": item.description,
+                "weight": float(item.weight),
+                "critical": item.critical,
+                "min_independence": item.min_independence.name,
+            }
+            if item.min_sources != 1:
+                dimension["min_sources"] = item.min_sources
+            if item.min_correlation_groups != 1:
+                dimension["min_correlation_groups"] = item.min_correlation_groups
+            if item.score_scale is not None:
+                dimension["score_scale"] = item.score_scale
+            payload["dimensions"].append(dimension)
+        for item in self.probe_sources:
+            source = {
+                "ref": item.binding.ref,
+                "version": item.binding.version,
+                "max_independence": item.max_independence.name,
+                "dimensions": list(item.dimensions),
+            }
+            if item.calibration is not None:
+                source["calibration"] = asdict(item.calibration)
+            if item.correlation_group is not None:
+                source["correlation_group"] = item.correlation_group
+            if item.score_scale is not None:
+                source["score_scale"] = item.score_scale
+            payload["probe_sources"].append(source)
+        if self.measurement_mode is not MeasurementMode.LEGACY_WEIGHTED:
+            payload["measurement_mode"] = self.measurement_mode.value
+        return payload
 
     @property
     def digest(self) -> str:
@@ -380,24 +557,26 @@ class Evaluation:
     turn_index: int
     generation: int
     restore_packet: str | None = None
+    behavioral_decision: Decision | None = None
 
     @property
     def digest(self) -> str:
-        return canonical_digest(
-            {
-                "decision": self.decision.value,
-                "reload_required": self.reload_required,
-                "aggregate_drift": self.aggregate_drift,
-                "dimension_scores": self.dimension_scores,
-                "reasons": self.reasons,
-                "state_digest": self.state_digest,
-                "observation_digest": self.observation_digest,
-                "evidence_digest": self.evidence_digest,
-                "turn_index": self.turn_index,
-                "generation": self.generation,
-                "restore_packet": self.restore_packet,
-            }
-        )
+        payload = {
+            "decision": self.decision.value,
+            "reload_required": self.reload_required,
+            "aggregate_drift": self.aggregate_drift,
+            "dimension_scores": self.dimension_scores,
+            "reasons": self.reasons,
+            "state_digest": self.state_digest,
+            "observation_digest": self.observation_digest,
+            "evidence_digest": self.evidence_digest,
+            "turn_index": self.turn_index,
+            "generation": self.generation,
+            "restore_packet": self.restore_packet,
+        }
+        if self.behavioral_decision is not None:
+            payload["behavioral_decision"] = self.behavioral_decision.value
+        return canonical_digest(payload)
 
 
 @dataclass(frozen=True)

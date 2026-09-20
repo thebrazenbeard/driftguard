@@ -145,6 +145,12 @@ class DriftGuardEngine:
                     reasons.append(f"uncalibrated_source:{item.dimension_id}")
                     admission_failed = True
                     continue
+                if source.calibration_digest is None:
+                    reasons.append(
+                        f"missing_calibration_digest:{item.dimension_id}"
+                    )
+                    admission_failed = True
+                    continue
                 if source.correlation_group is None:
                     reasons.append(
                         f"missing_correlation_group:{item.dimension_id}"
@@ -158,14 +164,17 @@ class DriftGuardEngine:
             by_dimension.setdefault(item.dimension_id, []).append((item, source))
 
         dimension_scores: dict[str, float] = {}
+        quorum_satisfied: dict[str, bool] = {}
         for dimension in state.dimensions:
             rows = by_dimension.get(dimension.dimension_id, [])
             if not rows:
                 reasons.append(f"missing_evidence:{dimension.dimension_id}")
                 admission_failed = True
+                quorum_satisfied[dimension.dimension_id] = False
                 continue
             if strict:
-                if len(rows) < dimension.min_sources:
+                source_quorum = len(rows) >= dimension.min_sources
+                if not source_quorum:
                     reasons.append(
                         f"insufficient_source_quorum:{dimension.dimension_id}"
                     )
@@ -175,21 +184,29 @@ class DriftGuardEngine:
                     for _, source in rows
                     if source.correlation_group is not None
                 }
-                if len(groups) < dimension.min_correlation_groups:
+                correlation_quorum = (
+                    len(groups) >= dimension.min_correlation_groups
+                )
+                if not correlation_quorum:
                     reasons.append(
                         f"insufficient_correlation_quorum:{dimension.dimension_id}"
                     )
                     admission_failed = True
+                quorum_satisfied[dimension.dimension_id] = (
+                    source_quorum and correlation_quorum
+                )
                 dimension_scores[dimension.dimension_id] = float(
                     median(float(item.drift_score) for item, _ in rows)
                 )
             else:
+                quorum_satisfied[dimension.dimension_id] = True
                 dimension_scores[dimension.dimension_id] = float(
                     rows[0][0].drift_score
                 )
 
         valid_critical_breach = any(
             dimension.critical
+            and quorum_satisfied.get(dimension.dimension_id, False)
             and any(
                 float(item.drift_score)
                 >= (

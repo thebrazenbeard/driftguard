@@ -105,6 +105,7 @@ def main(argv: list[str] | None = None) -> int:
     ack.add_argument("--db", required=True)
     ack.add_argument("--session", required=True)
     ack.add_argument("--expected-generation", required=True, type=int)
+    ack.add_argument("--subject")
 
     verify = sub.add_parser("verify-recovery")
     verify.add_argument("--state", required=True)
@@ -113,6 +114,7 @@ def main(argv: list[str] | None = None) -> int:
     verify.add_argument("--ack-id", required=True)
     verify.add_argument("--replay-evaluation-digest", required=True)
     verify.add_argument("--expected-generation", required=True, type=int)
+    verify.add_argument("--subject")
 
     args = parser.parse_args(argv)
 
@@ -149,11 +151,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "ack-reload":
         ledger = DriftLedger(args.db)
         acknowledgement = ReloadAcknowledgement.from_mapping(_load_json(args.ack))
+        subject = _subject(args.subject) if args.subject else None
         result = ledger.acknowledge_reload(
             session_id=args.session,
             state=state,
             acknowledgement=acknowledgement,
             expected_generation=args.expected_generation,
+            subject=subject,
         )
         print(
             json.dumps(
@@ -169,12 +173,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "verify-recovery":
         ledger = DriftLedger(args.db)
+        subject = _subject(args.subject) if args.subject else None
         result = ledger.verify_recovery(
             session_id=args.session,
             state=state,
             ack_id=args.ack_id,
             replay_evaluation_digest=args.replay_evaluation_digest,
             expected_generation=args.expected_generation,
+            subject=subject,
         )
         verification = result.verification
         print(
@@ -196,6 +202,8 @@ def main(argv: list[str] | None = None) -> int:
                     "reasons": list(verification.reasons),
                     "generation_before": verification.generation,
                     "generation_after": result.successor_generation,
+                    "subject_digest": verification.subject_digest,
+                    "subject_epoch": verification.subject_epoch,
                 },
                 sort_keys=True,
                 indent=2,

@@ -40,6 +40,7 @@ __all__ = [
     "CusumDimensionPolicy",
     "SequentialDetectionReceipt",
     "SequentialDetectorSpec",
+    "SequentialRegistrationReceipt",
     "SequentialStatus",
 ]
 
@@ -47,5 +48,6 @@ from .sequential import (
     CusumDimensionPolicy,
     SequentialDetectionReceipt,
     SequentialDetectorSpec,
+    SequentialRegistrationReceipt,
     SequentialStatus,
 )

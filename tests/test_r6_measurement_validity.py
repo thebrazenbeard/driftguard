@@ -1,3 +1,4 @@
+from dataclasses import replace
 import os
 import tempfile
 import unittest
@@ -316,6 +317,56 @@ class R6MeasurementValidityTests(unittest.TestCase):
         self.assertEqual(Decision.WARN, result.behavioral_decision)
         self.assertIsNone(result.aggregate_drift)
         self.assertIn("dimension_warn_threshold:style", result.reasons)
+
+    def test_dimension_thresholds_replace_global_numeric_thresholds(self):
+        state = strict_two_dimension()
+        truth_source = state.probe_sources[0].binding
+        style_source = state.probe_sources[1].binding
+        evidence = (
+            DriftEvidence(
+                "truth",
+                "truth",
+                0.22,
+                EvidenceIndependence.SEPARATE_CONTEXT,
+                (truth_source,),
+                "run-truth",
+                state.digest,
+                OBS,
+                3,
+            ),
+            DriftEvidence(
+                "style",
+                "style",
+                0.10,
+                EvidenceIndependence.SEPARATE_CONTEXT,
+                (style_source,),
+                "run-style",
+                state.digest,
+                OBS,
+                3,
+            ),
+        )
+        result = self.evaluate(state, evidence)
+        self.assertLess(0.22, state.policy.warn_threshold)
+        self.assertEqual(Decision.WARN, result.behavioral_decision)
+        self.assertIn("dimension_warn_threshold:truth", result.reasons)
+
+    def test_threshold_change_only_moves_detection_policy_identity(self):
+        state = strict_two_dimension()
+        changed = replace(
+            state,
+            dimensions=(
+                replace(state.dimensions[0], warn_threshold=0.21),
+                state.dimensions[1],
+            ),
+        )
+        self.assertEqual(state.behavior_digest, changed.behavior_digest)
+        self.assertEqual(state.measurement_digest, changed.measurement_digest)
+        self.assertNotEqual(
+            state.detection_policy_digest,
+            changed.detection_policy_digest,
+        )
+        self.assertNotEqual(state.digest, changed.digest)
 
     def test_evaluator_request_binds_split_measurement_subjects(self):
         state = strict_single_dimension()

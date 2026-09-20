@@ -86,7 +86,8 @@ verification result.
 The attested commit path writes a dedicated immutable ledger receipt bound to the
 exact session, committed evaluation digest, evaluator request/response digests,
 attestation policy digest, key id, key fingerprint, key epoch, algorithm,
-signature digest, and covered source/version set. Readback equality is part of the
+signature digest, covered source/version set, and—when the evaluator request is
+R7 subject-bound—the exact monitored-subject configuration digest and epoch. Readback equality is part of the
 stronger claim. An ordinary evaluator commit has no such receipt and therefore
 remains ordinary.
 
@@ -94,8 +95,8 @@ Durable admission is not a free-form ledger write. The ledger has no public
 record_evaluator_attestation(fields...) API. Its private admission boundary accepts
 only the exact verifier-created EvaluatorAttestationVerification capability and
 cross-checks that capability against the committed evaluation's exact session,
-state, observation, turn, predecessor generation, and evidence digest before
-persisting the receipt. A valid verification for response A therefore cannot be
+state, observation, turn, predecessor generation, evidence digest, monitored-subject
+configuration digest, and subject epoch before persisting the receipt. A valid verification for response A therefore cannot be
 rebound to an unrelated ordinary evaluation B.
 
 If structural evaluation commit succeeds but attestation persistence does not, the
@@ -107,3 +108,27 @@ only; ordinary direct construction is rejected.
 
 This source candidate performs no network call, provider mutation, credential
 change, reload effect, deployment, or runtime cutover.
+
+
+## R7 subject composition
+
+For a subject-bound evaluator request, `commit_attested_evaluator_response()`
+requires the exact current `MonitoredSubject` and passes it through the ordinary
+R7 evaluator-commit boundary.
+
+The verifier capability and durable attestation receipt preserve the request's exact
+`subject_digest` and `subject_epoch`.
+
+A subject-bound V3 request therefore fails closed if:
+
+- the subject is omitted at commit;
+- the supplied configuration differs from the request;
+- the subject epoch differs;
+- the subject was explicitly superseded after request/attestation but before commit;
+- the durable evaluation subject differs from the verifier capability.
+
+Legacy unbound evaluator requests remain compatible with `subject=None`.
+
+This composition proves exact currentness/provenance admission for the caller-visible
+subject record. It still does not prove provider metadata truth, hidden model-weight
+identity, or evaluator independence.

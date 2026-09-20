@@ -153,6 +153,9 @@ class BehaviorDimension:
     min_sources: int = 1
     min_correlation_groups: int = 1
     score_scale: str | None = None
+    warn_threshold: float | None = None
+    reload_threshold: float | None = None
+    critical_reload_threshold: float | None = None
 
     def __post_init__(self) -> None:
         _require_nonempty_str(self.dimension_id, "dimension id")
@@ -176,6 +179,21 @@ class BehaviorDimension:
             raise ValueError("min_correlation_groups cannot exceed min_sources")
         if self.score_scale is not None:
             _require_nonempty_str(self.score_scale, "dimension score scale")
+        for value, label in (
+            (self.warn_threshold, "dimension warn threshold"),
+            (self.reload_threshold, "dimension reload threshold"),
+            (self.critical_reload_threshold, "dimension critical reload threshold"),
+        ):
+            if value is not None:
+                _require_unit_interval(value, label)
+        if (
+            self.warn_threshold is not None
+            and self.reload_threshold is not None
+            and float(self.warn_threshold) >= float(self.reload_threshold)
+        ):
+            raise ValueError(
+                "dimension warn threshold must be lower than reload threshold"
+            )
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any]) -> "BehaviorDimension":
@@ -192,6 +210,9 @@ class BehaviorDimension:
             min_sources=data.get("min_sources", 1),
             min_correlation_groups=data.get("min_correlation_groups", 1),
             score_scale=data.get("score_scale"),
+            warn_threshold=data.get("warn_threshold"),
+            reload_threshold=data.get("reload_threshold"),
+            critical_reload_threshold=data.get("critical_reload_threshold"),
         )
 
 
@@ -292,6 +313,24 @@ class SaveState:
                 if dimension.score_scale is None:
                     raise ValueError(
                         "calibrated quorum dimensions require explicit score_scale: "
+                        f"{dimension.dimension_id}"
+                    )
+                if (
+                    dimension.warn_threshold is None
+                    or dimension.reload_threshold is None
+                ):
+                    raise ValueError(
+                        "calibrated quorum dimensions require explicit "
+                        "warn_threshold and reload_threshold: "
+                        f"{dimension.dimension_id}"
+                    )
+                if (
+                    dimension.critical
+                    and dimension.critical_reload_threshold is None
+                ):
+                    raise ValueError(
+                        "critical calibrated dimensions require explicit "
+                        "critical_reload_threshold: "
                         f"{dimension.dimension_id}"
                     )
             for source in self.probe_sources:
@@ -417,9 +456,31 @@ class SaveState:
     def measurement_digest(self) -> str:
         return canonical_digest(self.measurement_payload())
 
+    def detection_policy_payload(self) -> dict[str, Any]:
+        if self.measurement_mode is MeasurementMode.LEGACY_WEIGHTED:
+            return asdict(self.policy)
+        return {
+            "measurement_mode": self.measurement_mode.value,
+            "dimensions": [
+                {
+                    "dimension_id": item.dimension_id,
+                    "warn_threshold": float(item.warn_threshold),
+                    "reload_threshold": float(item.reload_threshold),
+                    "critical_reload_threshold": (
+                        float(item.critical_reload_threshold)
+                        if item.critical_reload_threshold is not None
+                        else None
+                    ),
+                }
+                for item in self.dimensions
+            ],
+            "max_turns_without_reload": self.policy.max_turns_without_reload,
+            "reload_cooldown_turns": self.policy.reload_cooldown_turns,
+        }
+
     @property
     def detection_policy_digest(self) -> str:
-        return canonical_digest(asdict(self.policy))
+        return canonical_digest(self.detection_policy_payload())
 
     def canonical_payload(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -444,6 +505,14 @@ class SaveState:
                 dimension["min_correlation_groups"] = item.min_correlation_groups
             if item.score_scale is not None:
                 dimension["score_scale"] = item.score_scale
+            if item.warn_threshold is not None:
+                dimension["warn_threshold"] = float(item.warn_threshold)
+            if item.reload_threshold is not None:
+                dimension["reload_threshold"] = float(item.reload_threshold)
+            if item.critical_reload_threshold is not None:
+                dimension["critical_reload_threshold"] = float(
+                    item.critical_reload_threshold
+                )
             payload["dimensions"].append(dimension)
         for item in self.probe_sources:
             source = {

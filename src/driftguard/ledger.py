@@ -10,12 +10,19 @@ from .model import (
     Decision,
     DriftEvidence,
     Evaluation,
+    MeasurementMode,
     MonitoredSubject,
     RecoveryStatus,
     RecoveryVerification,
     ReloadAcknowledgement,
     SaveState,
     require_sha256_digest,
+)
+from .sequential import (
+    SequentialDetectionReceipt,
+    SequentialDetectorSpec,
+    SequentialStatus,
+    advance_cusum,
 )
 
 
@@ -107,6 +114,48 @@ class DriftLedger:
                     manifest_json TEXT NOT NULL,
                     PRIMARY KEY(subject_id, epoch)
                 );
+
+                CREATE TABLE IF NOT EXISTS sequential_detectors (
+                    detector_id TEXT PRIMARY KEY,
+                    spec_digest TEXT NOT NULL,
+                    spec_json TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    state_digest TEXT NOT NULL,
+                    measurement_digest TEXT NOT NULL,
+                    subject_digest TEXT NOT NULL,
+                    subject_epoch INTEGER NOT NULL CHECK (subject_epoch >= 0),
+                    generation INTEGER NOT NULL CHECK (generation >= 0),
+                    last_evaluation_event_id INTEGER NULL,
+                    last_turn INTEGER NULL,
+                    observation_count INTEGER NOT NULL CHECK (observation_count >= 0),
+                    cusum_values TEXT NOT NULL,
+                    alarm_dimensions TEXT NOT NULL,
+                    FOREIGN KEY(session_id) REFERENCES sessions(session_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS sequential_detection_events (
+                    receipt_digest TEXT PRIMARY KEY,
+                    detector_id TEXT NOT NULL,
+                    spec_digest TEXT NOT NULL,
+                    generation_before INTEGER NOT NULL,
+                    generation_after INTEGER NOT NULL,
+                    evaluation_event_id INTEGER NOT NULL,
+                    evaluation_digest TEXT NOT NULL,
+                    turn_index INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    observation_count INTEGER NOT NULL,
+                    dimension_scores TEXT NOT NULL,
+                    cusum_values TEXT NOT NULL,
+                    alarm_dimensions TEXT NOT NULL,
+                    reasons TEXT NOT NULL,
+                    FOREIGN KEY(detector_id) REFERENCES sequential_detectors(detector_id)
+                );
+
+                CREATE UNIQUE INDEX IF NOT EXISTS
+                    sequential_events_detector_evaluation_uq
+                    ON sequential_detection_events(
+                        detector_id, evaluation_event_id
+                    );
 
                 CREATE TABLE IF NOT EXISTS evaluation_events (
                     event_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -579,6 +628,331 @@ class DriftLedger:
                 evaluation=evaluation,
                 successor_generation=successor,
             )
+
+    def register_sequential_detector(
+        self,
+        *,
+        spec: SequentialDetectorSpec,
+        state: SaveState,
+        subject: MonitoredSubject,
+    ) -> dict:
+        if type(spec) is not SequentialDetectorSpec:
+            raise ValueError("spec must be exact SequentialDetectorSpec")
+        if type(state) is not SaveState:
+            raise ValueError("state must be exact SaveState")
+        if type(subject) is not MonitoredSubject:
+            raise ValueError("subject must be exact MonitoredSubject")
+        if state.measurement_mode is not MeasurementMode.CALIBRATED_QUORUM:
+            raise ValueError(
+                "sequential detector requires CALIBRATED_QUORUM state"
+            )
+        spec.validate_runtime(state=state, subject=subject)
+
+        with closing(self._connect()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            self._assert_subject_epoch_current(db, subject)
+            session = db.execute(
+                "SELECT * FROM sessions WHERE session_id=?",
+                (spec.session_id,),
+            ).fetchone()
+            if session is None:
+                raise StaleGenerationError(
+                    "sequential detector requires an existing session"
+                )
+            if str(session["state_digest"]) != spec.state_digest:
+                raise StaleGenerationError(
+                    "sequential detector session state mismatch"
+                )
+            if session["subject_digest"] != spec.subject_digest:
+                raise StaleGenerationError(
+                    "sequential detector session subject mismatch"
+                )
+            if int(session["subject_epoch"]) != spec.subject_epoch:
+                raise StaleGenerationError(
+                    "sequential detector session subject epoch mismatch"
+                )
+
+            existing = db.execute(
+                "SELECT * FROM sequential_detectors WHERE detector_id=?",
+                (spec.detector_id,),
+            ).fetchone()
+            if existing is not None:
+                if str(existing["spec_digest"]) != spec.digest:
+                    raise StaleGenerationError(
+                        "detector id is already bound to another spec"
+                    )
+                return dict(existing)
+
+            zero_state = tuple(
+                (item.dimension_id, 0.0)
+                for item in sorted(
+                    spec.dimensions,
+                    key=lambda row: row.dimension_id,
+                )
+            )
+            spec_json = json.dumps(
+                spec.payload(),
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            db.execute(
+                """
+                INSERT INTO sequential_detectors(
+                    detector_id,spec_digest,spec_json,session_id,
+                    state_digest,measurement_digest,subject_digest,
+                    subject_epoch,generation,last_evaluation_event_id,
+                    last_turn,observation_count,cusum_values,
+                    alarm_dimensions
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    spec.detector_id,
+                    spec.digest,
+                    spec_json,
+                    spec.session_id,
+                    spec.state_digest,
+                    spec.measurement_digest,
+                    spec.subject_digest,
+                    spec.subject_epoch,
+                    0,
+                    None,
+                    None,
+                    0,
+                    json.dumps(zero_state),
+                    json.dumps(()),
+                ),
+            )
+            row = db.execute(
+                "SELECT * FROM sequential_detectors WHERE detector_id=?",
+                (spec.detector_id,),
+            ).fetchone()
+            return dict(row)
+
+    def advance_sequential_detector(
+        self,
+        *,
+        spec: SequentialDetectorSpec,
+        state: SaveState,
+        subject: MonitoredSubject,
+        evaluation_digest: str,
+        expected_generation: int,
+    ) -> SequentialDetectionReceipt:
+        if type(spec) is not SequentialDetectorSpec:
+            raise ValueError("spec must be exact SequentialDetectorSpec")
+        if type(state) is not SaveState:
+            raise ValueError("state must be exact SaveState")
+        if type(subject) is not MonitoredSubject:
+            raise ValueError("subject must be exact MonitoredSubject")
+        require_sha256_digest(
+            evaluation_digest,
+            "sequential evaluation digest",
+        )
+        if (
+            type(expected_generation) is not int
+            or isinstance(expected_generation, bool)
+            or expected_generation < 0
+        ):
+            raise ValueError(
+                "sequential expected_generation must be non-negative int"
+            )
+        if state.measurement_mode is not MeasurementMode.CALIBRATED_QUORUM:
+            raise ValueError(
+                "sequential detector requires CALIBRATED_QUORUM state"
+            )
+        spec.validate_runtime(state=state, subject=subject)
+
+        with closing(self._connect()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            self._assert_subject_epoch_current(db, subject)
+            detector = db.execute(
+                "SELECT * FROM sequential_detectors WHERE detector_id=?",
+                (spec.detector_id,),
+            ).fetchone()
+            if detector is None:
+                raise StaleGenerationError(
+                    "sequential detector is not registered"
+                )
+            if str(detector["spec_digest"]) != spec.digest:
+                raise StaleGenerationError(
+                    "sequential detector spec changed"
+                )
+            generation = int(detector["generation"])
+            if generation != expected_generation:
+                raise StaleGenerationError(
+                    "sequential detector generation mismatch"
+                )
+            last_event_id = (
+                int(detector["last_evaluation_event_id"])
+                if detector["last_evaluation_event_id"] is not None
+                else 0
+            )
+            event = db.execute(
+                """
+                SELECT * FROM evaluation_events
+                 WHERE session_id=? AND event_id>?
+                 ORDER BY event_id
+                 LIMIT 1
+                """,
+                (spec.session_id, last_event_id),
+            ).fetchone()
+            if event is None:
+                raise StaleGenerationError(
+                    "sequential detector has no next evaluation event"
+                )
+            if str(event["evaluation_digest"]) != evaluation_digest:
+                raise StaleGenerationError(
+                    "sequential detector must process the exact next "
+                    "evaluation event"
+                )
+            if str(event["state_digest"]) != spec.state_digest:
+                raise StaleGenerationError(
+                    "sequential evaluation state mismatch"
+                )
+            if event["subject_digest"] != spec.subject_digest:
+                raise StaleGenerationError(
+                    "sequential evaluation subject mismatch"
+                )
+            if int(event["subject_epoch"]) != spec.subject_epoch:
+                raise StaleGenerationError(
+                    "sequential evaluation subject epoch mismatch"
+                )
+            behavioral = event["behavioral_decision"]
+            if behavioral is None:
+                raise StaleGenerationError(
+                    "sequential detector requires typed strict evaluation"
+                )
+
+            previous_cusum = tuple(
+                (str(item[0]), float(item[1]))
+                for item in json.loads(str(detector["cusum_values"]))
+            )
+            prior_alarms = tuple(
+                str(item)
+                for item in json.loads(str(detector["alarm_dimensions"]))
+            )
+            scores = tuple(
+                (str(item[0]), float(item[1]))
+                for item in json.loads(str(event["dimension_scores"]))
+            )
+            observation_count = int(detector["observation_count"])
+            reasons: tuple[str, ...]
+
+            if Decision(str(behavioral)) is Decision.UNKNOWN:
+                status = SequentialStatus.SKIPPED_UNKNOWN
+                updated_cusum = previous_cusum
+                alarm_dimensions = prior_alarms
+                reasons = ("evaluation_behavior_unknown",)
+            else:
+                updated_cusum, alarm_dimensions = advance_cusum(
+                    policies=spec.dimensions,
+                    previous=previous_cusum,
+                    scores=scores,
+                    prior_alarms=prior_alarms,
+                )
+                observation_count += 1
+                if alarm_dimensions:
+                    status = SequentialStatus.ALARM
+                    reasons = tuple(
+                        f"cusum_alarm:{dimension_id}"
+                        for dimension_id in alarm_dimensions
+                    )
+                else:
+                    status = SequentialStatus.MONITORING
+                    reasons = ("cusum_within_policy",)
+
+            successor = generation + 1
+            db.execute(
+                """
+                UPDATE sequential_detectors
+                   SET generation=?, last_evaluation_event_id=?,
+                       last_turn=?, observation_count=?,
+                       cusum_values=?, alarm_dimensions=?
+                 WHERE detector_id=? AND generation=?
+                """,
+                (
+                    successor,
+                    int(event["event_id"]),
+                    int(event["turn_index"]),
+                    observation_count,
+                    json.dumps(updated_cusum),
+                    json.dumps(alarm_dimensions),
+                    spec.detector_id,
+                    generation,
+                ),
+            )
+            if db.execute("SELECT changes()").fetchone()[0] != 1:
+                raise StaleGenerationError(
+                    "sequential detector compare-and-swap failed"
+                )
+
+            receipt = SequentialDetectionReceipt(
+                detector_id=spec.detector_id,
+                spec_digest=spec.digest,
+                session_id=spec.session_id,
+                generation_before=generation,
+                generation_after=successor,
+                evaluation_event_id=int(event["event_id"]),
+                evaluation_digest=evaluation_digest,
+                turn_index=int(event["turn_index"]),
+                status=status,
+                observation_count=observation_count,
+                dimension_scores=scores,
+                cusum_values=updated_cusum,
+                alarm_dimensions=alarm_dimensions,
+                reasons=reasons,
+            )
+            db.execute(
+                """
+                INSERT INTO sequential_detection_events(
+                    receipt_digest,detector_id,spec_digest,
+                    generation_before,generation_after,
+                    evaluation_event_id,evaluation_digest,turn_index,
+                    status,observation_count,dimension_scores,
+                    cusum_values,alarm_dimensions,reasons
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    receipt.digest,
+                    receipt.detector_id,
+                    receipt.spec_digest,
+                    receipt.generation_before,
+                    receipt.generation_after,
+                    receipt.evaluation_event_id,
+                    receipt.evaluation_digest,
+                    receipt.turn_index,
+                    receipt.status.value,
+                    receipt.observation_count,
+                    json.dumps(receipt.dimension_scores),
+                    json.dumps(receipt.cusum_values),
+                    json.dumps(receipt.alarm_dimensions),
+                    "|".join(receipt.reasons),
+                ),
+            )
+            return receipt
+
+    def sequential_detector_row(self, detector_id: str) -> dict | None:
+        if type(detector_id) is not str or not detector_id.strip():
+            raise ValueError("detector_id must be a non-empty exact string")
+        with closing(self._connect()) as db, db:
+            row = db.execute(
+                "SELECT * FROM sequential_detectors WHERE detector_id=?",
+                (detector_id,),
+            ).fetchone()
+            return dict(row) if row is not None else None
+
+    def sequential_events(self, detector_id: str) -> tuple[dict, ...]:
+        if type(detector_id) is not str or not detector_id.strip():
+            raise ValueError("detector_id must be a non-empty exact string")
+        with closing(self._connect()) as db, db:
+            rows = db.execute(
+                """
+                SELECT * FROM sequential_detection_events
+                 WHERE detector_id=?
+                 ORDER BY generation_before
+                """,
+                (detector_id,),
+            ).fetchall()
+            return tuple(dict(row) for row in rows)
 
     def acknowledge_reload(
         self,

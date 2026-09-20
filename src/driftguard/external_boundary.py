@@ -100,6 +100,34 @@ class ExternalEvaluatorRequest:
         return f"driftguard-evaluator:{self.digest}"
 
 
+@dataclass(frozen=True)
+class ExternalEvaluatorResponse:
+    request_digest: str
+    evidence: tuple[DriftEvidence, ...]
+
+    def __post_init__(self) -> None:
+        require_sha256_digest(self.request_digest, "request_digest")
+        if type(self.evidence) is not tuple:
+            raise ValueError("evidence must be an exact tuple")
+        if any(type(item) is not DriftEvidence for item in self.evidence):
+            raise ValueError("evidence must contain exact DriftEvidence values")
+
+    @property
+    def evidence_digest(self) -> str:
+        return evidence_set_digest(self.evidence)
+
+    def payload(self) -> dict[str, Any]:
+        return {
+            "schema": "DRIFTGUARD_EXTERNAL_EVALUATOR_RESPONSE_V1",
+            "request_digest": self.request_digest,
+            "evidence_digest": self.evidence_digest,
+        }
+
+    @property
+    def digest(self) -> str:
+        return canonical_digest(self.payload())
+
+
 def build_evaluator_request(
     *,
     session_id: str,
@@ -136,15 +164,17 @@ def build_evaluator_request(
 
 def validate_evaluator_response(
     request: ExternalEvaluatorRequest,
-    evidence: Iterable[DriftEvidence],
+    response: ExternalEvaluatorResponse,
 ) -> str:
     if type(request) is not ExternalEvaluatorRequest:
         raise ValueError("request must be exact ExternalEvaluatorRequest")
-    rows = tuple(evidence)
+    if type(response) is not ExternalEvaluatorResponse:
+        raise ValueError("response must be exact ExternalEvaluatorResponse")
+    if response.request_digest != request.digest:
+        raise ValueError("external evaluator response request digest mismatch")
+    rows = response.evidence
     allowed_bindings = {item.binding for item in request.probe_contract}
     for item in rows:
-        if type(item) is not DriftEvidence:
-            raise ValueError("evidence must contain exact DriftEvidence values")
         if item.state_digest != request.state_digest:
             raise ValueError("external evidence state digest mismatch")
         if item.observation_digest != request.observation_digest:
@@ -153,30 +183,31 @@ def validate_evaluator_response(
             raise ValueError("external evidence turn mismatch")
         if not set(item.source_bindings).issubset(allowed_bindings):
             raise ValueError("external evidence contains unrequested source binding")
-    return evidence_set_digest(rows)
+    return response.evidence_digest
 
 
 def commit_evaluator_response(
     *,
     request: ExternalEvaluatorRequest,
     state: SaveState,
-    evidence: Iterable[DriftEvidence],
+    response: ExternalEvaluatorResponse,
     ledger: DriftLedger,
 ) -> CommitResult:
     if type(request) is not ExternalEvaluatorRequest:
         raise ValueError("request must be exact ExternalEvaluatorRequest")
     if type(state) is not SaveState:
         raise ValueError("state must be exact SaveState")
+    if type(response) is not ExternalEvaluatorResponse:
+        raise ValueError("response must be exact ExternalEvaluatorResponse")
     if type(ledger) is not DriftLedger:
         raise ValueError("ledger must be exact DriftLedger")
     if state.digest != request.state_digest:
         raise ValueError("evaluator request state digest no longer matches state")
-    rows = tuple(evidence)
-    validate_evaluator_response(request, rows)
+    validate_evaluator_response(request, response)
     return ledger.evaluate_and_commit(
         session_id=request.session_id,
         state=state,
-        evidence=rows,
+        evidence=response.evidence,
         observation_digest=request.observation_digest,
         turn_index=request.turn_index,
         expected_generation=request.expected_generation,
@@ -263,6 +294,15 @@ def build_reload_directive(
         or receipt.reload_required is not True
     ):
         raise ValueError("reload directive commit does not match durable ledger receipt")
+    session = ledger.session_row(session_id)
+    if session is None:
+        raise ValueError("reload directive requires current durable session")
+    if int(session["generation"]) != commit.successor_generation:
+        raise ValueError("reload directive commit is not current durable generation")
+    if session["last_evaluation_digest"] != evaluation.digest:
+        raise ValueError("reload directive commit is not current durable evaluation")
+    if session["state_digest"] != evaluation.state_digest:
+        raise ValueError("reload directive current session state mismatch")
     return ReloadDirective(
         session_id=session_id,
         evaluation_digest=evaluation.digest,
@@ -317,7 +357,6 @@ class ActuatorReceipt:
 
 class ActuatorDisposition(StrEnum):
     ACKNOWLEDGE = "ACKNOWLEDGE"
-    RETRY_ALLOWED = "RETRY_ALLOWED"
     READBACK_REQUIRED = "READBACK_REQUIRED"
 
 
@@ -348,7 +387,7 @@ def reconcile_actuator_receipt(
         )
     if receipt.status is ActuatorDeliveryStatus.NOT_APPLIED:
         return ActuatorReconciliation(
-            ActuatorDisposition.RETRY_ALLOWED,
+            ActuatorDisposition.READBACK_REQUIRED,
             None,
         )
 
@@ -566,6 +605,7 @@ __all__ = [
     "BehavioralRecoveryReceipt",
     "EvaluatorProbeContract",
     "ExternalEvaluatorRequest",
+    "ExternalEvaluatorResponse",
     "ExternalReceiptChainEntry",
     "ReloadDirective",
     "append_external_receipt",

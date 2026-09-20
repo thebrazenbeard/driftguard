@@ -195,8 +195,17 @@ class DriftGuardEngine:
                 quorum_satisfied[dimension.dimension_id] = (
                     source_quorum and correlation_quorum
                 )
+                source_scores = [
+                    float(item.drift_score) for item, _ in rows
+                ]
+                source_spread = max(source_scores) - min(source_scores)
+                if source_spread > float(dimension.max_source_spread):
+                    reasons.append(
+                        f"evaluator_disagreement:{dimension.dimension_id}"
+                    )
+                    admission_failed = True
                 dimension_scores[dimension.dimension_id] = float(
-                    median(float(item.drift_score) for item, _ in rows)
+                    median(source_scores)
                 )
             else:
                 quorum_satisfied[dimension.dimension_id] = True
@@ -264,9 +273,7 @@ class DriftGuardEngine:
                     self.restore_packet(state) if reload_required else None
                 ),
                 behavioral_decision=(
-                    Decision.RELOAD
-                    if strict and valid_critical_breach
-                    else Decision.UNKNOWN if strict else None
+                    Decision.UNKNOWN if strict else None
                 ),
                 evidence_trace=strict_evidence_trace,
             )

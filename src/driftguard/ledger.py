@@ -532,21 +532,32 @@ class DriftLedger:
                 )
 
             decision = Decision(str(replay["decision"]))
-            reload_required = bool(int(replay["reload_required"]))
             replay_reasons = tuple(
                 item
                 for item in str(replay["reasons"]).split("|")
                 if item
             )
-            if decision is Decision.STABLE and not reload_required:
-                status = RecoveryStatus.VERIFIED_STABLE
-                status_reason = "first_post_reload_replay_stable"
-            elif decision is Decision.UNKNOWN:
+            aggregate_drift = (
+                float(replay["aggregate_drift"])
+                if replay["aggregate_drift"] is not None
+                else None
+            )
+            if decision is Decision.UNKNOWN or aggregate_drift is None:
                 status = RecoveryStatus.UNKNOWN
                 status_reason = "first_post_reload_replay_unknown"
-            else:
+            elif (
+                "critical_dimension_breach" in replay_reasons
+                or aggregate_drift >= state.policy.warn_threshold
+            ):
                 status = RecoveryStatus.NOT_STABLE
-                status_reason = "first_post_reload_replay_not_stable"
+                status_reason = (
+                    "first_post_reload_replay_behaviorally_not_stable"
+                )
+            else:
+                status = RecoveryStatus.VERIFIED_STABLE
+                status_reason = (
+                    "first_post_reload_replay_behaviorally_stable"
+                )
 
             verification = RecoveryVerification(
                 ack_id=ack_id,

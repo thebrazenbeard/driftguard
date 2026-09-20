@@ -141,6 +141,8 @@ Expected:
 
 Three correlated observations remain three observations, not automatically three independent corroborations.
 
+`SOURCE_COUNT != INDEPENDENT_EVIDENCE_COUNT`.
+
 ### BM-08 — missing evidence
 
 One or more required evidence channels disappear while no valid critical evidence resolves the state.

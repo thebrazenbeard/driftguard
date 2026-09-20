@@ -503,32 +503,12 @@ def reconcile_actuator_receipt(
     if receipt.directive_digest != directive.digest:
         raise ValueError("actuator receipt directive digest mismatch")
 
-    if receipt.status is ActuatorDeliveryStatus.UNKNOWN:
-        return ActuatorReconciliation(
-            ActuatorDisposition.READBACK_REQUIRED,
-            None,
-        )
-    if receipt.status is ActuatorDeliveryStatus.NOT_APPLIED:
-        return ActuatorReconciliation(
-            ActuatorDisposition.READBACK_REQUIRED,
-            None,
-        )
-
-    ack_id = "actuator:" + canonical_digest(
-        {
-            "directive_digest": directive.digest,
-            "provider_operation_id": receipt.provider_operation_id,
-            "provider_receipt_sha256": receipt.provider_receipt_sha256,
-        }
-    )
+    # A generic provider receipt is transport/readback evidence only.
+    # Even APPLIED is not independently authenticated provider-effect proof, so
+    # this boundary never manufactures a ReloadAcknowledgement.
     return ActuatorReconciliation(
-        ActuatorDisposition.ACKNOWLEDGE,
-        ReloadAcknowledgement(
-            ack_id=ack_id,
-            evaluation_digest=directive.evaluation_digest,
-            state_digest=directive.state_digest,
-            turn_index=directive.turn_index,
-        ),
+        ActuatorDisposition.READBACK_REQUIRED,
+        None,
     )
 
 

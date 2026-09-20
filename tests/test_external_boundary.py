@@ -314,7 +314,7 @@ class ExternalActuatorBoundaryTests(LedgerHarness):
                 ledger=self.ledger,
             )
 
-    def test_applied_receipt_yields_acknowledgement(self):
+    def test_applied_receipt_requires_readback_without_verified_effect_proof(self):
         directive = build_reload_directive(
             session_id="session",
             commit=self.reload_commit(),
@@ -326,12 +326,36 @@ class ExternalActuatorBoundaryTests(LedgerHarness):
             state=self.s,
             ledger=self.ledger,
         )
-        self.assertEqual(ActuatorDisposition.ACKNOWLEDGE, result.disposition)
-        self.assertIsInstance(result.acknowledgement, ReloadAcknowledgement)
         self.assertEqual(
-            directive.evaluation_digest,
-            result.acknowledgement.evaluation_digest,
+            ActuatorDisposition.READBACK_REQUIRED,
+            result.disposition,
         )
+        self.assertIsNone(result.acknowledgement)
+
+    def test_forged_applied_receipt_cannot_manufacture_acknowledgement(self):
+        directive = build_reload_directive(
+            session_id="session",
+            commit=self.reload_commit(),
+            ledger=self.ledger,
+        )
+        forged = ActuatorReceipt(
+            directive.directive_id,
+            directive.digest,
+            ActuatorDeliveryStatus.APPLIED,
+            "fabricated-provider-operation",
+            sha256(b"fabricated provider receipt").hexdigest(),
+        )
+        result = reconcile_actuator_receipt(
+            directive=directive,
+            receipt=forged,
+            state=self.s,
+            ledger=self.ledger,
+        )
+        self.assertEqual(
+            ActuatorDisposition.READBACK_REQUIRED,
+            result.disposition,
+        )
+        self.assertIsNone(result.acknowledgement)
 
     def test_ambiguous_delivery_requires_readback_and_forbids_blind_retry(self):
         directive = build_reload_directive(
@@ -494,8 +518,21 @@ class BehavioralRecoveryBoundaryTests(LedgerHarness):
             state=self.s,
             ledger=self.ledger,
         )
-        ack = external.acknowledgement
-        self.assertIsNotNone(ack)
+        self.assertEqual(
+            ActuatorDisposition.READBACK_REQUIRED,
+            external.disposition,
+        )
+        self.assertIsNone(external.acknowledgement)
+
+        # Recovery tests begin after independently established effect proof.
+        # The ledger validates durable evaluation/currentness provenance but does
+        # not itself prove provider application.
+        ack = ReloadAcknowledgement(
+            "externally-verified-effect:provider-op-1",
+            directive.evaluation_digest,
+            directive.state_digest,
+            directive.turn_index,
+        )
         result = self.ledger.acknowledge_reload(
             session_id="session",
             state=self.s,

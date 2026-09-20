@@ -21,7 +21,7 @@ The boundary is deliberately dependency-free. It does not perform network I/O.
 - maximum source independence;
 - authorized dimension scope.
 
-Returned `DriftEvidence` must bind the same state digest, observation digest, and turn, and may cite only probe bindings present in the request. DriftGuard's existing core admission remains authoritative for dimension coverage, independence ceilings, duplicate execution ids, and decision logic.
+Returned `DriftEvidence` must bind the same state digest, observation digest, and turn, and may cite only probe bindings present in the request. `commit_evaluator_response()` is the safe bridge into the ledger: it validates the response and commits with the request's exact `expected_generation`, so a delayed evaluator response cannot silently ride a later generation. DriftGuard's existing core admission remains authoritative for dimension coverage, independence ceilings, duplicate execution ids, and decision logic.
 
 An evaluator request or response does not prove evaluator identity honesty or actual independence.
 

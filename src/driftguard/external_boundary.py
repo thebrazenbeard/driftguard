@@ -445,17 +445,31 @@ def classify_behavioral_fields(
     decision: Decision,
     aggregate_drift: float | None,
     reasons: tuple[str, ...],
+    behavioral_decision: Decision | None = None,
 ) -> BehavioralReplayDisposition:
     """Classify observed behavior independently of reload scheduling."""
     if type(state) is not SaveState:
         raise ValueError("state must be exact SaveState")
     if type(decision) is not Decision:
         raise ValueError("decision must be exact Decision")
+    if behavioral_decision is not None and type(behavioral_decision) is not Decision:
+        raise ValueError("behavioral_decision must be exact Decision or None")
     if type(reasons) is not tuple or any(
         type(item) is not str or not item for item in reasons
     ):
         raise ValueError("reasons must be a tuple of non-empty strings")
 
+    if behavioral_decision is not None:
+        if behavioral_decision is Decision.UNKNOWN:
+            return BehavioralReplayDisposition.INDETERMINATE
+        if behavioral_decision is Decision.RELOAD:
+            return BehavioralReplayDisposition.RELAPSE
+        if behavioral_decision is Decision.WARN:
+            return BehavioralReplayDisposition.DEGRADED
+        return BehavioralReplayDisposition.STABLE
+
+    # Legacy V1 compatibility: historical receipts did not carry a typed
+    # behavioral disposition, so bounded replay remains reason/aggregate based.
     if "critical_dimension_breach" in reasons:
         return BehavioralReplayDisposition.RELAPSE
     if decision is Decision.UNKNOWN or aggregate_drift is None:
@@ -483,6 +497,7 @@ def classify_behavioral_evaluation(
         decision=evaluation.decision,
         aggregate_drift=evaluation.aggregate_drift,
         reasons=evaluation.reasons,
+        behavioral_decision=evaluation.behavioral_decision,
     )
 
 

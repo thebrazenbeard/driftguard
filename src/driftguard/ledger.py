@@ -111,6 +111,8 @@ class EvaluatorAttestationEventReceipt:
     algorithm: str
     signature_sha256: str
     covered_sources: tuple[SourceBinding, ...]
+    subject_digest: str | None = None
+    subject_epoch: int | None = None
 
     def __post_init__(self) -> None:
         for value, label in (
@@ -137,6 +139,23 @@ class EvaluatorAttestationEventReceipt:
             raise ValueError("covered_sources must contain exact SourceBinding values")
         if len(self.covered_sources) != len(set(self.covered_sources)):
             raise ValueError("covered_sources must be unique")
+        if (self.subject_digest is None) != (self.subject_epoch is None):
+            raise ValueError(
+                "attestation receipt subject digest/epoch must be supplied together"
+            )
+        if self.subject_digest is not None:
+            require_sha256_digest(
+                self.subject_digest,
+                "attestation receipt subject_digest",
+            )
+            if (
+                type(self.subject_epoch) is not int
+                or isinstance(self.subject_epoch, bool)
+                or self.subject_epoch < 0
+            ):
+                raise ValueError(
+                    "attestation receipt subject_epoch must be non-negative int"
+                )
 
 
 @dataclass(frozen=True)
@@ -314,6 +333,8 @@ class DriftLedger:
                     algorithm TEXT NOT NULL,
                     signature_sha256 TEXT NOT NULL,
                     covered_sources_json TEXT NOT NULL,
+                    subject_digest TEXT NULL,
+                    subject_epoch INTEGER NULL,
                     FOREIGN KEY(session_id) REFERENCES sessions(session_id)
                 );
 
@@ -442,6 +463,18 @@ class DriftLedger:
         if "subject_epoch" not in event_columns:
             db.execute(
                 "ALTER TABLE evaluation_events "
+                "ADD COLUMN subject_epoch INTEGER NULL"
+            )
+
+        attestation_columns = self._columns(db, "evaluator_attestations")
+        if "subject_digest" not in attestation_columns:
+            db.execute(
+                "ALTER TABLE evaluator_attestations "
+                "ADD COLUMN subject_digest TEXT NULL"
+            )
+        if "subject_epoch" not in attestation_columns:
+            db.execute(
+                "ALTER TABLE evaluator_attestations "
                 "ADD COLUMN subject_epoch INTEGER NULL"
             )
 
@@ -1664,6 +1697,16 @@ class DriftLedger:
             algorithm=str(row["algorithm"]),
             signature_sha256=str(row["signature_sha256"]),
             covered_sources=tuple(sorted(sources)),
+            subject_digest=(
+                str(row["subject_digest"])
+                if row["subject_digest"] is not None
+                else None
+            ),
+            subject_epoch=(
+                int(row["subject_epoch"])
+                if row["subject_epoch"] is not None
+                else None
+            ),
         )
 
     def _record_verified_evaluator_attestation(
@@ -1700,6 +1743,10 @@ class DriftLedger:
             raise ValueError("attestation generation/evaluation mismatch")
         if event.evidence_digest != verification.evidence_digest:
             raise ValueError("attestation evidence/evaluation mismatch")
+        if event.subject_digest != verification.subject_digest:
+            raise ValueError("attestation subject digest/evaluation mismatch")
+        if event.subject_epoch != verification.subject_epoch:
+            raise ValueError("attestation subject epoch/evaluation mismatch")
 
         candidate = EvaluatorAttestationEventReceipt(
             verification_digest=verification.digest,
@@ -1714,6 +1761,8 @@ class DriftLedger:
             algorithm=verification.algorithm.value,
             signature_sha256=verification.signature_sha256,
             covered_sources=tuple(sorted(verification.covered_sources)),
+            subject_digest=verification.subject_digest,
+            subject_epoch=verification.subject_epoch,
         )
         covered_json = json.dumps(
             [
@@ -1749,8 +1798,9 @@ class DriftLedger:
                     verification_digest,session_id,evaluation_digest,
                     request_digest,response_digest,policy_digest,key_id,
                     key_fingerprint_sha256,key_epoch,algorithm,
-                    signature_sha256,covered_sources_json
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                    signature_sha256,covered_sources_json,
+                    subject_digest,subject_epoch
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     candidate.verification_digest,
@@ -1765,6 +1815,8 @@ class DriftLedger:
                     candidate.algorithm,
                     candidate.signature_sha256,
                     covered_json,
+                    candidate.subject_digest,
+                    candidate.subject_epoch,
                 ),
             )
             readback = db.execute(

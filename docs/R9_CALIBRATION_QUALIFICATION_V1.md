@@ -210,9 +210,9 @@ Therefore:
 - `BinomialEstimate` recomputes the exact 95% Wilson rate/interval from
   `successes + trials` and rejects contradictory direct construction;
 - `CalibrationFamilyMetrics` validates shifted trial-count agreement,
-  mutually exclusive first-alarm outcome counts, stable-alarm run-length counts,
-  detection-delay counts/mean, wrong-dimension counts, horizon counts, and failure
-  tuple shape;
+  overlap-aware first-alarm union accounting (detection + collateral-wrong -
+  explicit mixed overlap), stable-alarm run-length counts, detection-delay
+  counts/mean, wrong-dimension counts, horizon counts, and failure tuple shape;
 - `CalibrationQualificationReceipt` is factory-gated and can only be emitted by
   `qualify_calibration()` through the governed calculation path;
 - the receipt still validates corpus-role/disposition/reason coherence and canonical

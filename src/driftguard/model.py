@@ -657,6 +657,9 @@ class Evaluation:
     generation: int
     restore_packet: str | None = None
     behavioral_decision: Decision | None = None
+    evidence_trace: tuple[
+        tuple[str, str, str, str, float, str, str], ...
+    ] = ()
 
     @property
     def digest(self) -> str:
@@ -675,6 +678,8 @@ class Evaluation:
         }
         if self.behavioral_decision is not None:
             payload["behavioral_decision"] = self.behavioral_decision.value
+        if self.evidence_trace:
+            payload["evidence_trace"] = self.evidence_trace
         return canonical_digest(payload)
 
 

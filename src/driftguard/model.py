@@ -87,6 +87,118 @@ class SourceBinding:
         return cls(ref=data.get("ref"), version=data.get("version"))
 
 
+REQUIRED_SUBJECT_COMPONENTS = frozenset(
+    {
+        "provider",
+        "model",
+        "instructions",
+        "tools",
+        "retrieval",
+        "memory",
+        "inference",
+        "harness",
+    }
+)
+
+
+@dataclass(frozen=True, order=True)
+class SubjectComponent:
+    component_id: str
+    binding: SourceBinding
+    digest: str
+
+    def __post_init__(self) -> None:
+        _require_nonempty_str(self.component_id, "subject component id")
+        if type(self.binding) is not SourceBinding:
+            raise ValueError("subject component binding must be exact SourceBinding")
+        require_sha256_digest(self.digest, "subject component digest")
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any]) -> "SubjectComponent":
+        if type(data) is not dict:
+            raise ValueError("subject component must be an object")
+        binding = data.get("binding")
+        if type(binding) is not dict:
+            raise ValueError("subject component binding must be an object")
+        return cls(
+            component_id=data.get("component_id"),
+            binding=SourceBinding.from_mapping(binding),
+            digest=data.get("digest"),
+        )
+
+    def payload(self) -> dict[str, Any]:
+        return {
+            "component_id": self.component_id,
+            "binding": asdict(self.binding),
+            "digest": self.digest,
+        }
+
+
+@dataclass(frozen=True)
+class MonitoredSubject:
+    subject_id: str
+    epoch: int
+    components: tuple[SubjectComponent, ...]
+
+    def __post_init__(self) -> None:
+        _require_nonempty_str(self.subject_id, "subject id")
+        if type(self.epoch) is not int or isinstance(self.epoch, bool) or self.epoch < 0:
+            raise ValueError("subject epoch must be a non-negative integer")
+        if type(self.components) is not tuple or not self.components:
+            raise ValueError("subject components must be a non-empty tuple")
+        if any(type(item) is not SubjectComponent for item in self.components):
+            raise ValueError("subject components must contain exact SubjectComponent values")
+        ids = [item.component_id for item in self.components]
+        if len(ids) != len(set(ids)):
+            raise ValueError("subject component ids must be unique")
+        missing = REQUIRED_SUBJECT_COMPONENTS - set(ids)
+        if missing:
+            raise ValueError(
+                "subject manifest missing required components: "
+                f"{sorted(missing)}"
+            )
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any]) -> "MonitoredSubject":
+        if type(data) is not dict:
+            raise ValueError("monitored subject must be an object")
+        components = data.get("components")
+        if type(components) is not list:
+            raise ValueError("subject components must be a JSON array")
+        return cls(
+            subject_id=data.get("subject_id"),
+            epoch=data.get("epoch"),
+            components=tuple(
+                SubjectComponent.from_mapping(item) for item in components
+            ),
+        )
+
+    def configuration_payload(self) -> dict[str, Any]:
+        return {
+            "subject_id": self.subject_id,
+            "components": [
+                item.payload()
+                for item in sorted(
+                    self.components,
+                    key=lambda row: row.component_id,
+                )
+            ],
+        }
+
+    @property
+    def configuration_digest(self) -> str:
+        return canonical_digest(self.configuration_payload())
+
+    @property
+    def epoch_digest(self) -> str:
+        return canonical_digest(
+            {
+                "configuration_digest": self.configuration_digest,
+                "epoch": self.epoch,
+            }
+        )
+
+
 @dataclass(frozen=True)
 class ProbeSource:
     binding: SourceBinding
@@ -596,6 +708,8 @@ class DriftEvidence:
     state_digest: str
     observation_digest: str
     turn_index: int
+    subject_digest: str | None = None
+    subject_epoch: int | None = None
 
     def __post_init__(self) -> None:
         _require_nonempty_str(self.evidence_id, "evidence id")
@@ -614,6 +728,23 @@ class DriftEvidence:
         require_sha256_digest(self.observation_digest, "evidence observation digest")
         if type(self.turn_index) is not int or self.turn_index < 0:
             raise ValueError("evidence turn_index must be a non-negative integer")
+        if (self.subject_digest is None) != (self.subject_epoch is None):
+            raise ValueError(
+                "evidence subject_digest and subject_epoch must be supplied together"
+            )
+        if self.subject_digest is not None:
+            require_sha256_digest(
+                self.subject_digest,
+                "evidence subject digest",
+            )
+            if (
+                type(self.subject_epoch) is not int
+                or isinstance(self.subject_epoch, bool)
+                or self.subject_epoch < 0
+            ):
+                raise ValueError(
+                    "evidence subject_epoch must be a non-negative integer"
+                )
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any]) -> "DriftEvidence":
@@ -632,6 +763,8 @@ class DriftEvidence:
             state_digest=data.get("state_digest"),
             observation_digest=data.get("observation_digest"),
             turn_index=data.get("turn_index"),
+            subject_digest=data.get("subject_digest"),
+            subject_epoch=data.get("subject_epoch"),
         )
 
 
@@ -678,6 +811,27 @@ class Evaluation:
     evidence_trace: tuple[
         tuple[str, str, str, str, float, str, str], ...
     ] = ()
+    subject_digest: str | None = None
+    subject_epoch: int | None = None
+
+    def __post_init__(self) -> None:
+        if (self.subject_digest is None) != (self.subject_epoch is None):
+            raise ValueError(
+                "evaluation subject_digest and subject_epoch must be supplied together"
+            )
+        if self.subject_digest is not None:
+            require_sha256_digest(
+                self.subject_digest,
+                "evaluation subject digest",
+            )
+            if (
+                type(self.subject_epoch) is not int
+                or isinstance(self.subject_epoch, bool)
+                or self.subject_epoch < 0
+            ):
+                raise ValueError(
+                    "evaluation subject_epoch must be a non-negative integer"
+                )
 
     @property
     def digest(self) -> str:
@@ -698,6 +852,9 @@ class Evaluation:
             payload["behavioral_decision"] = self.behavioral_decision.value
         if self.evidence_trace:
             payload["evidence_trace"] = self.evidence_trace
+        if self.subject_digest is not None:
+            payload["subject_digest"] = self.subject_digest
+            payload["subject_epoch"] = self.subject_epoch
         return canonical_digest(payload)
 
 
@@ -781,6 +938,14 @@ def evidence_set_digest(evidence: Iterable[DriftEvidence]) -> str:
                 "state_digest": item.state_digest,
                 "observation_digest": item.observation_digest,
                 "turn_index": item.turn_index,
+                **(
+                    {
+                        "subject_digest": item.subject_digest,
+                        "subject_epoch": item.subject_epoch,
+                    }
+                    if item.subject_digest is not None
+                    else {}
+                ),
             }
         )
     return canonical_digest(payload)

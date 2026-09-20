@@ -631,6 +631,7 @@ def validate_reload_directive(
     directive: ReloadDirective,
     state: SaveState,
     ledger: DriftLedger,
+    subject: MonitoredSubject | None = None,
 ) -> str:
     """Re-admit a transportable reload directive against durable current state.
 
@@ -644,6 +645,19 @@ def validate_reload_directive(
         raise ValueError("state must be exact SaveState")
     if type(ledger) is not DriftLedger:
         raise ValueError("ledger must be exact DriftLedger")
+    if subject is not None and type(subject) is not MonitoredSubject:
+        raise ValueError("subject must be exact MonitoredSubject or None")
+
+    expected_subject_digest = (
+        subject.configuration_digest if subject is not None else None
+    )
+    expected_subject_epoch = subject.epoch if subject is not None else None
+    if directive.subject_digest != expected_subject_digest:
+        raise ValueError("reload directive subject digest mismatch")
+    if directive.subject_epoch != expected_subject_epoch:
+        raise ValueError("reload directive subject epoch mismatch")
+    if subject is not None:
+        ledger.assert_subject_current(subject)
 
     if directive.state_digest != state.digest:
         raise ValueError("reload directive state digest mismatch")
@@ -670,6 +684,8 @@ def validate_reload_directive(
         or durable.generation_after != directive.expected_generation
         or durable.generation_before + 1 != directive.expected_generation
         or durable.reload_required is not True
+        or durable.subject_digest != directive.subject_digest
+        or durable.subject_epoch != directive.subject_epoch
     ):
         raise ValueError(
             "reload directive does not match durable reload-required evaluation"
@@ -684,6 +700,20 @@ def validate_reload_directive(
         raise ValueError("reload directive is not current durable evaluation")
     if session["state_digest"] != directive.state_digest:
         raise ValueError("reload directive current session state mismatch")
+    stored_subject_digest = (
+        str(session["subject_digest"])
+        if session["subject_digest"] is not None
+        else None
+    )
+    stored_subject_epoch = (
+        int(session["subject_epoch"])
+        if session["subject_epoch"] is not None
+        else None
+    )
+    if stored_subject_digest != directive.subject_digest:
+        raise ValueError("reload directive current session subject digest mismatch")
+    if stored_subject_epoch != directive.subject_epoch:
+        raise ValueError("reload directive current session subject epoch mismatch")
 
     return directive.digest
 
@@ -694,11 +724,13 @@ def reconcile_actuator_receipt(
     receipt: ActuatorReceipt,
     state: SaveState,
     ledger: DriftLedger,
+    subject: MonitoredSubject | None = None,
 ) -> ActuatorReconciliation:
     validate_reload_directive(
         directive=directive,
         state=state,
         ledger=ledger,
+        subject=subject,
     )
     if type(receipt) is not ActuatorReceipt:
         raise ValueError("receipt must be exact ActuatorReceipt")

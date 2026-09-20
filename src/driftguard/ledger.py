@@ -44,6 +44,7 @@ class EvaluationEventReceipt:
     reload_required: bool
     aggregate_drift: float | None
     reasons: tuple[str, ...]
+    behavioral_decision: Decision | None = None
 
 
 @dataclass(frozen=True)
@@ -103,6 +104,7 @@ class DriftLedger:
                     reload_required INTEGER NOT NULL DEFAULT 0,
                     aggregate_drift REAL NULL,
                     reasons TEXT NOT NULL,
+                    behavioral_decision TEXT NULL,
                     FOREIGN KEY(session_id) REFERENCES sessions(session_id)
                 );
 
@@ -196,6 +198,11 @@ class DriftLedger:
             db.execute(
                 "ALTER TABLE evaluation_events "
                 "ADD COLUMN reload_required INTEGER NOT NULL DEFAULT 0"
+            )
+        if "behavioral_decision" not in event_columns:
+            db.execute(
+                "ALTER TABLE evaluation_events "
+                "ADD COLUMN behavioral_decision TEXT NULL"
             )
 
     def evaluate_and_commit(
@@ -309,8 +316,8 @@ class DriftLedger:
                     session_id,generation_before,generation_after,turn_index,
                     state_digest,observation_digest,evidence_digest,
                     evaluation_digest,decision,reload_required,
-                    aggregate_drift,reasons
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                    aggregate_drift,reasons,behavioral_decision
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     session_id,
@@ -325,6 +332,11 @@ class DriftLedger:
                     int(evaluation.reload_required),
                     evaluation.aggregate_drift,
                     "|".join(evaluation.reasons),
+                    (
+                        evaluation.behavioral_decision.value
+                        if evaluation.behavioral_decision is not None
+                        else None
+                    ),
                 ),
             )
             return CommitResult(
@@ -490,6 +502,11 @@ class DriftLedger:
                     for item in str(row["reasons"]).split("|")
                     if item
                 ),
+                behavioral_decision=(
+                    Decision(str(row["behavioral_decision"]))
+                    if row["behavioral_decision"] is not None
+                    else None
+                ),
             )
 
     def acknowledgement_receipt(
@@ -640,7 +657,26 @@ class DriftLedger:
                 if replay["aggregate_drift"] is not None
                 else None
             )
-            if decision is Decision.UNKNOWN or aggregate_drift is None:
+            behavioral_decision = (
+                Decision(str(replay["behavioral_decision"]))
+                if replay["behavioral_decision"] is not None
+                else None
+            )
+            if behavioral_decision is not None:
+                if behavioral_decision is Decision.UNKNOWN:
+                    status = RecoveryStatus.UNKNOWN
+                    status_reason = "first_post_reload_replay_unknown"
+                elif behavioral_decision in (Decision.WARN, Decision.RELOAD):
+                    status = RecoveryStatus.NOT_STABLE
+                    status_reason = (
+                        "first_post_reload_replay_behaviorally_not_stable"
+                    )
+                else:
+                    status = RecoveryStatus.VERIFIED_STABLE
+                    status_reason = (
+                        "first_post_reload_replay_behaviorally_stable"
+                    )
+            elif decision is Decision.UNKNOWN or aggregate_drift is None:
                 status = RecoveryStatus.UNKNOWN
                 status_reason = "first_post_reload_replay_unknown"
             elif (
@@ -671,6 +707,11 @@ class DriftLedger:
                 reasons=(
                     status_reason,
                     f"replay_decision:{decision.value}",
+                    *(
+                        (f"behavioral_decision:{behavioral_decision.value}",)
+                        if behavioral_decision is not None
+                        else ()
+                    ),
                     *replay_reasons,
                 ),
                 generation=generation,

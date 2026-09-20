@@ -24,6 +24,23 @@ V1 provides:
 
 See `docs/HOSTILE_REVIEW_V1.md` for the adversarial design pass and `docs/ARCHITECTURE_V1.md` for the contract.
 
+## External boundary candidate
+
+R5 adds a transport-neutral, dependency-free boundary for external evaluators and
+reload actuators without changing the native DriftGuard state machine.
+
+- evaluator requests bind the governed source, dimension, independence ceilings,
+  exact state digest, observation digest, and turn before any external score is
+  admitted;
+- evaluator responses cannot self-select source/dimension/state/observation/turn;
+- reload attempts require the current durable ledger event/generation, not merely
+  an in-memory decision object;
+- ambiguous actuator delivery cannot mint an acknowledgement or authorize retry;
+- consumed acknowledgements remain `CALLER_ASSERTED_CONSUMPTION_NOT_BEHAVIORAL_RECOVERY`.
+
+See `docs/EXTERNAL_BOUNDARY_V1.md`. No provider integration or deployment is
+included in this source candidate.
+
 ## Quick start
 
 ```bash

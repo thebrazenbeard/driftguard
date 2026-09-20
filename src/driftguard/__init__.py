@@ -9,12 +9,14 @@ from .model import (
     Evaluation,
     EvidenceIndependence,
     MeasurementMode,
+    MonitoredSubject,
     ProbeSource,
     RecoveryStatus,
     RecoveryVerification,
     ReloadAcknowledgement,
     SaveState,
     SourceBinding,
+    SubjectComponent,
 )
 
 __all__ = [
@@ -26,11 +28,13 @@ __all__ = [
     "Evaluation",
     "EvidenceIndependence",
     "MeasurementMode",
+    "MonitoredSubject",
     "ProbeSource",
     "RecoveryStatus",
     "RecoveryVerification",
     "ReloadAcknowledgement",
     "SaveState",
     "SourceBinding",
+    "SubjectComponent",
     "StaleGenerationError",
 ]

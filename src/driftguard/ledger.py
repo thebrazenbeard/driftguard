@@ -28,6 +28,31 @@ class AcknowledgementResult:
     restore_anchor_turn: int
 
 
+@dataclass(frozen=True)
+class EvaluationEventReceipt:
+    session_id: str
+    generation_before: int
+    generation_after: int
+    turn_index: int
+    state_digest: str
+    observation_digest: str | None
+    evidence_digest: str
+    evaluation_digest: str
+    decision: Decision
+    reload_required: bool
+
+
+@dataclass(frozen=True)
+class ReloadAcknowledgementEventReceipt:
+    ack_id: str
+    session_id: str
+    generation_before: int
+    generation_after: int
+    evaluation_digest: str
+    state_digest: str
+    turn_index: int
+
+
 class DriftLedger:
     def __init__(self, path: str) -> None:
         self.path = path
@@ -382,6 +407,69 @@ class DriftLedger:
                 ack_id=acknowledgement.ack_id,
                 successor_generation=successor,
                 restore_anchor_turn=acknowledgement.turn_index,
+            )
+
+    def evaluation_receipt(
+        self,
+        *,
+        session_id: str,
+        evaluation_digest: str,
+    ) -> EvaluationEventReceipt | None:
+        if type(session_id) is not str or not session_id.strip():
+            raise ValueError("session_id must be a non-empty exact string")
+        require_sha256_digest(evaluation_digest, "evaluation digest")
+        with closing(self._connect()) as db, db:
+            row = db.execute(
+                """
+                SELECT * FROM evaluation_events
+                 WHERE session_id=? AND evaluation_digest=?
+                """,
+                (session_id, evaluation_digest),
+            ).fetchone()
+            if row is None:
+                return None
+            return EvaluationEventReceipt(
+                session_id=str(row["session_id"]),
+                generation_before=int(row["generation_before"]),
+                generation_after=int(row["generation_after"]),
+                turn_index=int(row["turn_index"]),
+                state_digest=str(row["state_digest"]),
+                observation_digest=(
+                    str(row["observation_digest"])
+                    if row["observation_digest"] is not None
+                    else None
+                ),
+                evidence_digest=str(row["evidence_digest"]),
+                evaluation_digest=str(row["evaluation_digest"]),
+                decision=Decision(str(row["decision"])),
+                reload_required=bool(row["reload_required"]),
+            )
+
+    def acknowledgement_receipt(
+        self,
+        *,
+        ack_id: str,
+    ) -> ReloadAcknowledgementEventReceipt | None:
+        if type(ack_id) is not str or not ack_id.strip():
+            raise ValueError("ack_id must be a non-empty exact string")
+        with closing(self._connect()) as db, db:
+            row = db.execute(
+                """
+                SELECT * FROM reload_acknowledgements
+                 WHERE ack_id=?
+                """,
+                (ack_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return ReloadAcknowledgementEventReceipt(
+                ack_id=str(row["ack_id"]),
+                session_id=str(row["session_id"]),
+                generation_before=int(row["generation_before"]),
+                generation_after=int(row["generation_after"]),
+                evaluation_digest=str(row["evaluation_digest"]),
+                state_digest=str(row["state_digest"]),
+                turn_index=int(row["turn_index"]),
             )
 
     def session_row(self, session_id: str) -> dict | None:

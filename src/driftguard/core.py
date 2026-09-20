@@ -8,6 +8,7 @@ from .model import (
     DriftEvidence,
     Evaluation,
     MeasurementMode,
+    MonitoredSubject,
     SaveState,
     evidence_set_digest,
     require_sha256_digest,
@@ -35,6 +36,7 @@ class DriftGuardEngine:
         generation: int,
         restore_anchor_turn: int,
         last_reload_decision_turn: int | None,
+        subject: MonitoredSubject | None = None,
     ) -> Evaluation:
         require_sha256_digest(observation_digest, "observation digest")
         if type(turn_index) is not int or turn_index < 0:
@@ -52,6 +54,13 @@ class DriftGuardEngine:
                 )
             if last_reload_decision_turn > turn_index:
                 raise DriftGuardError("last_reload_decision_turn cannot be in the future")
+
+        if subject is not None and type(subject) is not MonitoredSubject:
+            raise DriftGuardError("subject must be exact MonitoredSubject or None")
+        subject_digest = (
+            subject.configuration_digest if subject is not None else None
+        )
+        subject_epoch = subject.epoch if subject is not None else None
 
         strict = state.measurement_mode is MeasurementMode.CALIBRATED_QUORUM
         periodic_due = (
@@ -111,6 +120,20 @@ class DriftGuardEngine:
                 reasons.append(f"turn_binding_mismatch:{item.dimension_id}")
                 admission_failed = True
                 continue
+            if subject is None:
+                if item.subject_digest is not None or item.subject_epoch is not None:
+                    reasons.append(f"unexpected_subject_binding:{item.dimension_id}")
+                    admission_failed = True
+                    continue
+            else:
+                if item.subject_digest != subject_digest:
+                    reasons.append(f"subject_binding_mismatch:{item.dimension_id}")
+                    admission_failed = True
+                    continue
+                if item.subject_epoch != subject_epoch:
+                    reasons.append(f"subject_epoch_mismatch:{item.dimension_id}")
+                    admission_failed = True
+                    continue
             if len(item.source_bindings) != 1:
                 reasons.append(f"ambiguous_source_set:{item.dimension_id}")
                 admission_failed = True
@@ -269,6 +292,8 @@ class DriftGuardEngine:
                 evidence_digest=evidence_digest,
                 turn_index=turn_index,
                 generation=generation,
+                subject_digest=subject_digest,
+                subject_epoch=subject_epoch,
                 restore_packet=(
                     self.restore_packet(state) if reload_required else None
                 ),
@@ -329,6 +354,8 @@ class DriftGuardEngine:
                     evidence_digest=evidence_digest,
                     turn_index=turn_index,
                     generation=generation,
+                subject_digest=subject_digest,
+                subject_epoch=subject_epoch,
                     restore_packet=self.restore_packet(state),
                     behavioral_decision=behavioral_decision,
                     evidence_trace=strict_evidence_trace,
@@ -356,6 +383,8 @@ class DriftGuardEngine:
                     evidence_digest=evidence_digest,
                     turn_index=turn_index,
                     generation=generation,
+                subject_digest=subject_digest,
+                subject_epoch=subject_epoch,
                     behavioral_decision=behavioral_decision,
                     evidence_trace=strict_evidence_trace,
                 )
@@ -371,6 +400,8 @@ class DriftGuardEngine:
                 evidence_digest=evidence_digest,
                 turn_index=turn_index,
                 generation=generation,
+                subject_digest=subject_digest,
+                subject_epoch=subject_epoch,
                 behavioral_decision=behavioral_decision,
                 evidence_trace=strict_evidence_trace,
             )
@@ -406,6 +437,8 @@ class DriftGuardEngine:
                 evidence_digest=evidence_digest,
                 turn_index=turn_index,
                 generation=generation,
+                subject_digest=subject_digest,
+                subject_epoch=subject_epoch,
                 restore_packet=self.restore_packet(state),
             )
 
@@ -428,6 +461,8 @@ class DriftGuardEngine:
                 evidence_digest=evidence_digest,
                 turn_index=turn_index,
                 generation=generation,
+                subject_digest=subject_digest,
+                subject_epoch=subject_epoch,
             )
 
         return Evaluation(

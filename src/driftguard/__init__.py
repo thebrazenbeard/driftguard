@@ -9,6 +9,7 @@ from .evaluator_attestation import (
     EvaluatorAttestationVerification,
     build_hmac_evaluator_attestation,
     commit_attested_evaluator_response,
+    key_fingerprint_sha256,
     verify_evaluator_attestation,
 )
 from .model import (
@@ -28,6 +29,7 @@ from .model import (
 
 __all__ = [
     "verify_evaluator_attestation",
+    "key_fingerprint_sha256",
     "commit_attested_evaluator_response",
     "build_hmac_evaluator_attestation",
     "EvaluatorAttestationVerification",

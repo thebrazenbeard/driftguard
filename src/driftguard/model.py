@@ -93,6 +93,7 @@ class ProbeSource:
     max_independence: EvidenceIndependence
     dimensions: tuple[str, ...]
     calibration: SourceBinding | None = None
+    calibration_digest: str | None = None
     correlation_group: str | None = None
     score_scale: str | None = None
 
@@ -109,6 +110,11 @@ class ProbeSource:
             raise ValueError("probe dimensions must be unique")
         if self.calibration is not None and type(self.calibration) is not SourceBinding:
             raise ValueError("probe calibration must be exact SourceBinding or None")
+        if self.calibration_digest is not None:
+            require_sha256_digest(
+                self.calibration_digest,
+                "probe calibration digest",
+            )
         if self.correlation_group is not None:
             _require_nonempty_str(self.correlation_group, "probe correlation group")
         if self.score_scale is not None:
@@ -138,6 +144,7 @@ class ProbeSource:
                 if calibration is not None
                 else None
             ),
+            calibration_digest=data.get("calibration_digest"),
             correlation_group=data.get("correlation_group"),
             score_scale=data.get("score_scale"),
         )
@@ -310,6 +317,11 @@ class SaveState:
                 item.dimension_id: item for item in self.dimensions
             }
             for dimension in self.dimensions:
+                if float(dimension.weight) != 1.0:
+                    raise ValueError(
+                        "calibrated quorum dimensions do not permit legacy weights: "
+                        f"{dimension.dimension_id}"
+                    )
                 if dimension.score_scale is None:
                     raise ValueError(
                         "calibrated quorum dimensions require explicit score_scale: "
@@ -337,6 +349,11 @@ class SaveState:
                 if source.calibration is None:
                     raise ValueError(
                         "calibrated quorum probe sources require calibration: "
+                        f"{source.binding.ref}@{source.binding.version}"
+                    )
+                if source.calibration_digest is None:
+                    raise ValueError(
+                        "calibrated quorum probe sources require calibration_digest: "
                         f"{source.binding.ref}@{source.binding.version}"
                     )
                 if source.correlation_group is None:
@@ -403,9 +420,6 @@ class SaveState:
 
     def behavior_payload(self) -> dict[str, Any]:
         return {
-            "state_id": self.state_id,
-            "version": self.version,
-            "restore_text": self.restore_text,
             "dimensions": [
                 {
                     "dimension_id": item.dimension_id,
@@ -415,21 +429,28 @@ class SaveState:
             ],
         }
 
+    def control_policy_payload(self) -> dict[str, Any]:
+        return {
+            "restore_text": self.restore_text,
+        }
+
     def measurement_payload(self) -> dict[str, Any]:
+        dimensions = []
+        for item in self.dimensions:
+            row = {
+                "dimension_id": item.dimension_id,
+                "min_independence": item.min_independence.name,
+                "min_sources": item.min_sources,
+                "min_correlation_groups": item.min_correlation_groups,
+                "score_scale": item.score_scale,
+            }
+            if self.measurement_mode is MeasurementMode.LEGACY_WEIGHTED:
+                row["weight"] = float(item.weight)
+                row["critical"] = item.critical
+            dimensions.append(row)
         return {
             "measurement_mode": self.measurement_mode.value,
-            "dimensions": [
-                {
-                    "dimension_id": item.dimension_id,
-                    "weight": float(item.weight),
-                    "critical": item.critical,
-                    "min_independence": item.min_independence.name,
-                    "min_sources": item.min_sources,
-                    "min_correlation_groups": item.min_correlation_groups,
-                    "score_scale": item.score_scale,
-                }
-                for item in self.dimensions
-            ],
+            "dimensions": dimensions,
             "probe_sources": [
                 {
                     "ref": item.binding.ref,
@@ -441,6 +462,7 @@ class SaveState:
                         if item.calibration is not None
                         else None
                     ),
+                    "calibration_digest": item.calibration_digest,
                     "correlation_group": item.correlation_group,
                     "score_scale": item.score_scale,
                 }
@@ -456,6 +478,10 @@ class SaveState:
     def measurement_digest(self) -> str:
         return canonical_digest(self.measurement_payload())
 
+    @property
+    def control_policy_digest(self) -> str:
+        return canonical_digest(self.control_policy_payload())
+
     def detection_policy_payload(self) -> dict[str, Any]:
         if self.measurement_mode is MeasurementMode.LEGACY_WEIGHTED:
             return asdict(self.policy)
@@ -464,6 +490,7 @@ class SaveState:
             "dimensions": [
                 {
                     "dimension_id": item.dimension_id,
+                    "critical": item.critical,
                     "warn_threshold": float(item.warn_threshold),
                     "reload_threshold": float(item.reload_threshold),
                     "critical_reload_threshold": (
@@ -495,10 +522,11 @@ class SaveState:
             dimension = {
                 "dimension_id": item.dimension_id,
                 "description": item.description,
-                "weight": float(item.weight),
                 "critical": item.critical,
                 "min_independence": item.min_independence.name,
             }
+            if self.measurement_mode is MeasurementMode.LEGACY_WEIGHTED:
+                dimension["weight"] = float(item.weight)
             if item.min_sources != 1:
                 dimension["min_sources"] = item.min_sources
             if item.min_correlation_groups != 1:
@@ -523,6 +551,8 @@ class SaveState:
             }
             if item.calibration is not None:
                 source["calibration"] = asdict(item.calibration)
+            if item.calibration_digest is not None:
+                source["calibration_digest"] = item.calibration_digest
             if item.correlation_group is not None:
                 source["correlation_group"] = item.correlation_group
             if item.score_scale is not None:

@@ -11,6 +11,7 @@ from .model import (
     DriftEvidence,
     Evaluation,
     MeasurementMode,
+    MonitoredSubject,
     ReloadAcknowledgement,
     SaveState,
     SourceBinding,
@@ -101,6 +102,8 @@ class ExternalEvaluatorRequest:
     behavior_digest: str | None = None
     measurement_digest: str | None = None
     detection_policy_digest: str | None = None
+    subject_digest: str | None = None
+    subject_epoch: int | None = None
 
     def __post_init__(self) -> None:
         _nonempty(self.session_id, "session_id")
@@ -134,13 +137,31 @@ class ExternalEvaluatorRequest:
                 self.detection_policy_digest,
                 "detection_policy_digest",
             )
+        if (self.subject_digest is None) != (self.subject_epoch is None):
+            raise ValueError(
+                "subject_digest and subject_epoch must be supplied together"
+            )
+        if self.subject_digest is not None:
+            require_sha256_digest(self.subject_digest, "subject_digest")
+            if (
+                type(self.subject_epoch) is not int
+                or isinstance(self.subject_epoch, bool)
+                or self.subject_epoch < 0
+            ):
+                raise ValueError(
+                    "subject_epoch must be a non-negative integer"
+                )
 
     def payload(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "schema": (
-                "DRIFTGUARD_EXTERNAL_EVALUATOR_REQUEST_V2"
-                if self.behavior_digest is not None
-                else "DRIFTGUARD_EXTERNAL_EVALUATOR_REQUEST_V1"
+                "DRIFTGUARD_EXTERNAL_EVALUATOR_REQUEST_V3"
+                if self.subject_digest is not None
+                else (
+                    "DRIFTGUARD_EXTERNAL_EVALUATOR_REQUEST_V2"
+                    if self.behavior_digest is not None
+                    else "DRIFTGUARD_EXTERNAL_EVALUATOR_REQUEST_V1"
+                )
             ),
             "session_id": self.session_id,
             "state_digest": self.state_digest,
@@ -153,6 +174,9 @@ class ExternalEvaluatorRequest:
             payload["behavior_digest"] = self.behavior_digest
             payload["measurement_digest"] = self.measurement_digest
             payload["detection_policy_digest"] = self.detection_policy_digest
+        if self.subject_digest is not None:
+            payload["subject_digest"] = self.subject_digest
+            payload["subject_epoch"] = self.subject_epoch
         return payload
 
     @property
@@ -199,9 +223,12 @@ def build_evaluator_request(
     observation_digest: str,
     turn_index: int,
     expected_generation: int,
+    subject: MonitoredSubject | None = None,
 ) -> ExternalEvaluatorRequest:
     if type(state) is not SaveState:
         raise ValueError("state must be exact SaveState")
+    if subject is not None and type(subject) is not MonitoredSubject:
+        raise ValueError("subject must be exact MonitoredSubject or None")
     contracts = tuple(
         sorted(
             (
@@ -240,6 +267,10 @@ def build_evaluator_request(
         behavior_digest=state.behavior_digest if strict else None,
         measurement_digest=state.measurement_digest if strict else None,
         detection_policy_digest=state.detection_policy_digest if strict else None,
+        subject_digest=(
+            subject.configuration_digest if subject is not None else None
+        ),
+        subject_epoch=subject.epoch if subject is not None else None,
     )
 
 
@@ -262,6 +293,10 @@ def validate_evaluator_response(
             raise ValueError("external evidence observation digest mismatch")
         if item.turn_index != request.turn_index:
             raise ValueError("external evidence turn mismatch")
+        if item.subject_digest != request.subject_digest:
+            raise ValueError("external evidence subject digest mismatch")
+        if item.subject_epoch != request.subject_epoch:
+            raise ValueError("external evidence subject epoch mismatch")
         if not set(item.source_bindings).issubset(allowed_bindings):
             raise ValueError("external evidence contains unrequested source binding")
     return response.evidence_digest
@@ -273,6 +308,7 @@ def commit_evaluator_response(
     state: SaveState,
     response: ExternalEvaluatorResponse,
     ledger: DriftLedger,
+    subject: MonitoredSubject | None = None,
 ) -> CommitResult:
     if type(request) is not ExternalEvaluatorRequest:
         raise ValueError("request must be exact ExternalEvaluatorRequest")
@@ -282,6 +318,16 @@ def commit_evaluator_response(
         raise ValueError("response must be exact ExternalEvaluatorResponse")
     if type(ledger) is not DriftLedger:
         raise ValueError("ledger must be exact DriftLedger")
+    if subject is not None and type(subject) is not MonitoredSubject:
+        raise ValueError("subject must be exact MonitoredSubject or None")
+    expected_subject_digest = (
+        subject.configuration_digest if subject is not None else None
+    )
+    expected_subject_epoch = subject.epoch if subject is not None else None
+    if request.subject_digest != expected_subject_digest:
+        raise ValueError("evaluator request subject digest no longer matches subject")
+    if request.subject_epoch != expected_subject_epoch:
+        raise ValueError("evaluator request subject epoch no longer matches subject")
     if state.digest != request.state_digest:
         raise ValueError("evaluator request state digest no longer matches state")
     validate_evaluator_response(request, response)
@@ -292,6 +338,7 @@ def commit_evaluator_response(
         observation_digest=request.observation_digest,
         turn_index=request.turn_index,
         expected_generation=request.expected_generation,
+        subject=subject,
     )
 
 

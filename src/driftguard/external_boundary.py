@@ -419,12 +419,27 @@ def build_reload_directive(
     session_id: str,
     commit: CommitResult,
     ledger: DriftLedger,
+    subject: MonitoredSubject | None = None,
 ) -> ReloadDirective:
     if type(commit) is not CommitResult:
         raise ValueError("commit must be exact CommitResult")
     if type(ledger) is not DriftLedger:
         raise ValueError("ledger must be exact DriftLedger")
+    if subject is not None and type(subject) is not MonitoredSubject:
+        raise ValueError("subject must be exact MonitoredSubject or None")
     evaluation = commit.evaluation
+    expected_subject_digest = (
+        subject.configuration_digest if subject is not None else None
+    )
+    expected_subject_epoch = subject.epoch if subject is not None else None
+    if evaluation.subject_digest != expected_subject_digest:
+        raise ValueError(
+            "reload directive requires current monitored subject readback"
+        )
+    if evaluation.subject_epoch != expected_subject_epoch:
+        raise ValueError(
+            "reload directive monitored subject epoch mismatch"
+        )
     if evaluation.reload_required is not True:
         raise ValueError("reload directive requires reload-required evaluation")
     if type(evaluation.restore_packet) is not str or not evaluation.restore_packet:

@@ -191,6 +191,7 @@ class ExternalActuatorBoundaryTests(unittest.TestCase):
             expected_generation=0,
         )
         self.attempt = ReloadAttempt.from_commit(
+            ledger=self.ledger,
             session_id="session",
             commit=self.commit,
         )
@@ -213,6 +214,7 @@ class ExternalActuatorBoundaryTests(unittest.TestCase):
 
     def test_attempt_is_deterministic_and_bound_to_restore_packet_bytes(self):
         same = ReloadAttempt.from_commit(
+            ledger=self.ledger,
             session_id="session",
             commit=self.commit,
         )
@@ -258,7 +260,45 @@ class ExternalActuatorBoundaryTests(unittest.TestCase):
             expected_generation=0,
         )
         with self.assertRaisesRegex(ValueError, "reload-required"):
-            ReloadAttempt.from_commit(session_id="stable", commit=commit)
+            ReloadAttempt.from_commit(
+                ledger=self.ledger,
+                session_id="stable",
+                commit=commit,
+            )
+
+    def test_reload_attempt_requires_current_durable_commit(self):
+        stale = type(self.commit)(
+            evaluation=self.commit.evaluation,
+            successor_generation=self.commit.successor_generation + 1,
+        )
+        with self.assertRaisesRegex(ValueError, "current durable generation"):
+            ReloadAttempt.from_commit(
+                ledger=self.ledger,
+                session_id="session",
+                commit=stale,
+            )
+
+    def test_reload_attempt_becomes_stale_after_native_generation_advances(self):
+        receipt = admit_actuator_receipt(
+            attempt=self.attempt,
+            receipt=self.receipt(ActuatorOutcome.CONSUMED_UNVERIFIED),
+        )
+        acknowledgement = acknowledgement_from_actuator_receipt(
+            attempt=self.attempt,
+            receipt=receipt,
+        )
+        self.ledger.acknowledge_reload(
+            session_id="session",
+            state=self.state,
+            acknowledgement=acknowledgement,
+            expected_generation=self.commit.successor_generation,
+        )
+        with self.assertRaisesRegex(ValueError, "current durable generation"):
+            ReloadAttempt.from_commit(
+                ledger=self.ledger,
+                session_id="session",
+                commit=self.commit,
+            )
 
     def test_receipt_must_bind_exact_attempt(self):
         receipt = self.receipt(ActuatorOutcome.CONSUMED_UNVERIFIED)

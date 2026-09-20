@@ -34,7 +34,7 @@ SOURCE = SourceBinding("probe://external", "v1")
 OBS = raw_bytes_digest(b"external observation")
 
 
-def state() -> SaveState:
+def state(*, max_turns: int = 5) -> SaveState:
     return SaveState(
         "external-boundary",
         "1",
@@ -53,7 +53,7 @@ def state() -> SaveState:
                 ("d",),
             ),
         ),
-        DriftPolicy(max_turns_without_reload=5, reload_cooldown_turns=0),
+        DriftPolicy(max_turns_without_reload=max_turns, reload_cooldown_turns=0),
     )
 
 
@@ -346,6 +346,7 @@ class BehavioralRecoveryBoundaryTests(LedgerHarness):
         )
         receipt = qualify_post_reload_behavior(
             session_id="session",
+            state=self.s,
             acknowledgement=ack,
             acknowledgement_result=ack_result,
             replay_commit=replay,
@@ -376,6 +377,53 @@ class BehavioralRecoveryBoundaryTests(LedgerHarness):
                 )
         finally:
             os.unlink(other_handle.name)
+
+    def test_periodic_reload_due_does_not_negate_clean_behavioral_replay(self):
+        self.s = state(max_turns=1)
+        ack, ack_result = self.applied_ack()
+        replay = self.commit(
+            turn=6,
+            generation=ack_result.successor_generation,
+            score=0.0,
+        )
+        self.assertEqual(Decision.RELOAD, replay.evaluation.decision)
+        self.assertTrue(replay.evaluation.reload_required)
+        self.assertEqual(0.0, replay.evaluation.aggregate_drift)
+        self.assertEqual(("periodic_reload_due",), replay.evaluation.reasons)
+
+        receipt = qualify_post_reload_behavior(
+            session_id="session",
+            state=self.s,
+            acknowledgement=ack,
+            acknowledgement_result=ack_result,
+            replay_commit=replay,
+            ledger=self.ledger,
+        )
+        self.assertEqual(
+            "POST_RELOAD_BEHAVIORAL_REPLAY_PASS",
+            receipt.result,
+        )
+
+    def test_periodic_reload_does_not_hide_warn_level_behavioral_drift(self):
+        self.s = state(max_turns=1)
+        ack, ack_result = self.applied_ack()
+        replay = self.commit(
+            turn=6,
+            generation=ack_result.successor_generation,
+            score=0.30,
+        )
+        self.assertEqual(Decision.RELOAD, replay.evaluation.decision)
+        self.assertTrue(replay.evaluation.reload_required)
+        self.assertAlmostEqual(0.30, replay.evaluation.aggregate_drift)
+        with self.assertRaisesRegex(ValueError, "DEGRADED"):
+            qualify_post_reload_behavior(
+                session_id="session",
+                state=self.s,
+                acknowledgement=ack,
+                acknowledgement_result=ack_result,
+                replay_commit=replay,
+                ledger=self.ledger,
+            )
 
     def test_unknown_replay_cannot_be_called_recovery(self):
         ack, ack_result = self.applied_ack()

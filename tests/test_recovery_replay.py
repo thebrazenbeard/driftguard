@@ -27,7 +27,7 @@ SOURCE = SourceBinding("probe://recovery-replay", "v1")
 OBS = raw_bytes_digest(b"post-reload-observation")
 
 
-def state() -> SaveState:
+def state(*, max_turns: int = 5, cooldown: int = 0) -> SaveState:
     return SaveState(
         "recovery-state",
         "1",
@@ -44,8 +44,8 @@ def state() -> SaveState:
             warn_threshold=0.25,
             reload_threshold=0.45,
             critical_reload_threshold=0.40,
-            max_turns_without_reload=5,
-            reload_cooldown_turns=0,
+            max_turns_without_reload=max_turns,
+            reload_cooldown_turns=cooldown,
         ),
     )
 
@@ -159,7 +159,7 @@ class RecoveryReplayTests(unittest.TestCase):
         self.assertEqual(verification.generation, 4)
         self.assertEqual(result.successor_generation, 5)
         self.assertIn(
-            "first_post_reload_replay_stable",
+            "first_post_reload_replay_behaviorally_stable",
             verification.reasons,
         )
         self.assertNotIn("reload_caused_recovery", verification.reasons)
@@ -172,6 +172,27 @@ class RecoveryReplayTests(unittest.TestCase):
         self.assertEqual(
             receipts[0]["verification_digest"],
             verification.digest,
+        )
+
+    def test_periodic_reload_clock_does_not_negate_stable_recovery(self):
+        self.state = state(max_turns=1, cooldown=0)
+        self.acknowledged_reload()
+        replay = self.evaluate(turn=6, generation=3, score=0.0)
+        self.assertEqual(replay.evaluation.decision, Decision.RELOAD)
+        self.assertTrue(replay.evaluation.reload_required)
+        self.assertIn("periodic_reload_due", replay.evaluation.reasons)
+
+        result = self.verify(
+            replay_digest=replay.evaluation.digest,
+            generation=4,
+        )
+        self.assertEqual(
+            result.verification.status,
+            RecoveryStatus.VERIFIED_STABLE,
+        )
+        self.assertIn(
+            "first_post_reload_replay_behaviorally_stable",
+            result.verification.reasons,
         )
 
     def test_incomplete_first_replay_remains_unknown(self):

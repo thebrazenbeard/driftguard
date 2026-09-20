@@ -10,7 +10,7 @@ from .external_boundary import (
     classify_behavioral_evaluation,
     classify_behavioral_fields,
 )
-from .ledger import CommitResult, DriftLedger
+from .ledger import CommitResult, DriftLedger, EvaluationEventReceipt
 from .model import Decision, Evaluation, SaveState, canonical_digest, require_sha256_digest
 
 
@@ -88,7 +88,7 @@ def _validate_initial_recovery(
     state: SaveState,
     initial_recovery: BehavioralRecoveryReceipt,
     ledger: DriftLedger,
-) -> None:
+) -> EvaluationEventReceipt:
     ack = ledger.acknowledgement_receipt(ack_id=initial_recovery.ack_id)
     if ack is None:
         raise ValueError(
@@ -135,6 +135,7 @@ def _validate_initial_recovery(
             "durable initial replay is not behaviorally stable: "
             f"{behavioral.value}"
         )
+    return replay
 
 
 def _validate_commit(
@@ -232,7 +233,7 @@ def qualify_recovery_window(
     require_sha256_digest(initial_recovery.state_digest, "state digest")
     if state.digest != initial_recovery.state_digest:
         raise ValueError("recovery qualification state digest mismatch")
-    _validate_initial_recovery(
+    initial_replay = _validate_initial_recovery(
         session_id=session_id,
         state=state,
         initial_recovery=initial_recovery,
@@ -240,8 +241,8 @@ def qualify_recovery_window(
     )
 
     evaluation_digests = [initial_recovery.replay_evaluation_digest]
-    decision_trace = [Decision.STABLE.value]
-    reload_trace = [False]
+    decision_trace = [initial_replay.decision.value]
+    reload_trace = [initial_replay.reload_required]
     behavioral_trace = [BehavioralReplayDisposition.STABLE.value]
     previous_turn = initial_recovery.replay_turn_index
     expected_generation = initial_recovery.replay_generation + 1

@@ -1,5 +1,6 @@
 import os
 import sqlite3
+from contextlib import closing
 import tempfile
 import unittest
 from dataclasses import replace
@@ -679,7 +680,7 @@ class SubjectEffectCompositionTests(unittest.TestCase):
 
     def test_durable_evaluation_subject_mismatch_fails(self):
         directive = self.directive()
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             db.execute(
                 "UPDATE evaluation_events SET subject_digest=? "
                 "WHERE session_id=? AND evaluation_digest=?",
@@ -702,7 +703,7 @@ class SubjectEffectCompositionTests(unittest.TestCase):
 
     def test_durable_session_subject_mismatch_fails(self):
         directive = self.directive()
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             db.execute(
                 "UPDATE sessions SET subject_epoch=? WHERE session_id=?",
                 (9, directive.session_id),

@@ -21,6 +21,7 @@ from .model import (
 from .sequential import (
     SequentialDetectionReceipt,
     SequentialDetectorSpec,
+    SequentialRegistrationReceipt,
     SequentialStatus,
     advance_cusum,
 )
@@ -124,10 +125,20 @@ class DriftLedger:
                     measurement_digest TEXT NOT NULL,
                     subject_digest TEXT NOT NULL,
                     subject_epoch INTEGER NOT NULL CHECK (subject_epoch >= 0),
+                    registration_digest TEXT NOT NULL,
+                    registration_session_generation INTEGER NOT NULL
+                        CHECK (registration_session_generation >= 0),
+                    registration_event_id INTEGER NOT NULL
+                        CHECK (registration_event_id >= 1),
+                    registration_evaluation_digest TEXT NOT NULL,
                     generation INTEGER NOT NULL CHECK (generation >= 0),
-                    last_evaluation_event_id INTEGER NULL,
-                    last_turn INTEGER NULL,
+                    last_evaluation_event_id INTEGER NOT NULL
+                        CHECK (last_evaluation_event_id >= 1),
+                    last_turn INTEGER NOT NULL CHECK (last_turn >= 0),
                     observation_count INTEGER NOT NULL CHECK (observation_count >= 0),
+                    consecutive_unknown INTEGER NOT NULL
+                        CHECK (consecutive_unknown >= 0),
+                    gap_invalid INTEGER NOT NULL DEFAULT 0,
                     cusum_values TEXT NOT NULL,
                     alarm_dimensions TEXT NOT NULL,
                     FOREIGN KEY(session_id) REFERENCES sessions(session_id)
@@ -144,6 +155,8 @@ class DriftLedger:
                     turn_index INTEGER NOT NULL,
                     status TEXT NOT NULL,
                     observation_count INTEGER NOT NULL,
+                    consecutive_unknown INTEGER NOT NULL,
+                    gap_invalid INTEGER NOT NULL,
                     dimension_scores TEXT NOT NULL,
                     cusum_values TEXT NOT NULL,
                     alarm_dimensions TEXT NOT NULL,
@@ -635,7 +648,8 @@ class DriftLedger:
         spec: SequentialDetectorSpec,
         state: SaveState,
         subject: MonitoredSubject,
-    ) -> dict:
+    ) -> SequentialRegistrationReceipt:
+        """Precommit a detector strictly after the current evaluation frontier."""
         if type(spec) is not SequentialDetectorSpec:
             raise ValueError("spec must be exact SequentialDetectorSpec")
         if type(state) is not SaveState:
@@ -681,8 +695,58 @@ class DriftLedger:
                     raise StaleGenerationError(
                         "detector id is already bound to another spec"
                     )
-                return dict(existing)
+                return SequentialRegistrationReceipt(
+                    detector_id=spec.detector_id,
+                    spec_digest=spec.digest,
+                    session_id=spec.session_id,
+                    session_generation=int(
+                        existing["registration_session_generation"]
+                    ),
+                    anchor_event_id=int(existing["registration_event_id"]),
+                    anchor_evaluation_digest=str(
+                        existing["registration_evaluation_digest"]
+                    ),
+                    subject_digest=spec.subject_digest,
+                    subject_epoch=spec.subject_epoch,
+                )
 
+            anchor = db.execute(
+                """
+                SELECT * FROM evaluation_events
+                 WHERE session_id=?
+                 ORDER BY event_id DESC
+                 LIMIT 1
+                """,
+                (spec.session_id,),
+            ).fetchone()
+            if anchor is None:
+                raise StaleGenerationError(
+                    "sequential detector registration requires an "
+                    "existing evaluation frontier"
+                )
+            if str(anchor["state_digest"]) != spec.state_digest:
+                raise StaleGenerationError(
+                    "sequential registration anchor state mismatch"
+                )
+            if anchor["subject_digest"] != spec.subject_digest:
+                raise StaleGenerationError(
+                    "sequential registration anchor subject mismatch"
+                )
+            if int(anchor["subject_epoch"]) != spec.subject_epoch:
+                raise StaleGenerationError(
+                    "sequential registration anchor subject epoch mismatch"
+                )
+
+            registration = SequentialRegistrationReceipt(
+                detector_id=spec.detector_id,
+                spec_digest=spec.digest,
+                session_id=spec.session_id,
+                session_generation=int(session["generation"]),
+                anchor_event_id=int(anchor["event_id"]),
+                anchor_evaluation_digest=str(anchor["evaluation_digest"]),
+                subject_digest=spec.subject_digest,
+                subject_epoch=spec.subject_epoch,
+            )
             zero_state = tuple(
                 (item.dimension_id, 0.0)
                 for item in sorted(
@@ -700,10 +764,13 @@ class DriftLedger:
                 INSERT INTO sequential_detectors(
                     detector_id,spec_digest,spec_json,session_id,
                     state_digest,measurement_digest,subject_digest,
-                    subject_epoch,generation,last_evaluation_event_id,
-                    last_turn,observation_count,cusum_values,
-                    alarm_dimensions
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    subject_epoch,registration_digest,
+                    registration_session_generation,
+                    registration_event_id,registration_evaluation_digest,
+                    generation,last_evaluation_event_id,last_turn,
+                    observation_count,consecutive_unknown,gap_invalid,
+                    cusum_values,alarm_dimensions
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     spec.detector_id,
@@ -714,19 +781,21 @@ class DriftLedger:
                     spec.measurement_digest,
                     spec.subject_digest,
                     spec.subject_epoch,
+                    registration.digest,
+                    registration.session_generation,
+                    registration.anchor_event_id,
+                    registration.anchor_evaluation_digest,
                     0,
-                    None,
-                    None,
+                    registration.anchor_event_id,
+                    int(anchor["turn_index"]),
+                    0,
+                    0,
                     0,
                     json.dumps(zero_state),
                     json.dumps(()),
                 ),
             )
-            row = db.execute(
-                "SELECT * FROM sequential_detectors WHERE detector_id=?",
-                (spec.detector_id,),
-            ).fetchone()
-            return dict(row)
+            return registration
 
     def advance_sequential_detector(
         self,
@@ -781,11 +850,7 @@ class DriftLedger:
                 raise StaleGenerationError(
                     "sequential detector generation mismatch"
                 )
-            last_event_id = (
-                int(detector["last_evaluation_event_id"])
-                if detector["last_evaluation_event_id"] is not None
-                else 0
-            )
+            last_event_id = int(detector["last_evaluation_event_id"])
             event = db.execute(
                 """
                 SELECT * FROM evaluation_events
@@ -835,14 +900,37 @@ class DriftLedger:
                 for item in json.loads(str(event["dimension_scores"]))
             )
             observation_count = int(detector["observation_count"])
+            consecutive_unknown = int(detector["consecutive_unknown"])
+            gap_invalid = bool(detector["gap_invalid"])
             reasons: tuple[str, ...]
 
-            if Decision(str(behavioral)) is Decision.UNKNOWN:
-                status = SequentialStatus.SKIPPED_UNKNOWN
+            if gap_invalid:
+                status = SequentialStatus.INVALID_GAP
                 updated_cusum = previous_cusum
                 alarm_dimensions = prior_alarms
-                reasons = ("evaluation_behavior_unknown",)
+                reasons = ("detector_evidence_gap_invalid",)
+            elif Decision(str(behavioral)) is Decision.UNKNOWN:
+                consecutive_unknown += 1
+                updated_cusum = previous_cusum
+                alarm_dimensions = prior_alarms
+                if consecutive_unknown > spec.max_consecutive_unknown:
+                    gap_invalid = True
+                    status = SequentialStatus.INVALID_GAP
+                    reasons = ("unknown_budget_exceeded",)
+                elif prior_alarms:
+                    status = SequentialStatus.ALARM
+                    reasons = (
+                        "evaluation_behavior_unknown",
+                        *tuple(
+                            f"cusum_alarm_latched:{dimension_id}"
+                            for dimension_id in prior_alarms
+                        ),
+                    )
+                else:
+                    status = SequentialStatus.SKIPPED_UNKNOWN
+                    reasons = ("evaluation_behavior_unknown",)
             else:
+                consecutive_unknown = 0
                 updated_cusum, alarm_dimensions = advance_cusum(
                     policies=spec.dimensions,
                     previous=previous_cusum,
@@ -866,6 +954,7 @@ class DriftLedger:
                 UPDATE sequential_detectors
                    SET generation=?, last_evaluation_event_id=?,
                        last_turn=?, observation_count=?,
+                       consecutive_unknown=?,gap_invalid=?,
                        cusum_values=?, alarm_dimensions=?
                  WHERE detector_id=? AND generation=?
                 """,
@@ -874,6 +963,8 @@ class DriftLedger:
                     int(event["event_id"]),
                     int(event["turn_index"]),
                     observation_count,
+                    consecutive_unknown,
+                    int(gap_invalid),
                     json.dumps(updated_cusum),
                     json.dumps(alarm_dimensions),
                     spec.detector_id,
@@ -896,6 +987,8 @@ class DriftLedger:
                 turn_index=int(event["turn_index"]),
                 status=status,
                 observation_count=observation_count,
+                consecutive_unknown=consecutive_unknown,
+                gap_invalid=gap_invalid,
                 dimension_scores=scores,
                 cusum_values=updated_cusum,
                 alarm_dimensions=alarm_dimensions,
@@ -907,9 +1000,10 @@ class DriftLedger:
                     receipt_digest,detector_id,spec_digest,
                     generation_before,generation_after,
                     evaluation_event_id,evaluation_digest,turn_index,
-                    status,observation_count,dimension_scores,
-                    cusum_values,alarm_dimensions,reasons
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    status,observation_count,consecutive_unknown,
+                    gap_invalid,dimension_scores,cusum_values,
+                    alarm_dimensions,reasons
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     receipt.digest,
@@ -922,6 +1016,8 @@ class DriftLedger:
                     receipt.turn_index,
                     receipt.status.value,
                     receipt.observation_count,
+                    receipt.consecutive_unknown,
+                    int(receipt.gap_invalid),
                     json.dumps(receipt.dimension_scores),
                     json.dumps(receipt.cusum_values),
                     json.dumps(receipt.alarm_dimensions),

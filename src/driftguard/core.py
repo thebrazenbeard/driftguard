@@ -354,8 +354,8 @@ class DriftGuardEngine:
                     evidence_digest=evidence_digest,
                     turn_index=turn_index,
                     generation=generation,
-                subject_digest=subject_digest,
-                subject_epoch=subject_epoch,
+                    subject_digest=subject_digest,
+                    subject_epoch=subject_epoch,
                     restore_packet=self.restore_packet(state),
                     behavioral_decision=behavioral_decision,
                     evidence_trace=strict_evidence_trace,
@@ -383,8 +383,8 @@ class DriftGuardEngine:
                     evidence_digest=evidence_digest,
                     turn_index=turn_index,
                     generation=generation,
-                subject_digest=subject_digest,
-                subject_epoch=subject_epoch,
+                    subject_digest=subject_digest,
+                    subject_epoch=subject_epoch,
                     behavioral_decision=behavioral_decision,
                     evidence_trace=strict_evidence_trace,
                 )
@@ -476,6 +476,8 @@ class DriftGuardEngine:
             evidence_digest=evidence_digest,
             turn_index=turn_index,
             generation=generation,
+            subject_digest=subject_digest,
+            subject_epoch=subject_epoch,
         )
 
     @staticmethod

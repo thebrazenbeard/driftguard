@@ -406,6 +406,58 @@ class SubjectLedgerTests(unittest.TestCase):
         ):
             self.commit(self.subject, turn=1, generation=1)
 
+    def test_recovery_verification_preserves_subject_epoch(self):
+        reload_result = self.commit(
+            self.subject,
+            turn=0,
+            generation=0,
+            score=0.90,
+        )
+        acknowledgement = ReloadAcknowledgement(
+            "ack-recovery-r7",
+            reload_result.evaluation.digest,
+            self.state.digest,
+            0,
+        )
+        ack = self.ledger.acknowledge_reload(
+            session_id="subject-session",
+            state=self.state,
+            acknowledgement=acknowledgement,
+            expected_generation=1,
+            subject=self.subject,
+        )
+        self.assertEqual(2, ack.successor_generation)
+        replay = self.commit(
+            self.subject,
+            turn=1,
+            generation=2,
+            score=0.0,
+        )
+        with self.assertRaisesRegex(
+            StaleGenerationError,
+            "requires current subject readback",
+        ):
+            self.ledger.verify_recovery(
+                session_id="subject-session",
+                state=self.state,
+                ack_id=acknowledgement.ack_id,
+                replay_evaluation_digest=replay.evaluation.digest,
+                expected_generation=3,
+            )
+        verified = self.ledger.verify_recovery(
+            session_id="subject-session",
+            state=self.state,
+            ack_id=acknowledgement.ack_id,
+            replay_evaluation_digest=replay.evaluation.digest,
+            expected_generation=3,
+            subject=self.subject,
+        )
+        self.assertEqual(
+            self.subject.configuration_digest,
+            verified.verification.subject_digest,
+        )
+        self.assertEqual(0, verified.verification.subject_epoch)
+
     def test_prior_epoch_evidence_is_rejected_on_new_epoch(self):
         current = subject(epoch=1)
         stale = evidence(

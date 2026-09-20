@@ -55,19 +55,43 @@ R7 separates configuration from time-series epoch.
 
 Two epochs may intentionally use the same configuration digest. This is useful for a controlled restart, new baseline campaign, or other deliberate segmentation without pretending the runtime configuration changed.
 
-## Durable epoch registry
+## Durable epoch registry and transition authority
 
-The ledger maintains a durable `subject_epochs` registry.
+The ledger maintains durable `subject_epochs` and
+`subject_epoch_transitions` registries.
+
+Measurement admission is deliberately not epoch-transition authority.
+
+A subject lineage is bootstrapped explicitly with
+`register_subject_epoch()` / `register-subject`.
+
+Bootstrap requires epoch `0`.
 
 For one `subject_id`:
 
-- one epoch can bind only one exact configuration;
+- one epoch binds one exact configuration;
 - an existing epoch cannot be rebound to a different configuration;
-- a newly introduced epoch must advance exactly one beyond the latest registered epoch;
-- the latest registered epoch is the live/current epoch;
-- once a later epoch exists, earlier-epoch sessions are superseded for new evaluation/effect work.
+- ordinary `evaluate_and_commit()` may use only an already-registered current epoch;
+- ordinary evaluation cannot create `S@N+1`;
+- advancing `S@N -> S@N+1` requires the dedicated
+  `transition_subject_epoch()` / `transition-subject` boundary;
+- a transition binds an exact transition ID, reason, predecessor epoch + configuration
+  digest, and successor epoch + configuration digest;
+- the predecessor must be the exact current registered epoch;
+- the successor must advance exactly one;
+- transition replay is rejected;
+- competing/double transitions from a stale predecessor are rejected;
+- the successor epoch and transition receipt are persisted transactionally;
+- only after the explicit transition commits does the successor become current and
+  older-epoch sessions become superseded.
 
-The first epoch observed by a new ledger may be any non-negative value. This allows controlled import of an already-versioned external subject lineage without inventing missing historical epochs.
+The transition claim is intentionally bounded:
+
+`CALLER_EXPLICIT_SUBJECT_EPOCH_TRANSITION_NOT_PROVIDER_AUTHORITY`
+
+This proves that currentness changed through the explicit governed caller boundary.
+It does not prove that the provider/runtime really changed, that the reason is true,
+or that the caller was authorized by an external provider/control plane.
 
 ## Session boundary
 
@@ -84,7 +108,9 @@ Inside a session, DriftGuard fails closed if the caller attempts to:
 - remove subject identity;
 - attach subject identity late to a legacy unbound session.
 
-A new subject epoch therefore requires a new session/time-series boundary.
+A new subject epoch therefore requires both an explicit epoch-transition receipt
+and a new session/time-series boundary. Starting a new session alone cannot advance
+global subject currentness.
 
 ## Evidence binding
 
@@ -121,6 +147,9 @@ The reload directive becomes `DRIFTGUARD_RELOAD_DIRECTIVE_V2` and explicitly car
 
 A superseded epoch cannot mint a new reload directive.
 
+Crucially, an unrelated new measurement session cannot supersede an existing epoch.
+Only the dedicated predecessor-bound transition operation can do that.
+
 ## What a component digest means
 
 A SHA-256 binding proves equality with the exact bytes that were hashed.
@@ -150,9 +179,14 @@ When no subject is supplied:
 
 An existing legacy session cannot later attach R7 subject identity. Start a new session instead.
 
+A subject-aware caller must explicitly register epoch zero before the first
+subject-bound evaluation. This is an intentional R7 governance boundary rather than
+an implicit side effect of measurement.
+
 ## Claim ceiling
 
-R7 establishes deterministic monitored-subject provenance and epoch boundaries.
+R7 establishes deterministic monitored-subject provenance, explicit bootstrap, and
+predecessor-bound durable epoch-transition boundaries.
 
 It does not establish:
 

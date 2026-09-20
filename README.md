@@ -18,6 +18,7 @@ V1 provides:
 - periodic reload plus threshold-triggered reload;
 - decision cooldown without confusing a reload decision for a restore effect;
 - explicit digest-bound reload acknowledgements as the only path that advances the restore anchor;
+- digest-bound post-reload recovery verification that accepts only the first committed replay after an acknowledgement and separates behavioral stability from reload scheduling;
 - deterministic restore packets bound to the exact save-state digest;
 - SQLite persistence with monotonic generations, turn ordering, state pinning, legacy-safe migration, and append-only receipts;
 - no third-party runtime dependencies.
@@ -56,7 +57,21 @@ driftguard ack-reload \
   --expected-generation <current-generation>
 ```
 
-The acknowledgement records a caller assertion that the reload effect occurred. It still does not prove provider honesty or behavioral recovery. A post-reload evaluation is required for that stronger claim.
+The acknowledgement records a caller assertion that the reload effect occurred. It still does not prove provider honesty or behavioral recovery.
+
+For a stronger behavioral claim, commit the **first post-acknowledgement observation** through the normal `evaluate` path, then bind that exact evaluation as the recovery replay:
+
+```bash
+driftguard verify-recovery \
+  --state examples/save_state.json \
+  --db ./driftguard.db \
+  --session demo \
+  --ack-id <accepted-ack-id> \
+  --replay-evaluation-digest <first-post-ack-evaluation-digest> \
+  --expected-generation <current-generation>
+```
+
+Recovery status is one of `VERIFIED_STABLE`, `NOT_STABLE`, or `UNKNOWN`. A verified result means the first admitted post-reload replay is behaviorally within the save-state's stable policy. It does **not** prove the reload caused that behavior, and periodic reload scheduling remains a separate operational clock.
 
 ## Evidence model
 
@@ -70,4 +85,4 @@ Each V1 evidence item must use exactly one governed probe source and bind itself
 
 ## Current claim ceiling
 
-DriftGuard V1 proves deterministic admission, scheduling, fencing, and reload-decision behavior for its supplied inputs. It does not prove that a claimed external evaluator was genuinely independent, that a downstream provider actually applied a restore packet, or that the model's hidden state/identity remained unchanged.
+DriftGuard V1 proves deterministic admission, scheduling, fencing, reload-decision behavior, and digest-bound classification of the first post-acknowledgement behavioral replay for its supplied inputs. It does not prove that a claimed external evaluator was genuinely independent, that a downstream provider actually applied a restore packet, that the reload caused a later stable replay, or that the model's hidden state/identity remained unchanged.

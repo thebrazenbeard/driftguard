@@ -108,7 +108,13 @@ def evidence(s, monitored, turn, score):
     )
 
 
-def detector_spec(s, monitored, session_id="r8-session"):
+def detector_spec(
+    s,
+    monitored,
+    session_id="r8-session",
+    *,
+    max_consecutive_unknown=1,
+):
     return SequentialDetectorSpec(
         detector_id="cusum-r8",
         session_id=session_id,
@@ -118,6 +124,7 @@ def detector_spec(s, monitored, session_id="r8-session"):
         subject_epoch=monitored.epoch,
         calibration=DETECTOR_CAL,
         calibration_digest=DETECTOR_CAL_DIGEST,
+        max_consecutive_unknown=max_consecutive_unknown,
         dimensions=(
             CusumDimensionPolicy(
                 "d",
@@ -159,20 +166,33 @@ class SequentialCusumTests(unittest.TestCase):
             subject=self.subject,
         )
 
-    def register_after_first(self, score=0.10):
-        first = self.commit(score, turn=0, generation=0)
+    def commit_unknown(self, *, turn, generation):
+        return self.ledger.evaluate_and_commit(
+            session_id=self.session_id,
+            state=self.state,
+            evidence=(),
+            observation_digest=OBS,
+            turn_index=turn,
+            expected_generation=generation,
+            subject=self.subject,
+        )
+
+    def register_after_anchor(self, anchor_score=0.10, **spec_kwargs):
+        anchor = self.commit(anchor_score, turn=0, generation=0)
         spec = detector_spec(
             self.state,
             self.subject,
             self.session_id,
+            **spec_kwargs,
         )
-        row = self.ledger.register_sequential_detector(
+        registration = self.ledger.register_sequential_detector(
             spec=spec,
             state=self.state,
             subject=self.subject,
         )
-        self.assertEqual(0, row["generation"])
-        return spec, first
+        self.assertEqual(anchor.evaluation.digest, registration.anchor_evaluation_digest)
+        self.assertEqual(1, registration.session_generation)
+        return spec, registration, anchor
 
     def advance(self, spec, commit, generation):
         return self.ledger.advance_sequential_detector(
@@ -183,21 +203,61 @@ class SequentialCusumTests(unittest.TestCase):
             expected_generation=generation,
         )
 
+    def test_registration_is_future_only_precommit(self):
+        anchor = self.commit(0.10, turn=0, generation=0)
+        historical = self.commit(0.70, turn=1, generation=1)
+        spec = detector_spec(self.state, self.subject, self.session_id)
+        registration = self.ledger.register_sequential_detector(
+            spec=spec,
+            state=self.state,
+            subject=self.subject,
+        )
+        self.assertEqual(
+            historical.evaluation.digest,
+            registration.anchor_evaluation_digest,
+        )
+        self.assertEqual(2, registration.session_generation)
+        self.assertNotEqual(
+            anchor.evaluation.digest,
+            registration.anchor_evaluation_digest,
+        )
+
+        future = self.commit(0.10, turn=2, generation=2)
+        with self.assertRaisesRegex(
+            StaleGenerationError,
+            "exact next evaluation",
+        ):
+            self.advance(spec, historical, 0)
+        accepted = self.advance(spec, future, 0)
+        self.assertEqual(SequentialStatus.MONITORING, accepted.status)
+        self.assertEqual(1, accepted.observation_count)
+
+    def test_registration_receipt_is_idempotent_for_exact_spec(self):
+        spec, first, _ = self.register_after_anchor()
+        second = self.ledger.register_sequential_detector(
+            spec=spec,
+            state=self.state,
+            subject=self.subject,
+        )
+        self.assertEqual(first.digest, second.digest)
+
     def test_precommitted_cusum_accumulates_and_alarms(self):
-        spec, first = self.register_after_first(0.10)
+        spec, _, _ = self.register_after_anchor(0.10)
+
+        first = self.commit(0.10, turn=1, generation=1)
         r0 = self.advance(spec, first, 0)
         self.assertEqual(SequentialStatus.MONITORING, r0.status)
         self.assertEqual((("d", 0.0),), r0.cusum_values)
 
-        second = self.commit(0.20, turn=1, generation=1)
+        second = self.commit(0.20, turn=2, generation=2)
         r1 = self.advance(spec, second, 1)
         self.assertEqual((("d", 0.05),), r1.cusum_values)
 
-        third = self.commit(0.40, turn=2, generation=2)
+        third = self.commit(0.40, turn=3, generation=3)
         r2 = self.advance(spec, third, 2)
         self.assertEqual((("d", 0.30),), r2.cusum_values)
 
-        fourth = self.commit(0.50, turn=3, generation=3)
+        fourth = self.commit(0.50, turn=4, generation=4)
         r3 = self.advance(spec, fourth, 3)
         self.assertEqual(SequentialStatus.ALARM, r3.status)
         self.assertEqual((("d", 0.65),), r3.cusum_values)
@@ -206,67 +266,84 @@ class SequentialCusumTests(unittest.TestCase):
         self.assertEqual(4, len(self.ledger.sequential_events(spec.detector_id)))
 
     def test_alarm_is_latched_not_auto_reset(self):
-        spec, first = self.register_after_first(0.80)
-        alarm = self.advance(spec, first, 0)
+        spec, _, _ = self.register_after_anchor()
+        high = self.commit(0.80, turn=1, generation=1)
+        alarm = self.advance(spec, high, 0)
         self.assertEqual(SequentialStatus.ALARM, alarm.status)
-        low = self.commit(0.0, turn=1, generation=1)
+        low = self.commit(0.0, turn=2, generation=2)
         later = self.advance(spec, low, 1)
         self.assertEqual(SequentialStatus.ALARM, later.status)
         self.assertEqual(("d",), later.alarm_dimensions)
 
-    def test_cannot_cherry_pick_later_evaluation(self):
-        first = self.commit(0.10, turn=0, generation=0)
+    def test_unknown_after_alarm_does_not_erase_alarm_latch(self):
+        spec, _, _ = self.register_after_anchor(max_consecutive_unknown=2)
+        high = self.commit(0.80, turn=1, generation=1)
+        alarm = self.advance(spec, high, 0)
+        unknown = self.commit_unknown(turn=2, generation=2)
+        receipt = self.advance(spec, unknown, 1)
+        self.assertEqual(SequentialStatus.ALARM, receipt.status)
+        self.assertEqual(alarm.alarm_dimensions, receipt.alarm_dimensions)
+        self.assertEqual(1, receipt.consecutive_unknown)
+        self.assertIn("evaluation_behavior_unknown", receipt.reasons)
+
+    def test_cannot_cherry_pick_later_future_evaluation(self):
+        spec, _, _ = self.register_after_anchor()
         second = self.commit(0.10, turn=1, generation=1)
-        spec = detector_spec(self.state, self.subject, self.session_id)
-        self.ledger.register_sequential_detector(
-            spec=spec,
-            state=self.state,
-            subject=self.subject,
-        )
+        third = self.commit(0.10, turn=2, generation=2)
         with self.assertRaisesRegex(
             StaleGenerationError,
             "exact next evaluation",
         ):
-            self.advance(spec, second, 0)
-        accepted = self.advance(spec, first, 0)
+            self.advance(spec, third, 0)
+        accepted = self.advance(spec, second, 0)
         self.assertEqual(SequentialStatus.MONITORING, accepted.status)
 
     def test_detector_generation_compare_and_swap(self):
-        spec, first = self.register_after_first()
+        spec, _, _ = self.register_after_anchor()
+        next_event = self.commit(0.10, turn=1, generation=1)
         with self.assertRaisesRegex(
             StaleGenerationError,
             "generation mismatch",
         ):
-            self.advance(spec, first, 1)
+            self.advance(spec, next_event, 1)
 
-    def test_unknown_evaluation_is_consumed_but_not_accumulated(self):
-        spec, first = self.register_after_first(0.20)
-        initial = self.advance(spec, first, 0)
+    def test_unknown_budget_invalidates_detector_irreversibly(self):
+        spec, _, _ = self.register_after_anchor(max_consecutive_unknown=1)
+
+        valid = self.commit(0.20, turn=1, generation=1)
+        initial = self.advance(spec, valid, 0)
         self.assertEqual(1, initial.observation_count)
 
-        unknown = self.ledger.evaluate_and_commit(
-            session_id=self.session_id,
-            state=self.state,
-            evidence=(),
-            observation_digest=OBS,
-            turn_index=1,
-            expected_generation=1,
-            subject=self.subject,
-        )
-        skipped = self.advance(spec, unknown, 1)
-        self.assertEqual(
-            SequentialStatus.SKIPPED_UNKNOWN,
-            skipped.status,
-        )
-        self.assertEqual(1, skipped.observation_count)
+        unknown1 = self.commit_unknown(turn=2, generation=2)
+        skipped = self.advance(spec, unknown1, 1)
+        self.assertEqual(SequentialStatus.SKIPPED_UNKNOWN, skipped.status)
+        self.assertEqual(1, skipped.consecutive_unknown)
+        self.assertFalse(skipped.gap_invalid)
         self.assertEqual(initial.cusum_values, skipped.cusum_values)
 
-        valid = self.commit(0.20, turn=2, generation=2)
-        resumed = self.advance(spec, valid, 2)
-        self.assertEqual(2, resumed.observation_count)
+        unknown2 = self.commit_unknown(turn=3, generation=3)
+        invalid = self.advance(spec, unknown2, 2)
+        self.assertEqual(SequentialStatus.INVALID_GAP, invalid.status)
+        self.assertTrue(invalid.gap_invalid)
+        self.assertEqual(2, invalid.consecutive_unknown)
+        self.assertEqual(1, invalid.observation_count)
+
+        later_valid = self.commit(0.90, turn=4, generation=4)
+        still_invalid = self.advance(spec, later_valid, 3)
+        self.assertEqual(SequentialStatus.INVALID_GAP, still_invalid.status)
+        self.assertTrue(still_invalid.gap_invalid)
+        self.assertEqual(invalid.cusum_values, still_invalid.cusum_values)
+        self.assertEqual(1, still_invalid.observation_count)
+
+    def test_zero_unknown_budget_invalidates_first_unknown(self):
+        spec, _, _ = self.register_after_anchor(max_consecutive_unknown=0)
+        unknown = self.commit_unknown(turn=1, generation=1)
+        receipt = self.advance(spec, unknown, 0)
+        self.assertEqual(SequentialStatus.INVALID_GAP, receipt.status)
+        self.assertTrue(receipt.gap_invalid)
 
     def test_detector_id_cannot_be_rebound_to_new_policy(self):
-        spec, _ = self.register_after_first()
+        spec, _, _ = self.register_after_anchor()
         changed = replace(
             spec,
             dimensions=(
@@ -287,7 +364,7 @@ class SequentialCusumTests(unittest.TestCase):
             )
 
     def test_detector_spec_must_match_exact_measurement_contract(self):
-        first = self.commit(0.10, turn=0, generation=0)
+        self.commit(0.10, turn=0, generation=0)
         spec = detector_spec(self.state, self.subject, self.session_id)
         bad = replace(
             spec,
@@ -304,11 +381,10 @@ class SequentialCusumTests(unittest.TestCase):
                 state=self.state,
                 subject=self.subject,
             )
-        self.assertEqual(Decision.STABLE, first.evaluation.decision)
 
     def test_superseded_subject_epoch_invalidates_detector(self):
-        spec, first = self.register_after_first()
-        self.advance(spec, first, 0)
+        spec, _, _ = self.register_after_anchor()
+        future = self.commit(0.20, turn=1, generation=1)
 
         next_subject = subject(epoch=1)
         self.ledger.evaluate_and_commit(
@@ -325,8 +401,6 @@ class SequentialCusumTests(unittest.TestCase):
             expected_generation=0,
             subject=next_subject,
         )
-        second = self.ledger.events(self.session_id)
-        self.assertEqual(1, len(second))
         with self.assertRaisesRegex(
             StaleGenerationError,
             "epoch has been superseded",
@@ -335,30 +409,32 @@ class SequentialCusumTests(unittest.TestCase):
                 spec=spec,
                 state=self.state,
                 subject=self.subject,
-                evaluation_digest=first.evaluation.digest,
-                expected_generation=1,
+                evaluation_digest=future.evaluation.digest,
+                expected_generation=0,
             )
 
     def test_sequential_alarm_has_no_reload_side_effect(self):
-        spec, first = self.register_after_first(0.80)
-        receipt = self.advance(spec, first, 0)
+        spec, _, _ = self.register_after_anchor()
+        high = self.commit(0.80, turn=1, generation=1)
+        receipt = self.advance(spec, high, 0)
         self.assertEqual(SequentialStatus.ALARM, receipt.status)
         session = self.ledger.session_row(self.session_id)
         self.assertIsNone(session["last_reload_decision_turn"])
-        self.assertEqual(1, session["generation"])
+        self.assertEqual(2, session["generation"])
         self.assertEqual(1, receipt.generation_after)
 
     def test_reprocessing_same_event_is_rejected(self):
-        spec, first = self.register_after_first()
-        self.advance(spec, first, 0)
+        spec, _, _ = self.register_after_anchor()
+        next_event = self.commit(0.10, turn=1, generation=1)
+        self.advance(spec, next_event, 0)
         with self.assertRaisesRegex(
             StaleGenerationError,
             "no next evaluation event",
         ):
-            self.advance(spec, first, 1)
+            self.advance(spec, next_event, 1)
 
     def test_policy_digest_moves_when_calibrated_threshold_moves(self):
-        spec, _ = self.register_after_first()
+        spec, _, _ = self.register_after_anchor()
         changed = replace(
             spec,
             dimensions=(
@@ -368,6 +444,11 @@ class SequentialCusumTests(unittest.TestCase):
                 ),
             ),
         )
+        self.assertNotEqual(spec.digest, changed.digest)
+
+    def test_policy_digest_moves_when_unknown_budget_moves(self):
+        spec, _, _ = self.register_after_anchor(max_consecutive_unknown=1)
+        changed = replace(spec, max_consecutive_unknown=2)
         self.assertNotEqual(spec.digest, changed.digest)
 
 

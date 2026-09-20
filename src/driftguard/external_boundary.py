@@ -351,6 +351,8 @@ class ReloadDirective:
     expected_generation: int
     restore_packet: str
     restore_packet_sha256: str
+    subject_digest: str | None = None
+    subject_epoch: int | None = None
 
     def __post_init__(self) -> None:
         _nonempty(self.session_id, "session_id")
@@ -365,10 +367,31 @@ class ReloadDirective:
         actual = sha256(self.restore_packet.encode("utf-8")).hexdigest()
         if actual != self.restore_packet_sha256:
             raise ValueError("restore packet digest mismatch")
+        if (self.subject_digest is None) != (self.subject_epoch is None):
+            raise ValueError(
+                "directive subject_digest and subject_epoch must be supplied together"
+            )
+        if self.subject_digest is not None:
+            require_sha256_digest(
+                self.subject_digest,
+                "directive subject digest",
+            )
+            if (
+                type(self.subject_epoch) is not int
+                or isinstance(self.subject_epoch, bool)
+                or self.subject_epoch < 0
+            ):
+                raise ValueError(
+                    "directive subject_epoch must be a non-negative integer"
+                )
 
     def payload(self) -> dict[str, Any]:
-        return {
-            "schema": "DRIFTGUARD_RELOAD_DIRECTIVE_V1",
+        payload = {
+            "schema": (
+                "DRIFTGUARD_RELOAD_DIRECTIVE_V2"
+                if self.subject_digest is not None
+                else "DRIFTGUARD_RELOAD_DIRECTIVE_V1"
+            ),
             "session_id": self.session_id,
             "evaluation_digest": self.evaluation_digest,
             "state_digest": self.state_digest,
@@ -377,6 +400,10 @@ class ReloadDirective:
             "restore_packet": self.restore_packet,
             "restore_packet_sha256": self.restore_packet_sha256,
         }
+        if self.subject_digest is not None:
+            payload["subject_digest"] = self.subject_digest
+            payload["subject_epoch"] = self.subject_epoch
+        return payload
 
     @property
     def digest(self) -> str:
@@ -420,6 +447,8 @@ def build_reload_directive(
         or receipt.evaluation_digest != evaluation.digest
         or receipt.decision is not evaluation.decision
         or receipt.reload_required is not True
+        or receipt.subject_digest != evaluation.subject_digest
+        or receipt.subject_epoch != evaluation.subject_epoch
     ):
         raise ValueError("reload directive commit does not match durable ledger receipt")
     session = ledger.session_row(session_id)
@@ -431,6 +460,20 @@ def build_reload_directive(
         raise ValueError("reload directive commit is not current durable evaluation")
     if session["state_digest"] != evaluation.state_digest:
         raise ValueError("reload directive current session state mismatch")
+    session_subject_digest = (
+        str(session["subject_digest"])
+        if session.get("subject_digest") is not None
+        else None
+    )
+    session_subject_epoch = (
+        int(session["subject_epoch"])
+        if session.get("subject_epoch") is not None
+        else None
+    )
+    if session_subject_digest != evaluation.subject_digest:
+        raise ValueError("reload directive current session subject mismatch")
+    if session_subject_epoch != evaluation.subject_epoch:
+        raise ValueError("reload directive current session subject epoch mismatch")
     return ReloadDirective(
         session_id=session_id,
         evaluation_digest=evaluation.digest,
@@ -441,6 +484,8 @@ def build_reload_directive(
         restore_packet_sha256=sha256(
             evaluation.restore_packet.encode("utf-8")
         ).hexdigest(),
+        subject_digest=evaluation.subject_digest,
+        subject_epoch=evaluation.subject_epoch,
     )
 
 

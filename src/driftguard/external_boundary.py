@@ -440,6 +440,8 @@ def build_reload_directive(
         raise ValueError(
             "reload directive monitored subject epoch mismatch"
         )
+    if subject is not None:
+        ledger.assert_subject_current(subject)
     if evaluation.reload_required is not True:
         raise ValueError("reload directive requires reload-required evaluation")
     if type(evaluation.restore_packet) is not str or not evaluation.restore_packet:

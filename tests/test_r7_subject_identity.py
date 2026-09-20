@@ -11,6 +11,7 @@ from driftguard import (
     EvidenceIndependence,
     MonitoredSubject,
     ProbeSource,
+    ReloadAcknowledgement,
     SaveState,
     SourceBinding,
     StaleGenerationError,
@@ -284,6 +285,105 @@ class SubjectLedgerTests(unittest.TestCase):
         ):
             self.commit(self.subject, turn=1, generation=1)
 
+    def test_subject_epoch_registry_prevents_cross_session_rebind(self):
+        self.commit(self.subject, turn=0, generation=0)
+        changed = subject(
+            overrides={
+                "model": component(
+                    "model",
+                    version="v2",
+                    payload="rebound-model",
+                )
+            }
+        )
+        with self.assertRaisesRegex(
+            StaleGenerationError,
+            "subject epoch cannot be rebound",
+        ):
+            self.ledger.evaluate_and_commit(
+                session_id="different-session",
+                state=self.state,
+                evidence=evidence(
+                    self.state,
+                    changed,
+                    turn=0,
+                ),
+                observation_digest=OBS,
+                turn_index=0,
+                expected_generation=0,
+                subject=changed,
+            )
+
+    def test_new_subject_epoch_must_advance_sequentially(self):
+        self.commit(self.subject, turn=0, generation=0)
+        skipped = subject(epoch=2)
+        with self.assertRaisesRegex(
+            StaleGenerationError,
+            "advance exactly one",
+        ):
+            self.ledger.evaluate_and_commit(
+                session_id="epoch-two",
+                state=self.state,
+                evidence=evidence(
+                    self.state,
+                    skipped,
+                    turn=0,
+                ),
+                observation_digest=OBS,
+                turn_index=0,
+                expected_generation=0,
+                subject=skipped,
+            )
+        next_epoch = subject(epoch=1)
+        result = self.ledger.evaluate_and_commit(
+            session_id="epoch-one",
+            state=self.state,
+            evidence=evidence(
+                self.state,
+                next_epoch,
+                turn=0,
+            ),
+            observation_digest=OBS,
+            turn_index=0,
+            expected_generation=0,
+            subject=next_epoch,
+        )
+        self.assertEqual(Decision.STABLE, result.evaluation.decision)
+        epochs = self.ledger.subject_epochs("runtime-under-test")
+        self.assertEqual((0, 1), tuple(row["epoch"] for row in epochs))
+
+    def test_reload_acknowledgement_requires_current_subject_readback(self):
+        reload_result = self.commit(
+            self.subject,
+            turn=0,
+            generation=0,
+            score=0.90,
+        )
+        acknowledgement = ReloadAcknowledgement(
+            "ack-r7",
+            reload_result.evaluation.digest,
+            self.state.digest,
+            0,
+        )
+        with self.assertRaisesRegex(
+            StaleGenerationError,
+            "requires current subject readback",
+        ):
+            self.ledger.acknowledge_reload(
+                session_id="subject-session",
+                state=self.state,
+                acknowledgement=acknowledgement,
+                expected_generation=1,
+            )
+        accepted = self.ledger.acknowledge_reload(
+            session_id="subject-session",
+            state=self.state,
+            acknowledgement=acknowledgement,
+            expected_generation=1,
+            subject=self.subject,
+        )
+        self.assertEqual(2, accepted.successor_generation)
+
     def test_prior_epoch_evidence_is_rejected_on_new_epoch(self):
         current = subject(epoch=1)
         stale = evidence(
@@ -410,10 +510,20 @@ class SubjectExternalBoundaryTests(unittest.TestCase):
             expected_generation=0,
             subject=self.subject,
         )
+        with self.assertRaisesRegex(
+            ValueError,
+            "requires current monitored subject readback",
+        ):
+            build_reload_directive(
+                session_id="reload-subject",
+                commit=result,
+                ledger=self.ledger,
+            )
         directive = build_reload_directive(
             session_id="reload-subject",
             commit=result,
             ledger=self.ledger,
+            subject=self.subject,
         )
         self.assertEqual(
             "DRIFTGUARD_RELOAD_DIRECTIVE_V2",

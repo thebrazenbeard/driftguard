@@ -70,6 +70,7 @@ Start with:
 - docs/HOSTILE_REVIEW_V1.md — adversarial design pass
 - docs/EXTERNAL_BOUNDARY_V1.md — evaluator/actuator and retry semantics
 - docs/RECOVERY_QUALIFICATION_V1.md — durable behavioral recovery qualification
+- docs/R6_MEASUREMENT_VALIDITY_V1.md — opt-in calibrated/quorum measurement contract candidate
 - docs/DISCOVERY_EFFECT_ENVELOPE_CONSUMER_V1.md — Discovery adapter contract
 - docs/qualification/DRIFTGUARD_R5_POST_RELOAD_REPLAY.md — first-replay qualification boundary
 - docs/qualification/DRIFTGUARD_R5_CONVERGED_RECOVERY_20260920.md — converged recovery semantics

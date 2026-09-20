@@ -281,6 +281,28 @@ class ActuatorReceipt:
     generation_after_decision: int
     restore_packet_digest: str
 
+    def __post_init__(self) -> None:
+        require_sha256_digest(self.attempt_id, "attempt_id")
+        _require_exact_nonempty_str(
+            self.actuator_execution_id, "actuator_execution_id"
+        )
+        if type(self.outcome) is not ActuatorOutcome:
+            raise ValueError("outcome must be exact ActuatorOutcome")
+        require_sha256_digest(self.evaluation_digest, "evaluation_digest")
+        require_sha256_digest(self.state_digest, "state_digest")
+        if type(self.turn_index) is not int or self.turn_index < 0:
+            raise ValueError("turn_index must be a non-negative integer")
+        if (
+            type(self.generation_after_decision) is not int
+            or self.generation_after_decision < 1
+        ):
+            raise ValueError(
+                "generation_after_decision must be a positive integer"
+            )
+        require_sha256_digest(
+            self.restore_packet_digest, "restore_packet_digest"
+        )
+
     @property
     def retry_disposition(self) -> RetryDisposition:
         if self.outcome is ActuatorOutcome.AMBIGUOUS:
@@ -367,10 +389,31 @@ def admit_actuator_receipt(
 
 def acknowledgement_from_actuator_receipt(
     *,
+    attempt: ReloadAttempt,
     receipt: ActuatorReceipt,
 ) -> ReloadAcknowledgement:
+    if type(attempt) is not ReloadAttempt:
+        raise ValueError("attempt must be exact ReloadAttempt")
     if type(receipt) is not ActuatorReceipt:
         raise ValueError("receipt must be exact ActuatorReceipt")
+    expected = {
+        "attempt_id": attempt.attempt_id,
+        "evaluation_digest": attempt.evaluation_digest,
+        "state_digest": attempt.state_digest,
+        "turn_index": attempt.turn_index,
+        "generation_after_decision": attempt.generation_after_decision,
+        "restore_packet_digest": attempt.restore_packet_digest,
+    }
+    observed = {
+        "attempt_id": receipt.attempt_id,
+        "evaluation_digest": receipt.evaluation_digest,
+        "state_digest": receipt.state_digest,
+        "turn_index": receipt.turn_index,
+        "generation_after_decision": receipt.generation_after_decision,
+        "restore_packet_digest": receipt.restore_packet_digest,
+    }
+    if observed != expected:
+        raise ValueError("actuator receipt does not bind exact reload attempt")
     if receipt.outcome is not ActuatorOutcome.CONSUMED_UNVERIFIED:
         raise ValueError(
             "only CONSUMED_UNVERIFIED may mint a reload acknowledgement"

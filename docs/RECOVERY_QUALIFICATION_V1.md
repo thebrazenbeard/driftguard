@@ -38,6 +38,8 @@ Every later checkpoint must preserve:
 - contiguous DriftGuard generations;
 - a valid successor generation.
 
+The exact `SaveState` is an input to qualification so warning/reload thresholds and critical semantics are bound to the same digest as the recovery subject.
+
 A state-digest change invalidates the window rather than qualifying recovery against a new baseline.
 
 **BASELINE MUTATION != RECOVERY**
@@ -58,17 +60,28 @@ This means only that the exact governed save-state was observed as stable at eve
 
 **DEGRADED_DRIFT_RETURNED**
 
-At least one later checkpoint is WARN and no checkpoint requires reload. Drift has returned below the reload threshold.
+At least one later checkpoint has admitted aggregate drift at or above the save-state warning threshold but below the reload threshold, with no critical breach. The operational `reload_required` flag does not change that behavioral classification.
 
-**RELAPSE_RELOAD_REQUIRED**
+**RELAPSE_BEHAVIORAL_DRIFT**
 
-At least one later checkpoint requires reload. This takes priority even when the epistemic decision is UNKNOWN, preserving the R3 invariant that valid critical or periodic reload requirements survive incomplete evidence.
+At least one later checkpoint has admitted aggregate drift at or above the save-state reload threshold, or carries a valid `critical_dimension_breach`. A critical breach remains relapse even when the overall epistemic decision is `UNKNOWN`, preserving the R3 invariant that valid critical evidence survives unrelated missing evidence.
 
 **INDETERMINATE_EVIDENCE**
 
-No checkpoint requires reload and none is WARN, but at least one later checkpoint is UNKNOWN. Missing evidence therefore blocks a sustained-recovery claim.
+At least one later checkpoint is `UNKNOWN` without a valid critical breach. Missing evidence blocks a sustained-recovery claim even when periodic policy independently requires a reload.
 
 **UNKNOWN != STABLE**
+
+## Behavioral state is not operational scheduling
+
+Each recovery-window receipt now carries two parallel traces:
+
+- `behavioral_trace`: `STABLE`, `DEGRADED`, `RELAPSE`, or `INDETERMINATE`;
+- `reload_required_trace`: the independent operational reload directive observed at each checkpoint.
+
+A periodic-only reload with complete low-drift evidence remains behaviorally `STABLE`. It may still appear as `reload_required=true` in the operational trace. Conversely, drift above the behavioral reload threshold remains `RELAPSE` even if cooldown suppresses the immediate operational reload.
+
+This prevents both false relapse claims from the periodic clock and false stability claims from cooldown.
 
 ## Temporal claim ceiling
 

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
-from .ledger import AcknowledgementResult, CommitResult
+from .ledger import AcknowledgementResult, CommitResult, DriftLedger
 from .model import (
     DriftEvidence,
     EvidenceIndependence,
@@ -21,6 +21,22 @@ EVALUATOR_REQUEST_SCHEMA = "DRIFTGUARD_EVALUATOR_REQUEST_V1"
 EVALUATOR_RESPONSE_SCHEMA = "DRIFTGUARD_EVALUATOR_RESPONSE_V1"
 RELOAD_ATTEMPT_SCHEMA = "DRIFTGUARD_RELOAD_ATTEMPT_V1"
 ACTUATOR_RECEIPT_SCHEMA = "DRIFTGUARD_ACTUATOR_RECEIPT_V1"
+
+__all__ = [
+    "ACTUATOR_RECEIPT_SCHEMA",
+    "EVALUATOR_REQUEST_SCHEMA",
+    "EVALUATOR_RESPONSE_SCHEMA",
+    "RELOAD_ATTEMPT_SCHEMA",
+    "ActuatorOutcome",
+    "ActuatorReceipt",
+    "EvaluatorRequest",
+    "ReloadAttempt",
+    "RetryDisposition",
+    "acknowledgement_from_actuator_receipt",
+    "acknowledgement_result_claim_ceiling",
+    "admit_actuator_receipt",
+    "admit_evaluator_response",
+]
 
 
 class ActuatorOutcome(StrEnum):
@@ -228,14 +244,44 @@ class ReloadAttempt:
     def from_commit(
         cls,
         *,
+        ledger: DriftLedger,
         session_id: str,
         commit: CommitResult,
     ) -> "ReloadAttempt":
+        if type(ledger) is not DriftLedger:
+            raise ValueError("ledger must be exact DriftLedger")
         if type(commit) is not CommitResult:
             raise ValueError("commit must be exact CommitResult")
         evaluation = commit.evaluation
         if not evaluation.reload_required or evaluation.restore_packet is None:
             raise ValueError("reload attempt requires a reload-required evaluation")
+
+        session = ledger.session_row(session_id)
+        if session is None:
+            raise ValueError("reload attempt requires a durable session")
+        if int(session["generation"]) != commit.successor_generation:
+            raise ValueError("reload attempt commit is not current durable generation")
+        if session["last_evaluation_digest"] != evaluation.digest:
+            raise ValueError("reload attempt is not the current durable evaluation")
+
+        event = next(
+            (
+                item
+                for item in ledger.events(session_id)
+                if item["evaluation_digest"] == evaluation.digest
+            ),
+            None,
+        )
+        if event is None:
+            raise ValueError("reload attempt requires a durable evaluation event")
+        if (
+            int(event["generation_after"]) != commit.successor_generation
+            or int(event["turn_index"]) != evaluation.turn_index
+            or event["state_digest"] != evaluation.state_digest
+            or int(event["reload_required"]) != 1
+        ):
+            raise ValueError("durable evaluation event does not match reload commit")
+
         packet_digest = raw_bytes_digest(evaluation.restore_packet.encode("utf-8"))
         return cls(
             session_id=session_id,

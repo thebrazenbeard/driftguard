@@ -1,0 +1,126 @@
+{
+  "schema_version": "DRIFTGUARD_R6_CONTROLLED_BENCHMARK_SCENARIOS_V0_1",
+  "status": "RESEARCH_FIXTURES",
+  "instances": [
+    {
+      "id": "DG-BM-001",
+      "family": "BM-01",
+      "target_schedule": "STABLE_ALL_TURNS",
+      "evaluator_schedule": "STABLE_ALL_TURNS",
+      "evidence_schedule": "COMPLETE",
+      "provenance": "DECLARED",
+      "reload_schedule": "NONE",
+      "expected_claim": "CONTROL_NO_TARGET_DRIFT_CLAIM"
+    },
+    {
+      "id": "DG-BM-002",
+      "family": "BM-02",
+      "target_schedule": "ABRUPT_SHIFT_AT_HIDDEN_TURN",
+      "evaluator_schedule": "STABLE_ALL_TURNS",
+      "evidence_schedule": "COMPLETE",
+      "provenance": "DECLARED",
+      "reload_schedule": "NONE",
+      "expected_claim": "TARGET_DRIFT_DETECTABLE"
+    },
+    {
+      "id": "DG-BM-003",
+      "family": "BM-03",
+      "target_schedule": "MONOTONIC_GRADUAL_SHIFT",
+      "evaluator_schedule": "STABLE_ALL_TURNS",
+      "evidence_schedule": "COMPLETE",
+      "provenance": "DECLARED",
+      "reload_schedule": "NONE",
+      "expected_claim": "GRADUAL_CHANGE_EVIDENCE_PRESERVED"
+    },
+    {
+      "id": "DG-BM-004",
+      "family": "BM-04",
+      "target_schedule": "SHIFT_RETURN_SHIFT",
+      "evaluator_schedule": "STABLE_ALL_TURNS",
+      "evidence_schedule": "COMPLETE",
+      "provenance": "DECLARED",
+      "reload_schedule": "NONE",
+      "expected_claim": "RECURRING_DRIFT_PATTERN_PRESERVED"
+    },
+    {
+      "id": "DG-BM-005",
+      "family": "BM-05",
+      "target_schedule": "STABLE_ALL_TURNS",
+      "evaluator_schedule": "VERSION_OR_CALIBRATION_SHIFT",
+      "evidence_schedule": "COMPLETE",
+      "provenance": "DECLARED",
+      "reload_schedule": "NONE",
+      "expected_claim": "EVALUATOR_DRIFT_OR_MEASUREMENT_INVALID"
+    },
+    {
+      "id": "DG-BM-006",
+      "family": "BM-06",
+      "target_schedule": "TARGET_SHIFT",
+      "evaluator_schedule": "STABLE_ALL_TURNS",
+      "evidence_schedule": "COMPLETE",
+      "provenance": "DECLARED",
+      "reload_schedule": "NONE",
+      "expected_claim": "TARGET_DRIFT_NOT_ERASED_BY_EVALUATOR_STABILITY"
+    },
+    {
+      "id": "DG-BM-007",
+      "family": "BM-07",
+      "target_schedule": "CONTROLLED_SHARED_SIGNAL",
+      "evaluator_schedule": "STABLE_ALL_TURNS",
+      "evidence_schedule": "COMPLETE",
+      "provenance": "SHARED_ROOT_OR_COMMON_GENERATION_CHANNEL",
+      "reload_schedule": "NONE",
+      "expected_claim": "NO_INDEPENDENCE_ESCALATION"
+    },
+    {
+      "id": "DG-BM-008",
+      "family": "BM-08",
+      "target_schedule": "UNRESOLVED",
+      "evaluator_schedule": "STABLE_ALL_TURNS",
+      "evidence_schedule": "REQUIRED_CHANNEL_MISSING",
+      "provenance": "DECLARED",
+      "reload_schedule": "NONE",
+      "expected_claim": "INDETERMINATE_NOT_STABLE"
+    },
+    {
+      "id": "DG-BM-009",
+      "family": "BM-09",
+      "target_schedule": "STABLE_ALL_TURNS",
+      "evaluator_schedule": "STABLE_ALL_TURNS",
+      "evidence_schedule": "COMPLETE",
+      "provenance": "DECLARED",
+      "reload_schedule": "PERIODIC_DUE",
+      "expected_claim": "OPERATIONAL_RELOAD_NOT_BEHAVIORAL_DRIFT"
+    },
+    {
+      "id": "DG-BM-010",
+      "family": "BM-10",
+      "target_schedule": "INTENTIONAL_REVIEWED_BASELINE_SUCCESSOR",
+      "evaluator_schedule": "STABLE_ALL_TURNS",
+      "evidence_schedule": "COMPLETE",
+      "provenance": "DECLARED",
+      "reload_schedule": "POLICY_DEFINED",
+      "expected_claim": "NEW_BASELINE_EPOCH"
+    },
+    {
+      "id": "DG-BM-011",
+      "family": "BM-11",
+      "target_schedule": "MATERIAL_RUNTIME_SUBJECT_CHANGE",
+      "evaluator_schedule": "STABLE_OR_REBOUND",
+      "evidence_schedule": "COMPLETE",
+      "provenance": "DECLARED",
+      "reload_schedule": "POLICY_DEFINED",
+      "expected_claim": "INVALIDATED_SUBJECT_OR_POLICY_CHANGE"
+    },
+    {
+      "id": "DG-BM-012",
+      "family": "BM-12",
+      "target_schedule": "ANY",
+      "evaluator_schedule": "ANY",
+      "evidence_schedule": "CONFIRMATORY_OUTCOMES_ALREADY_VISIBLE",
+      "provenance": "DECLARED",
+      "reload_schedule": "ANY",
+      "expected_claim": "INVALID_EXPERIMENT_POST_HOC_POLICY"
+    }
+  ]
+}

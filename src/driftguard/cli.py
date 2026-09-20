@@ -95,6 +95,14 @@ def main(argv: list[str] | None = None) -> int:
     ack.add_argument("--session", required=True)
     ack.add_argument("--expected-generation", required=True, type=int)
 
+    verify = sub.add_parser("verify-recovery")
+    verify.add_argument("--state", required=True)
+    verify.add_argument("--db", required=True)
+    verify.add_argument("--session", required=True)
+    verify.add_argument("--ack-id", required=True)
+    verify.add_argument("--replay-evaluation-digest", required=True)
+    verify.add_argument("--expected-generation", required=True, type=int)
+
     args = parser.parse_args(argv)
 
     if args.command == "file-digest":
@@ -137,6 +145,41 @@ def main(argv: list[str] | None = None) -> int:
                     "ack_id": result.ack_id,
                     "generation_after": result.successor_generation,
                     "restore_anchor_turn": result.restore_anchor_turn,
+                },
+                sort_keys=True,
+                indent=2,
+            )
+        )
+        return 0
+    if args.command == "verify-recovery":
+        ledger = DriftLedger(args.db)
+        result = ledger.verify_recovery(
+            session_id=args.session,
+            state=state,
+            ack_id=args.ack_id,
+            replay_evaluation_digest=args.replay_evaluation_digest,
+            expected_generation=args.expected_generation,
+        )
+        verification = result.verification
+        print(
+            json.dumps(
+                {
+                    "verification_digest": verification.digest,
+                    "status": verification.status.value,
+                    "ack_id": verification.ack_id,
+                    "acknowledged_evaluation_digest": (
+                        verification.acknowledged_evaluation_digest
+                    ),
+                    "replay_evaluation_digest": (
+                        verification.replay_evaluation_digest
+                    ),
+                    "state_digest": verification.state_digest,
+                    "observation_digest": verification.observation_digest,
+                    "evidence_digest": verification.evidence_digest,
+                    "turn_index": verification.turn_index,
+                    "reasons": list(verification.reasons),
+                    "generation_before": verification.generation,
+                    "generation_after": result.successor_generation,
                 },
                 sort_keys=True,
                 indent=2,

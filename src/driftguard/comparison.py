@@ -790,6 +790,7 @@ def _family_metrics_from_runner(
     detections = 0
     detection_delays: list[int] = []
     wrong_dimension_alarms = 0
+    mixed_target_wrong_dimension_alarms = 0
     for trajectory in shifted:
         outcome = runner(trajectory)
         alarm_index = outcome.first_alarm_index
@@ -799,15 +800,21 @@ def _family_metrics_from_runner(
         if alarm_index < trajectory.shift_index:
             pre_shift_false_alarms += 1
             continue
-        if set(outcome.first_alarm_dimensions).intersection(
-            trajectory.shift_dimensions
-        ):
+        alarm_dimensions = set(outcome.first_alarm_dimensions)
+        shift_dimensions = set(trajectory.shift_dimensions)
+        target_alarm = bool(alarm_dimensions.intersection(shift_dimensions))
+        collateral_wrong_dimension_alarm = bool(
+            alarm_dimensions.difference(shift_dimensions)
+        )
+        if target_alarm:
             detections += 1
             detection_delays.append(
                 alarm_index - trajectory.shift_index + 1
             )
-        else:
+        if collateral_wrong_dimension_alarm:
             wrong_dimension_alarms += 1
+        if target_alarm and collateral_wrong_dimension_alarm:
+            mixed_target_wrong_dimension_alarms += 1
 
     stable_estimate = BinomialEstimate.from_counts(
         stable_false_alarms,
@@ -873,6 +880,9 @@ def _family_metrics_from_runner(
         wrong_dimension_alarms=wrong_dimension_alarms,
         horizon_violations=horizon_violations,
         failures=tuple(failures),
+        mixed_target_wrong_dimension_alarms=(
+            mixed_target_wrong_dimension_alarms
+        ),
     )
 
 

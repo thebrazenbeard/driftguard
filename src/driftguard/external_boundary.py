@@ -9,6 +9,7 @@ from .ledger import AcknowledgementResult, CommitResult, DriftLedger
 from .model import (
     Decision,
     DriftEvidence,
+    Evaluation,
     ReloadAcknowledgement,
     SaveState,
     SourceBinding,

@@ -8,6 +8,7 @@ from .core import DriftGuardEngine
 from .ledger import DriftLedger
 from .model import (
     DriftEvidence,
+    MonitoredSubject,
     ReloadAcknowledgement,
     SaveState,
     raw_bytes_digest,
@@ -40,6 +41,10 @@ def _state(path: str) -> SaveState:
     return SaveState.from_mapping(_load_json(path))
 
 
+def _subject(path: str) -> MonitoredSubject:
+    return MonitoredSubject.from_mapping(_load_json(path))
+
+
 def _evidence(path: str) -> tuple[DriftEvidence, ...]:
     raw = _load_json(path)
     if type(raw) is not list:
@@ -63,6 +68,8 @@ def _evaluation_payload(result):
         "generation_before": evaluation.generation,
         "generation_after": result.successor_generation,
         "restore_packet": evaluation.restore_packet,
+        "subject_digest": evaluation.subject_digest,
+        "subject_epoch": evaluation.subject_epoch,
     }
 
 
@@ -76,6 +83,9 @@ def main(argv: list[str] | None = None) -> int:
     file_digest = sub.add_parser("file-digest")
     file_digest.add_argument("--file", required=True)
 
+    subject_digest = sub.add_parser("subject-digest")
+    subject_digest.add_argument("--subject", required=True)
+
     restore = sub.add_parser("restore-packet")
     restore.add_argument("--state", required=True)
 
@@ -87,6 +97,7 @@ def main(argv: list[str] | None = None) -> int:
     evaluate.add_argument("--session", required=True)
     evaluate.add_argument("--turn", required=True, type=int)
     evaluate.add_argument("--expected-generation", required=True, type=int)
+    evaluate.add_argument("--subject")
 
     ack = sub.add_parser("ack-reload")
     ack.add_argument("--state", required=True)
@@ -108,6 +119,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "file-digest":
         print(raw_bytes_digest(Path(args.file).read_bytes()))
         return 0
+    if args.command == "subject-digest":
+        print(_subject(args.subject).configuration_digest)
+        return 0
 
     state = _state(args.state)
 
@@ -120,6 +134,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "evaluate":
         observation_digest = raw_bytes_digest(Path(args.observation).read_bytes())
         ledger = DriftLedger(args.db)
+        subject = _subject(args.subject) if args.subject else None
         result = ledger.evaluate_and_commit(
             session_id=args.session,
             state=state,
@@ -127,6 +142,7 @@ def main(argv: list[str] | None = None) -> int:
             observation_digest=observation_digest,
             turn_index=args.turn,
             expected_generation=args.expected_generation,
+            subject=subject,
         )
         print(json.dumps(_evaluation_payload(result), sort_keys=True, indent=2))
         return 0

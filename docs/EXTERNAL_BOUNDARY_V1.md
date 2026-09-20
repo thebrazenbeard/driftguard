@@ -1,6 +1,6 @@
 # DriftGuard External Evaluator / Actuator Boundary V1
 
-Status: DRAFT SOURCE CANDIDATE / STACKED ON PR #4 / NO EXTERNAL EFFECT.
+Status: DRAFT COMPOSED SOURCE CANDIDATE / NO EXTERNAL EFFECT.
 
 ## Purpose
 
@@ -80,17 +80,24 @@ becomes stale after the durable session moves forward.
 
 Reconciliation is fail-closed:
 
-- `APPLIED` -> construct a digest-bound `ReloadAcknowledgement` candidate;
-- `NOT_APPLIED` -> `READBACK_REQUIRED`;
-- `UNKNOWN` -> `READBACK_REQUIRED`.
+- `APPLIED` -> `READBACK_REQUIRED`, no acknowledgement;
+- `NOT_APPLIED` -> `READBACK_REQUIRED`, no acknowledgement;
+- `UNKNOWN` -> `READBACK_REQUIRED`, no acknowledgement.
+
+A generic transport receipt never manufactures a `ReloadAcknowledgement`, regardless
+of its status label.
 
 A bare generic receipt never grants retry authority. This module does not perform retries. A provider-specific adapter must establish independently verified non-application through provider readback before any later layer may authorize a retry.
 
 ## Acknowledgement is not recovery
 
-An actuator `APPLIED` receipt may support a reload acknowledgement. That acknowledgement may advance DriftGuard's restore anchor through the existing ledger.
+A generic actuator `APPLIED` receipt is not sufficient support for a reload
+acknowledgement. Provider application must be independently established outside the
+generic receipt path before a caller may submit a `ReloadAcknowledgement` to the
+ledger.
 
-It still does not prove behavioral recovery.
+A valid acknowledgement may advance DriftGuard's restore anchor, but it still does
+not prove behavioral recovery.
 
 `qualify_post_reload_behavior()` requires the acknowledgement and the later replay to be present in the same `DriftLedger`; bare caller-constructed result objects are insufficient. It also requires the exact `SaveState`, whose digest must match both acknowledgement and replay. The later committed evaluation must:
 
@@ -126,3 +133,25 @@ This source does not:
 - deploy a service;
 - mutate a provider;
 - merge any PR.
+
+
+## R7 subject-currentness composition
+
+A legacy V1 reload directive is valid only on an entirely unbound
+`subject=None` path.
+
+A subject-bound V2 reload directive requires one exact subject across:
+
+- directive subject digest/epoch;
+- durable evaluation receipt subject digest/epoch;
+- durable session subject digest/epoch;
+- supplied `MonitoredSubject`;
+- durable subject-epoch registry currentness.
+
+`validate_reload_directive(..., subject=...)` performs those checks before any
+actuator receipt is interpreted. `reconcile_actuator_receipt()` passes the same
+subject through that validation.
+
+Consequently, a directive that was valid under S@N becomes validation-ineligible
+after an explicit S@N -> S@N+1 transition, even if its other state/evaluation fields
+have not changed.

@@ -120,6 +120,7 @@ def family_policy(family="iid-like", *, min_count=20):
         post_shift_horizon_observations=4,
         maximum_stable_false_alarm_rate=0.15,
         maximum_pre_shift_false_alarm_rate=0.15,
+        maximum_wrong_dimension_alarm_rate=0.15,
         minimum_detection_rate=0.85,
         maximum_mean_detection_delay=1.5,
     )
@@ -188,6 +189,7 @@ class CalibrationQualificationTests(unittest.TestCase):
             post_shift_horizon_observations=4,
             maximum_stable_false_alarm_rate=0.20,
             maximum_pre_shift_false_alarm_rate=0.20,
+            maximum_wrong_dimension_alarm_rate=0.20,
             minimum_detection_rate=0.80,
             maximum_mean_detection_delay=2.0,
         )
@@ -261,6 +263,92 @@ class CalibrationQualificationTests(unittest.TestCase):
         metrics = receipt.family_metrics[0]
         self.assertEqual(25, metrics.pre_shift_false_alarm.successes)
         self.assertEqual(0, metrics.detection.successes)
+
+    def test_wrong_dimension_alarm_is_independently_bounded(self):
+        spec = SequentialDetectorSpec(
+            detector_id="r9-two-dim",
+            session_id="r9-session",
+            state_digest=raw_bytes_digest(b"r9-state-two"),
+            measurement_digest=raw_bytes_digest(b"r9-measurement-two"),
+            subject_digest=raw_bytes_digest(b"r9-subject-two"),
+            subject_epoch=0,
+            calibration=CAL,
+            calibration_digest=CAL_DIGEST,
+            max_consecutive_unknown=1,
+            max_turn_gap=2,
+            dimensions=(
+                CusumDimensionPolicy("d", 0.10, 0.05, 0.50),
+                CusumDimensionPolicy("e", 0.10, 0.05, 0.50),
+            ),
+        )
+        rows = []
+        for index in range(25):
+            rows.append(
+                CalibrationTrajectory(
+                    trajectory_id=f"two-stable-{index}",
+                    family_id="two",
+                    regime=CalibrationTrajectoryRegime.STABLE,
+                    samples=tuple(
+                        (("d", 0.10), ("e", 0.10))
+                        for _ in range(8)
+                    ),
+                )
+            )
+            rows.append(
+                CalibrationTrajectory(
+                    trajectory_id=f"two-shifted-{index}",
+                    family_id="two",
+                    regime=CalibrationTrajectoryRegime.SHIFTED,
+                    samples=tuple(
+                        (("d", 0.10), ("e", 0.10))
+                        for _ in range(4)
+                    )
+                    + tuple(
+                        (("d", 0.10), ("e", 0.80))
+                        for _ in range(4)
+                    ),
+                    shift_index=4,
+                    shift_dimensions=("d",),
+                )
+            )
+        c = CalibrationCorpus(
+            "wrong-dimension",
+            "1",
+            CalibrationCorpusRole.HOLDOUT_QUALIFICATION,
+            tuple(rows),
+        )
+        policy_two = CalibrationFamilyPolicy(
+            family_id="two",
+            minimum_stable_trajectories=20,
+            minimum_shifted_trajectories=20,
+            stable_horizon_observations=8,
+            pre_shift_horizon_observations=4,
+            post_shift_horizon_observations=4,
+            maximum_stable_false_alarm_rate=0.15,
+            maximum_pre_shift_false_alarm_rate=0.15,
+            maximum_wrong_dimension_alarm_rate=0.15,
+            minimum_detection_rate=0.85,
+            maximum_mean_detection_delay=1.5,
+        )
+        p = CalibrationPlan(
+            "wrong-dimension-plan",
+            spec.digest,
+            c.digest,
+            c.role,
+            (policy_two,),
+        )
+        receipt = qualify_calibration(
+            plan=p,
+            corpus=c,
+            detector_spec=spec,
+        )
+        self.assertEqual(CalibrationDisposition.FAIL, receipt.disposition)
+        metrics = receipt.family_metrics[0]
+        self.assertEqual(25, metrics.wrong_dimension_alarm.successes)
+        self.assertIn(
+            "two:wrong_dimension_alarm_upper_bound_exceeded",
+            receipt.reasons,
+        )
 
     def test_corpus_mutation_invalidates_frozen_plan(self):
         spec = detector()

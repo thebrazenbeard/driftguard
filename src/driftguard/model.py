@@ -870,6 +870,8 @@ class RecoveryVerification:
     status: RecoveryStatus
     reasons: tuple[str, ...]
     generation: int
+    subject_digest: str | None = None
+    subject_epoch: int | None = None
 
     def __post_init__(self) -> None:
         _require_nonempty_str(self.ack_id, "recovery acknowledgement id")
@@ -903,25 +905,44 @@ class RecoveryVerification:
             raise ValueError(
                 "recovery generation must be a non-negative integer"
             )
+        if (self.subject_digest is None) != (self.subject_epoch is None):
+            raise ValueError(
+                "recovery subject_digest and subject_epoch must be supplied together"
+            )
+        if self.subject_digest is not None:
+            require_sha256_digest(
+                self.subject_digest,
+                "recovery subject digest",
+            )
+            if (
+                type(self.subject_epoch) is not int
+                or isinstance(self.subject_epoch, bool)
+                or self.subject_epoch < 0
+            ):
+                raise ValueError(
+                    "recovery subject_epoch must be a non-negative integer"
+                )
 
     @property
     def digest(self) -> str:
-        return canonical_digest(
-            {
-                "ack_id": self.ack_id,
-                "acknowledged_evaluation_digest": (
-                    self.acknowledged_evaluation_digest
-                ),
-                "replay_evaluation_digest": self.replay_evaluation_digest,
-                "state_digest": self.state_digest,
-                "observation_digest": self.observation_digest,
-                "evidence_digest": self.evidence_digest,
-                "turn_index": self.turn_index,
-                "status": self.status.value,
-                "reasons": self.reasons,
-                "generation": self.generation,
-            }
-        )
+        payload: dict[str, Any] = {
+            "ack_id": self.ack_id,
+            "acknowledged_evaluation_digest": (
+                self.acknowledged_evaluation_digest
+            ),
+            "replay_evaluation_digest": self.replay_evaluation_digest,
+            "state_digest": self.state_digest,
+            "observation_digest": self.observation_digest,
+            "evidence_digest": self.evidence_digest,
+            "turn_index": self.turn_index,
+            "status": self.status.value,
+            "reasons": self.reasons,
+            "generation": self.generation,
+        }
+        if self.subject_digest is not None:
+            payload["subject_digest"] = self.subject_digest
+            payload["subject_epoch"] = self.subject_epoch
+        return canonical_digest(payload)
 
 
 def evidence_set_digest(evidence: Iterable[DriftEvidence]) -> str:

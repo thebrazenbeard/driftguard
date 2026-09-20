@@ -187,9 +187,16 @@ One family cannot compensate for another.
 The first alarm remains authoritative:
 
 - alarm before shift => pre-shift false alarm;
-- alarm after shift on an expected shifted dimension => detection;
-- alarm after shift only on unrelated dimensions => wrong-dimension alarm;
+- alarm after shift containing an expected shifted dimension => detection;
+- any unrelated dimension on that same post-shift first alarm => wrong-dimension alarm;
+- mixed expected + unrelated first alarms therefore count in both detection and wrong-dimension statistics;
+- alarm after shift only on unrelated dimensions => wrong-dimension alarm without detection;
 - no alarm => missed detection.
+
+The shared family metrics carry the explicit
+`mixed_target_wrong_dimension_alarms` overlap count, so comparison receipts can
+validate overlapping post-shift detection/wrong-dimension statistics without
+allowing impossible first-alarm totals.
 
 ## Receipt integrity hardening
 

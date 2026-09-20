@@ -4,7 +4,7 @@ Status: **DRAFT STACKED SOURCE CANDIDATE / NO RUNTIME EFFECT**
 
 ## Purpose
 
-The external boundary already separates reload directive, reload effect, reload acknowledgement, and behavioral replay. It can produce a bounded post-reload behavioral replay pass only after a later committed evaluation returns STABLE.
+The external boundary already separates reload directive, reload effect, reload acknowledgement, and behavioral replay. It can produce a bounded post-reload behavioral replay pass only when the first admitted post-acknowledgement evaluation is behaviorally below the save-state warning threshold with no critical breach; an independent periodic reload requirement does not negate that behavioral result.
 
 That is intentionally still one replay.
 

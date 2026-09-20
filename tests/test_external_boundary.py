@@ -18,6 +18,7 @@ from driftguard.external_boundary import (
     ActuatorDeliveryStatus,
     ActuatorDisposition,
     ActuatorReceipt,
+    ExternalEvaluatorResponse,
     append_external_receipt,
     build_evaluator_request,
     commit_evaluator_response,
@@ -76,6 +77,10 @@ def evidence(
             turn,
         ),
     )
+
+
+def response(request, rows):
+    return ExternalEvaluatorResponse(request.digest, tuple(rows))
 
 
 class LedgerHarness(unittest.TestCase):
@@ -158,7 +163,7 @@ class ExternalEvaluatorBoundaryTests(unittest.TestCase):
             s, 7, observation_digest=raw_bytes_digest(b"wrong")
         )[0]
         with self.assertRaisesRegex(ValueError, "observation digest mismatch"):
-            validate_evaluator_response(req, (wrong_obs,))
+            validate_evaluator_response(req, response(req, (wrong_obs,)))
 
         other = SourceBinding("probe://not-requested", "v1")
         wrong_source = DriftEvidence(
@@ -173,7 +178,44 @@ class ExternalEvaluatorBoundaryTests(unittest.TestCase):
             7,
         )
         with self.assertRaisesRegex(ValueError, "unrequested source binding"):
-            validate_evaluator_response(req, (wrong_source,))
+            validate_evaluator_response(req, response(req, (wrong_source,)))
+
+    def test_external_response_is_bound_to_exact_request_and_session(self):
+        handle = tempfile.NamedTemporaryFile(delete=False)
+        handle.close()
+        try:
+            ledger = DriftLedger(handle.name)
+            s = state()
+            request_a = build_evaluator_request(
+                session_id="A",
+                state=s,
+                observation_digest=OBS,
+                turn_index=0,
+                expected_generation=0,
+            )
+            request_b = build_evaluator_request(
+                session_id="B",
+                state=s,
+                observation_digest=OBS,
+                turn_index=0,
+                expected_generation=0,
+            )
+            response_a = response(request_a, evidence(s, 0, 0.0))
+            commit_evaluator_response(
+                request=request_a,
+                state=s,
+                response=response_a,
+                ledger=ledger,
+            )
+            with self.assertRaisesRegex(ValueError, "request digest mismatch"):
+                commit_evaluator_response(
+                    request=request_b,
+                    state=s,
+                    response=response_a,
+                    ledger=ledger,
+                )
+        finally:
+            os.unlink(handle.name)
 
     def test_external_response_commit_enforces_request_generation(self):
         handle = tempfile.NamedTemporaryFile(delete=False)
@@ -200,7 +242,7 @@ class ExternalEvaluatorBoundaryTests(unittest.TestCase):
                 commit_evaluator_response(
                     request=stale_request,
                     state=s,
-                    evidence=evidence(s, 1, 0.0),
+                    response=response(stale_request, evidence(s, 1, 0.0)),
                     ledger=ledger,
                 )
         finally:
@@ -239,6 +281,27 @@ class ExternalActuatorBoundaryTests(LedgerHarness):
                 )
         finally:
             os.unlink(other_handle.name)
+
+    def test_reload_directive_rejects_historical_commit_after_generation_moves(self):
+        commit = self.reload_commit()
+        acknowledgement = ReloadAcknowledgement(
+            "ack-stale-directive",
+            commit.evaluation.digest,
+            self.s.digest,
+            commit.evaluation.turn_index,
+        )
+        self.ledger.acknowledge_reload(
+            session_id="session",
+            state=self.s,
+            acknowledgement=acknowledgement,
+            expected_generation=commit.successor_generation,
+        )
+        with self.assertRaisesRegex(ValueError, "current durable generation"):
+            build_reload_directive(
+                session_id="session",
+                commit=commit,
+                ledger=self.ledger,
+            )
 
     def test_stable_commit_cannot_create_reload_directive(self):
         stable = self.commit(turn=0, generation=0, score=0.0)
@@ -279,7 +342,7 @@ class ExternalActuatorBoundaryTests(LedgerHarness):
         self.assertEqual(ActuatorDisposition.READBACK_REQUIRED, result.disposition)
         self.assertIsNone(result.acknowledgement)
 
-    def test_confirmed_not_applied_is_retryable(self):
+    def test_not_applied_requires_readback_before_any_retry(self):
         directive = build_reload_directive(
             session_id="session",
             commit=self.reload_commit(),
@@ -289,7 +352,7 @@ class ExternalActuatorBoundaryTests(LedgerHarness):
             directive=directive,
             receipt=self.receipt(directive, ActuatorDeliveryStatus.NOT_APPLIED),
         )
-        self.assertEqual(ActuatorDisposition.RETRY_ALLOWED, result.disposition)
+        self.assertEqual(ActuatorDisposition.READBACK_REQUIRED, result.disposition)
         self.assertIsNone(result.acknowledgement)
 
     def test_receipt_cannot_rebind_to_another_directive(self):

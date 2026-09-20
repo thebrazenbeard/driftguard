@@ -20,7 +20,7 @@ The canonical R5 integration contains:
 - reload cooldown semantics that do not confuse a decision with an effect;
 - exact reload acknowledgements as the only path that advances the restore anchor;
 - an external evaluator boundary bound to exact session/state/observation/turn/generation provenance;
-- an external actuator boundary that distinguishes APPLIED, NOT_APPLIED, and UNKNOWN and forbids blind retry after ambiguous delivery;
+- an external actuator boundary that re-admits reload directives against durable/current state and treats generic APPLIED, NOT_APPLIED, and UNKNOWN transport receipts as readback-only evidence; none of those generic receipt states can manufacture a reload acknowledgement;
 - durable evaluation and acknowledgement readback before effect or recovery claims are accepted;
 - first-post-reload behavioral replay verification;
 - durable recovery qualification that keeps behavioral stability separate from reload scheduling;
@@ -34,9 +34,10 @@ The canonical R5 integration contains:
 2. Evaluate observable behavior against exact provenance and independence requirements.
 3. Commit the evaluation using monotonic generation semantics.
 4. Emit a reload directive when policy requires it.
-5. Record the actuator outcome separately.
-6. Acknowledge an actually applied reload.
-7. Evaluate later behavior and qualify the first committed post-acknowledgement replay.
+5. Re-admit that directive against the exact durable evaluation/current session before interpreting any actuator receipt.
+6. Treat a generic actuator receipt as transport/readback evidence only. APPLIED, NOT_APPLIED, and UNKNOWN all remain READBACK_REQUIRED and produce no reload acknowledgement.
+7. Only after provider application has been independently established outside that generic receipt path may a caller submit a reload acknowledgement to the ledger; the ledger validates durable reload-required provenance/currentness but does not itself prove provider application.
+8. Evaluate later behavior and qualify the first committed post-acknowledgement replay.
 
 A stable replay is bounded behavioral evidence. It does not prove the reload caused the observed behavior.
 
@@ -85,10 +86,14 @@ Start with:
 
 A passing evaluation does not prove hidden-state equivalence.
 A reload directive does not prove delivery.
+A generic actuator receipt — including one labeled APPLIED — does not prove provider application and cannot create a reload acknowledgement.
+A ledger acknowledgement records an externally established effect claim against durable reload-required provenance; the ledger does not independently prove the provider applied the reload.
 An acknowledgement does not prove behavioral recovery.
 A stable replay does not prove reload causality.
 A provider or transport receipt does not prove internal model obedience.
 A valid evaluator HMAC proves possession of configured key material, not provider honesty or evaluator independence.
 A source or test PASS does not itself grant deployment, credential, provider, retry, or other effect authority.
+
+Draft R6+ research branches may explore stronger measurement, subject-identity, sequential-detection, calibration, and evaluator-attestation contracts. Those branches are not canonical merely because they exist or pass tests; each exact head remains subject to review and integration gates.
 
 DriftGuard exists to keep those distinctions explicit instead of accidentally collapsing them.

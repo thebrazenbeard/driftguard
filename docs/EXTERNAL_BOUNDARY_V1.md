@@ -42,6 +42,34 @@ The directive is a request for an external effect. It is constructible only whil
 
 The directive is not evidence that the effect happened.
 
+A transportable ReloadDirective remains an untrusted value even if its fields and
+self-digest are well formed. Before an actuator receipt is interpreted,
+validate_reload_directive() re-admits the directive against:
+
+- the exact pinned SaveState;
+- the exact deterministic restore-packet bytes for that state;
+- the durable reload-required evaluation receipt;
+- the receipt generation transition;
+- the session current generation, state digest, and last evaluation.
+
+reconcile_actuator_receipt() requires the same SaveState and DriftLedger and
+performs that validation before any APPLIED, NOT_APPLIED, or UNKNOWN receipt is
+interpreted.
+
+A generic ActuatorReceipt is transport/readback evidence only. It is not
+independently authenticated provider-effect proof. Therefore APPLIED, NOT_APPLIED,
+and UNKNOWN all return READBACK_REQUIRED and no ReloadAcknowledgement.
+
+DriftLedger.acknowledge_reload() is an explicit downstream trust boundary. It
+validates an acknowledgement against durable reload-required evaluation and
+session currentness, but it does not itself prove provider application. Callers
+must invoke it only after effect proof has been independently established outside
+the generic ActuatorReceipt path.
+
+Direct ReloadDirective construction cannot create directive provenance, a generic
+ActuatorReceipt cannot manufacture an acknowledgement, and a once-valid directive
+becomes stale after the durable session moves forward.
+
 ## Ambiguous delivery
 
 `ActuatorReceipt.status` is one of:

@@ -5,6 +5,7 @@ from enum import StrEnum
 from hashlib import sha256
 from typing import Any, Iterable
 
+from .core import DriftGuardEngine
 from .ledger import AcknowledgementResult, CommitResult, DriftLedger
 from .model import (
     Decision,
@@ -625,13 +626,80 @@ class ActuatorReconciliation:
     acknowledgement: ReloadAcknowledgement | None
 
 
+def validate_reload_directive(
+    *,
+    directive: ReloadDirective,
+    state: SaveState,
+    ledger: DriftLedger,
+) -> str:
+    """Re-admit a transportable reload directive against durable current state.
+
+    A well-shaped ReloadDirective is not effect authority.  This check binds the
+    directive back to the exact pinned SaveState and current reload-required
+    evaluation receipt before any actuator receipt may be interpreted.
+    """
+    if type(directive) is not ReloadDirective:
+        raise ValueError("directive must be exact ReloadDirective")
+    if type(state) is not SaveState:
+        raise ValueError("state must be exact SaveState")
+    if type(ledger) is not DriftLedger:
+        raise ValueError("ledger must be exact DriftLedger")
+
+    if directive.state_digest != state.digest:
+        raise ValueError("reload directive state digest mismatch")
+
+    expected_packet = DriftGuardEngine.restore_packet(state)
+    if directive.restore_packet != expected_packet:
+        raise ValueError("reload directive restore packet does not match pinned state")
+    expected_packet_digest = sha256(expected_packet.encode("utf-8")).hexdigest()
+    if directive.restore_packet_sha256 != expected_packet_digest:
+        raise ValueError("reload directive restore packet digest mismatch")
+
+    durable = ledger.evaluation_receipt(
+        session_id=directive.session_id,
+        evaluation_digest=directive.evaluation_digest,
+    )
+    if durable is None:
+        raise ValueError(
+            "reload directive requires durable ledger evaluation receipt"
+        )
+    if (
+        durable.evaluation_digest != directive.evaluation_digest
+        or durable.state_digest != directive.state_digest
+        or durable.turn_index != directive.turn_index
+        or durable.generation_after != directive.expected_generation
+        or durable.generation_before + 1 != directive.expected_generation
+        or durable.reload_required is not True
+    ):
+        raise ValueError(
+            "reload directive does not match durable reload-required evaluation"
+        )
+
+    session = ledger.session_row(directive.session_id)
+    if session is None:
+        raise ValueError("reload directive requires current durable session")
+    if int(session["generation"]) != directive.expected_generation:
+        raise ValueError("reload directive is not current durable generation")
+    if session["last_evaluation_digest"] != directive.evaluation_digest:
+        raise ValueError("reload directive is not current durable evaluation")
+    if session["state_digest"] != directive.state_digest:
+        raise ValueError("reload directive current session state mismatch")
+
+    return directive.digest
+
+
 def reconcile_actuator_receipt(
     *,
     directive: ReloadDirective,
     receipt: ActuatorReceipt,
+    state: SaveState,
+    ledger: DriftLedger,
 ) -> ActuatorReconciliation:
-    if type(directive) is not ReloadDirective:
-        raise ValueError("directive must be exact ReloadDirective")
+    validate_reload_directive(
+        directive=directive,
+        state=state,
+        ledger=ledger,
+    )
     if type(receipt) is not ActuatorReceipt:
         raise ValueError("receipt must be exact ActuatorReceipt")
     if receipt.directive_id != directive.directive_id:
@@ -639,32 +707,12 @@ def reconcile_actuator_receipt(
     if receipt.directive_digest != directive.digest:
         raise ValueError("actuator receipt directive digest mismatch")
 
-    if receipt.status is ActuatorDeliveryStatus.UNKNOWN:
-        return ActuatorReconciliation(
-            ActuatorDisposition.READBACK_REQUIRED,
-            None,
-        )
-    if receipt.status is ActuatorDeliveryStatus.NOT_APPLIED:
-        return ActuatorReconciliation(
-            ActuatorDisposition.READBACK_REQUIRED,
-            None,
-        )
-
-    ack_id = "actuator:" + canonical_digest(
-        {
-            "directive_digest": directive.digest,
-            "provider_operation_id": receipt.provider_operation_id,
-            "provider_receipt_sha256": receipt.provider_receipt_sha256,
-        }
-    )
+    # A generic provider receipt is transport/readback evidence only.
+    # Even APPLIED is not independently authenticated provider-effect proof, so
+    # this boundary never manufactures a ReloadAcknowledgement.
     return ActuatorReconciliation(
-        ActuatorDisposition.ACKNOWLEDGE,
-        ReloadAcknowledgement(
-            ack_id=ack_id,
-            evaluation_digest=directive.evaluation_digest,
-            state_digest=directive.state_digest,
-            turn_index=directive.turn_index,
-        ),
+        ActuatorDisposition.READBACK_REQUIRED,
+        None,
     )
 
 
@@ -889,4 +937,5 @@ __all__ = [
     "qualify_post_reload_behavior",
     "reconcile_actuator_receipt",
     "validate_evaluator_response",
+    "validate_reload_directive",
 ]

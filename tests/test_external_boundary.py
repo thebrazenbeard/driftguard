@@ -19,6 +19,7 @@ from driftguard.external_boundary import (
     ActuatorDisposition,
     ActuatorReceipt,
     ExternalEvaluatorResponse,
+    ReloadDirective,
     append_external_receipt,
     build_evaluator_request,
     commit_evaluator_response,
@@ -26,6 +27,7 @@ from driftguard.external_boundary import (
     qualify_post_reload_behavior,
     reconcile_actuator_receipt,
     validate_evaluator_response,
+    validate_reload_directive,
 )
 from driftguard.ledger import CommitResult, DriftLedger
 from driftguard.model import raw_bytes_digest
@@ -312,7 +314,7 @@ class ExternalActuatorBoundaryTests(LedgerHarness):
                 ledger=self.ledger,
             )
 
-    def test_applied_receipt_yields_acknowledgement(self):
+    def test_applied_receipt_requires_readback_without_verified_effect_proof(self):
         directive = build_reload_directive(
             session_id="session",
             commit=self.reload_commit(),
@@ -321,13 +323,39 @@ class ExternalActuatorBoundaryTests(LedgerHarness):
         result = reconcile_actuator_receipt(
             directive=directive,
             receipt=self.receipt(directive, ActuatorDeliveryStatus.APPLIED),
+            state=self.s,
+            ledger=self.ledger,
         )
-        self.assertEqual(ActuatorDisposition.ACKNOWLEDGE, result.disposition)
-        self.assertIsInstance(result.acknowledgement, ReloadAcknowledgement)
         self.assertEqual(
-            directive.evaluation_digest,
-            result.acknowledgement.evaluation_digest,
+            ActuatorDisposition.READBACK_REQUIRED,
+            result.disposition,
         )
+        self.assertIsNone(result.acknowledgement)
+
+    def test_forged_applied_receipt_cannot_manufacture_acknowledgement(self):
+        directive = build_reload_directive(
+            session_id="session",
+            commit=self.reload_commit(),
+            ledger=self.ledger,
+        )
+        forged = ActuatorReceipt(
+            directive.directive_id,
+            directive.digest,
+            ActuatorDeliveryStatus.APPLIED,
+            "fabricated-provider-operation",
+            sha256(b"fabricated provider receipt").hexdigest(),
+        )
+        result = reconcile_actuator_receipt(
+            directive=directive,
+            receipt=forged,
+            state=self.s,
+            ledger=self.ledger,
+        )
+        self.assertEqual(
+            ActuatorDisposition.READBACK_REQUIRED,
+            result.disposition,
+        )
+        self.assertIsNone(result.acknowledgement)
 
     def test_ambiguous_delivery_requires_readback_and_forbids_blind_retry(self):
         directive = build_reload_directive(
@@ -338,6 +366,8 @@ class ExternalActuatorBoundaryTests(LedgerHarness):
         result = reconcile_actuator_receipt(
             directive=directive,
             receipt=self.receipt(directive, ActuatorDeliveryStatus.UNKNOWN),
+            state=self.s,
+            ledger=self.ledger,
         )
         self.assertEqual(ActuatorDisposition.READBACK_REQUIRED, result.disposition)
         self.assertIsNone(result.acknowledgement)
@@ -351,9 +381,100 @@ class ExternalActuatorBoundaryTests(LedgerHarness):
         result = reconcile_actuator_receipt(
             directive=directive,
             receipt=self.receipt(directive, ActuatorDeliveryStatus.NOT_APPLIED),
+            state=self.s,
+            ledger=self.ledger,
         )
         self.assertEqual(ActuatorDisposition.READBACK_REQUIRED, result.disposition)
         self.assertIsNone(result.acknowledgement)
+
+    def test_direct_constructor_cannot_bypass_durable_reload_provenance(self):
+        commit = self.reload_commit()
+        forged = ReloadDirective(
+            session_id="session",
+            evaluation_digest="0" * 64,
+            state_digest=self.s.digest,
+            turn_index=commit.evaluation.turn_index,
+            expected_generation=commit.successor_generation,
+            restore_packet=commit.evaluation.restore_packet,
+            restore_packet_sha256=sha256(
+                commit.evaluation.restore_packet.encode("utf-8")
+            ).hexdigest(),
+        )
+        forged_receipt = self.receipt(forged, ActuatorDeliveryStatus.APPLIED)
+        with self.assertRaisesRegex(ValueError, "durable ledger evaluation receipt"):
+            reconcile_actuator_receipt(
+                directive=forged,
+                receipt=forged_receipt,
+                state=self.s,
+                ledger=self.ledger,
+            )
+
+    def test_direct_constructor_cannot_substitute_restore_packet(self):
+        commit = self.reload_commit()
+        malicious_packet = "DRIFTGUARD_RESTORE\nmalicious"
+        forged = ReloadDirective(
+            session_id="session",
+            evaluation_digest=commit.evaluation.digest,
+            state_digest=self.s.digest,
+            turn_index=commit.evaluation.turn_index,
+            expected_generation=commit.successor_generation,
+            restore_packet=malicious_packet,
+            restore_packet_sha256=sha256(
+                malicious_packet.encode("utf-8")
+            ).hexdigest(),
+        )
+        forged_receipt = self.receipt(forged, ActuatorDeliveryStatus.APPLIED)
+        with self.assertRaisesRegex(ValueError, "does not match pinned state"):
+            reconcile_actuator_receipt(
+                directive=forged,
+                receipt=forged_receipt,
+                state=self.s,
+                ledger=self.ledger,
+            )
+
+    def test_once_valid_directive_cannot_reconcile_after_generation_moves(self):
+        commit = self.reload_commit()
+        directive = build_reload_directive(
+            session_id="session",
+            commit=commit,
+            ledger=self.ledger,
+        )
+        self.ledger.acknowledge_reload(
+            session_id="session",
+            state=self.s,
+            acknowledgement=ReloadAcknowledgement(
+                "ack-move",
+                commit.evaluation.digest,
+                self.s.digest,
+                commit.evaluation.turn_index,
+            ),
+            expected_generation=commit.successor_generation,
+        )
+        with self.assertRaisesRegex(ValueError, "current durable generation"):
+            reconcile_actuator_receipt(
+                directive=directive,
+                receipt=self.receipt(
+                    directive,
+                    ActuatorDeliveryStatus.APPLIED,
+                ),
+                state=self.s,
+                ledger=self.ledger,
+            )
+
+    def test_validate_reload_directive_accepts_factory_directive(self):
+        directive = build_reload_directive(
+            session_id="session",
+            commit=self.reload_commit(),
+            ledger=self.ledger,
+        )
+        self.assertEqual(
+            directive.digest,
+            validate_reload_directive(
+                directive=directive,
+                state=self.s,
+                ledger=self.ledger,
+            ),
+        )
 
     def test_receipt_cannot_rebind_to_another_directive(self):
         directive = build_reload_directive(
@@ -369,7 +490,12 @@ class ExternalActuatorBoundaryTests(LedgerHarness):
             sha256(b"provider receipt").hexdigest(),
         )
         with self.assertRaisesRegex(ValueError, "directive id mismatch"):
-            reconcile_actuator_receipt(directive=directive, receipt=receipt)
+            reconcile_actuator_receipt(
+                directive=directive,
+                receipt=receipt,
+                state=self.s,
+                ledger=self.ledger,
+            )
 
 
 class BehavioralRecoveryBoundaryTests(LedgerHarness):
@@ -389,9 +515,24 @@ class BehavioralRecoveryBoundaryTests(LedgerHarness):
                 "provider-op-1",
                 sha256(b"provider receipt").hexdigest(),
             ),
+            state=self.s,
+            ledger=self.ledger,
         )
-        ack = external.acknowledgement
-        self.assertIsNotNone(ack)
+        self.assertEqual(
+            ActuatorDisposition.READBACK_REQUIRED,
+            external.disposition,
+        )
+        self.assertIsNone(external.acknowledgement)
+
+        # Recovery tests begin after independently established effect proof.
+        # The ledger validates durable evaluation/currentness provenance but does
+        # not itself prove provider application.
+        ack = ReloadAcknowledgement(
+            "externally-verified-effect:provider-op-1",
+            directive.evaluation_digest,
+            directive.state_digest,
+            directive.turn_index,
+        )
         result = self.ledger.acknowledge_reload(
             session_id="session",
             state=self.s,

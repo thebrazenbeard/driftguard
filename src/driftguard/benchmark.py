@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 from hashlib import sha256
+import json
 from typing import Any
 
 from .calibration import (
@@ -30,6 +31,18 @@ def _nonempty(value: Any, label: str) -> str:
     if type(value) is not str or not value.strip():
         raise ValueError(f"{label} must be a non-empty exact string")
     return value
+
+
+def canonical_corpus_artifact_bytes(corpus: CalibrationCorpus) -> bytes:
+    if type(corpus) is not CalibrationCorpus:
+        raise ValueError("corpus must be exact CalibrationCorpus")
+    return json.dumps(
+        corpus.payload(),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
 
 
 class BenchmarkPhenomenon(StrEnum):
@@ -656,6 +669,11 @@ def reveal_holdout(
     if manifest.corpus_role is not CalibrationCorpusRole.HOLDOUT_QUALIFICATION:
         raise ValueError("revealed corpus is not HOLDOUT_QUALIFICATION")
     manifest.validate_corpus(corpus)
+    expected_artifact_bytes = canonical_corpus_artifact_bytes(corpus)
+    if artifact_bytes != expected_artifact_bytes:
+        raise ValueError(
+            "revealed holdout artifact bytes do not canonically encode corpus"
+        )
     observed_artifact_digest = sha256(artifact_bytes).hexdigest()
     if observed_artifact_digest != manifest.artifact_digest:
         raise ValueError("revealed holdout artifact digest mismatch")
@@ -746,5 +764,6 @@ __all__ = [
     "RUN_CLAIM",
     "SELECTION_RULE",
     "reveal_holdout",
+    "canonical_corpus_artifact_bytes",
     "run_precommitted_holdout",
 ]

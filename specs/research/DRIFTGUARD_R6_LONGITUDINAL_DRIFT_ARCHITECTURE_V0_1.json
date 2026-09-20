@@ -1,0 +1,203 @@
+{
+  "schema_version": "DRIFTGUARD_R6_LONGITUDINAL_DRIFT_ARCHITECTURE_V0_1",
+  "status": "RESEARCH_PROPOSAL_MACHINE_CONTRACT",
+  "repository": "thebrazenbeard/driftguard",
+  "source_issue": 13,
+  "reviewed_base_head": "e815c75ffccf469d9d1c09d58c0050798c8e4f53",
+  "claim_ceiling": [
+    "NO_RUNTIME_IMPLEMENTATION_CLAIM",
+    "NO_PROVIDER_EFFECT_CLAIM",
+    "NO_HIDDEN_STATE_RESTORATION_CLAIM",
+    "NO_PERSON_IDENTITY_CONTINUITY_CLAIM",
+    "NO_STATISTICAL_VALIDITY_CLAIM",
+    "NO_SUSTAINED_RECOVERY_CLAIM",
+    "NO_CANONICAL_PROMOTION"
+  ],
+  "invariants": [
+    "BEHAVIORAL_SIMILARITY_NE_HIDDEN_STATE_EQUIVALENCE",
+    "RUNTIME_SUBJECT_BINDING_NE_PERSON_IDENTITY",
+    "SESSION_CONTINUITY_NE_SUBJECT_CONTINUITY",
+    "CALIBRATED_SCORE_NE_GROUND_TRUTH",
+    "DIFFERENT_EVALUATORS_NE_INDEPENDENT_EVIDENCE",
+    "SOURCE_COUNT_NE_INDEPENDENT_EVIDENCE_COUNT",
+    "REPEATED_MEASUREMENT_NE_INDEPENDENT_REPLICATION",
+    "PROBE_VERSION_CHANGE_NE_TARGET_DRIFT",
+    "EVALUATOR_DRIFT_NE_TARGET_DRIFT",
+    "MISSING_EVIDENCE_NE_STABLE",
+    "THRESHOLD_BREACH_NE_PROVEN_CHANGE_POINT",
+    "OBSERVED_DRIFT_NE_AUTHORITY_TO_CHANGE_BASELINE",
+    "BASELINE_CHANGE_NE_RECOVERY",
+    "FIRST_STABLE_REPLAY_NE_SUSTAINED_RECOVERY",
+    "SUSTAINED_RECOVERY_NE_PERMANENT_RECOVERY",
+    "ACKNOWLEDGEMENT_NE_PROVIDER_EFFECT_PROOF",
+    "POLICY_SELECTED_AFTER_OUTCOME_NE_PRECOMMITTED_POLICY",
+    "TAMPER_EVIDENT_NE_TAMPER_IMPOSSIBLE"
+  ],
+  "phases": [
+    {
+      "id": "R6A_SUBJECT_IDENTITY",
+      "purpose": "Bind the exact longitudinal behavioral subject without claiming person or hidden-state identity.",
+      "required_fields": [
+        "subject_id",
+        "subject_epoch",
+        "save_state_digest",
+        "runtime_manifest_digest",
+        "instruction_contract_digest",
+        "capability_set_digest",
+        "evaluation_harness_version",
+        "detection_policy_version"
+      ],
+      "rules": {
+        "material_change_opens_new_epoch": true,
+        "session_continuity_proves_subject_continuity": false,
+        "subject_manifest_proves_hidden_identity": false,
+        "privacy_preserving_digests_allowed": true
+      }
+    },
+    {
+      "id": "R6B_EVALUATOR_CALIBRATION",
+      "purpose": "Version score semantics and expose evaluator/probe drift.",
+      "required_fields": [
+        "source_ref",
+        "source_version",
+        "dimension_scope",
+        "calibration_set_digest",
+        "calibration_method",
+        "calibration_epoch",
+        "limitations",
+        "recalibration_condition"
+      ],
+      "rules": {
+        "missing_or_expired_calibration": "UNKNOWN",
+        "evaluator_version_change_requires_new_epoch": true,
+        "target_outcomes_must_not_tune_same_evaluation_epoch": true,
+        "disagreement_must_remain_observable": true,
+        "calibration_proves_ground_truth": false
+      }
+    },
+    {
+      "id": "R6C_PROVENANCE_INDEPENDENCE",
+      "purpose": "Prevent source-count inflation and pseudo-independent corroboration.",
+      "independence_states": [
+        "INDEPENDENT_WITHIN_DECLARED_SCOPE",
+        "PARTIALLY_SHARED_ANCESTRY",
+        "SHARED_ROOT_ANCESTRY",
+        "COMMON_GENERATION_CHANNEL",
+        "ANCESTRY_UNKNOWN"
+      ],
+      "rules": {
+        "unknown_ancestry_implies_independence": false,
+        "distinct_agent_instances_imply_independence": false,
+        "copied_descendants_count_as_new_corroboration": false
+      }
+    },
+    {
+      "id": "R6D_SEQUENTIAL_DETECTION",
+      "purpose": "Freeze longitudinal decision rules before the observations they classify.",
+      "required_policy_fields": [
+        "included_dimensions",
+        "included_probes",
+        "aggregation_method",
+        "missing_evidence_rule",
+        "decision_rule",
+        "reset_or_stopping_rule",
+        "subject_epoch",
+        "calibration_epochs",
+        "policy_digest"
+      ],
+      "rules": {
+        "policy_must_preexist_classified_observations": true,
+        "raw_admitted_observations_preserved": true,
+        "post_outcome_threshold_selection_forbidden": true,
+        "missing_evidence_cannot_be_silently_dropped": true
+      }
+    },
+    {
+      "id": "R6E_BASELINE_EVOLUTION",
+      "purpose": "Version intentional behavior changes without laundering observed drift.",
+      "required_transition_fields": [
+        "predecessor_state_digest",
+        "successor_state_digest",
+        "behavioral_diff",
+        "reason_and_evidence",
+        "compatibility_class",
+        "review_evidence",
+        "effective_subject_epoch",
+        "rollback_pointer"
+      ],
+      "rules": {
+        "drift_cannot_rewrite_baseline": true,
+        "promotion_is_not_recovery": true,
+        "predecessor_history_must_be_preserved": true
+      }
+    },
+    {
+      "id": "R6F_SUSTAINED_RECOVERY",
+      "purpose": "Qualify bounded multi-checkpoint recovery from a pre-opened durable window.",
+      "required_window_open_fields": [
+        "session_id",
+        "subject_epoch",
+        "save_state_digest",
+        "native_recovery_verification_digest",
+        "start_turn",
+        "start_generation",
+        "policy_digest",
+        "minimum_checkpoint_count",
+        "minimum_turn_span",
+        "checkpoint_admission_rule",
+        "invalidation_rules"
+      ],
+      "result_states": [
+        "PENDING_MORE_OBSERVATION",
+        "SUSTAINED_BOUNDED_RECOVERY",
+        "DEGRADED_DRIFT_RETURNED",
+        "RELAPSE_BEHAVIORAL_DRIFT",
+        "INDETERMINATE_EVIDENCE",
+        "INVALIDATED_SUBJECT_OR_POLICY_CHANGE"
+      ],
+      "rules": {
+        "window_must_open_before_later_observations": true,
+        "native_recovery_verification_required": true,
+        "later_checkpoints_must_be_durable": true,
+        "operational_reload_trace_separate_from_behavioral_trace": true,
+        "past_window_proves_current_stability": false
+      }
+    },
+    {
+      "id": "R6G_PROVIDER_EFFECT_EVIDENCE",
+      "purpose": "Keep provider-specific effect/retry authority outside the generic boundary.",
+      "rules": {
+        "generic_not_applied_grants_retry": false,
+        "verified_readback_required_for_retry_authority": true,
+        "provider_receipt_alone_proves_effect": false,
+        "attempt_identity_must_be_exactly_bound": true
+      }
+    },
+    {
+      "id": "R6H_TAMPER_EVIDENCE",
+      "purpose": "Define optional anchoring without claiming privileged-writer impossibility.",
+      "rules": {
+        "local_hash_chain_is_tamper_proof": false,
+        "tamper_evident_not_tamper_impossible": true,
+        "authenticated_source_implies_independence": false
+      }
+    }
+  ],
+  "dependency_order": [
+    "R6A_SUBJECT_IDENTITY",
+    "R6B_EVALUATOR_CALIBRATION",
+    "R6C_PROVENANCE_INDEPENDENCE",
+    "R6D_SEQUENTIAL_DETECTION",
+    "R6E_BASELINE_EVOLUTION",
+    "R6F_SUSTAINED_RECOVERY",
+    "R6G_PROVIDER_EFFECT_EVIDENCE",
+    "R6H_TAMPER_EVIDENCE"
+  ],
+  "r5_gate": {
+    "canonical_review_required_for_pr8": true,
+    "exact_hostile_review_required_for_pr11": true,
+    "obsolete_external_recovery_helper_must_not_be_integrated": true,
+    "discovery_adapter_is_optional_not_core_dependency": true,
+    "fresh_combined_head_requires_independent_review": true
+  }
+}

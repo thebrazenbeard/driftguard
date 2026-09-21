@@ -1,7 +1,7 @@
-# DriftGuard R11 Governed Benchmark + Holdout Precommit V1
+# DriftGuard R11 Governed Benchmark + Holdout Precommit V2
 
-Status: statistical/research candidate stacked on clean R10 v3 head
-`1900f80e43a9c4bd40040865fb82b5d2e148d3d8`.
+Status: statistical/research candidate stacked on clean composed R10/attestation/effect head
+`5b0baea9538de1a254c731e2b1770c0b58677724`.
 
 ## Purpose
 
@@ -9,10 +9,11 @@ R8 provides a governed prospective sequential detector.
 
 R9 provides frozen-corpus calibration qualification.
 
-R10 compares CUSUM, Page-Hinkley, and EWMA on one exact qualification subject while
-refusing to promote a winner from that same HOLDOUT.
+R10 compares CUSUM, Page-Hinkley, and EWMA on one exact qualification subject while refusing to promote a winner from that same HOLDOUT.
 
-R11 governs the benchmark subject itself.
+The composed base additionally carries subject-bound evaluator attestation and subject-current reload/effect admission.
+
+R11 governs the benchmark study itself.
 
 The problem is not merely "have a test set."
 
@@ -23,10 +24,14 @@ A meaningful detector benchmark needs:
 - exact DESIGN/HOLDOUT separation;
 - frozen candidates and acceptance criteria before governed HOLDOUT reveal;
 - exact future R9 and R10 plan identities;
-- a reveal boundary that can prove exact digest equality;
+- one durable study/attempt history so failed or abandoned attempts cannot disappear;
+- one-at-a-time and single-use attempt semantics;
+- explicit predecessor-attempt and prior-holdout disclosure;
+- exact execution-source binding;
+- a reveal boundary that proves exact digest equality;
 - an explicit ceiling on what "untouched" can actually mean.
 
-R11 implements that protocol.
+R11 V2 implements that protocol.
 
 ## Core benchmark portfolio
 
@@ -54,9 +59,7 @@ Each family manifest binds:
 
 The phenomenon label is provenance/benchmark metadata.
 
-It does not prove that a trajectory was causally produced by the named phenomenon.
-That requires the external generation/collection evidence named by the provenance
-binding.
+It does not prove that a trajectory was causally produced by the named phenomenon. That requires the external generation/collection evidence named by the provenance binding.
 
 ## Corpus manifest
 
@@ -71,11 +74,9 @@ A `BenchmarkCorpusManifest` binds:
 - SHA-256 of exact canonical corpus artifact bytes;
 - exact core-family manifests.
 
-The role-independent trajectory-content digest hashes only the sorted trajectory
-payloads.
+The role-independent trajectory-content digest hashes only the sorted trajectory payloads.
 
-It prevents trivial reuse of the exact same trajectories merely by relabeling the
-corpus from DESIGN to HOLDOUT.
+It prevents trivial reuse of the exact same trajectories merely by relabeling the corpus from DESIGN to HOLDOUT.
 
 It does not prove statistical independence between two different trajectory sets.
 
@@ -89,13 +90,7 @@ It is compact canonical JSON of the exact R9 corpus payload.
 
 At reveal time, supplied HOLDOUT bytes must equal this exact serialization.
 
-This closes a provenance loophole where:
-
-- the object digest could refer to corpus A;
-- the file digest could refer to unrelated file B;
-- both could still appear together in one manifest.
-
-R11 requires one exact object/file subject.
+This closes a provenance loophole where the object digest could refer to corpus A while the file digest referred to unrelated file B.
 
 ## DESIGN versus HOLDOUT
 
@@ -119,15 +114,7 @@ They must not reuse:
 
 This blocks trivial exact-data reuse.
 
-It does not establish:
-
-- independent sampling;
-- separate operators;
-- separate random seeds;
-- absence of common upstream contamination;
-- absence of prior HOLDOUT access.
-
-Those remain external provenance questions.
+It does not establish independent sampling, separate operators, separate random seeds, absence of common upstream contamination, or absence of prior HOLDOUT access.
 
 ## HOLDOUT seal
 
@@ -146,14 +133,37 @@ Its explicit claim is:
 
 A hash commitment proves equality to a committed digest.
 
-It does **not** prove that nobody saw the underlying data before the commitment.
+It does not prove that nobody saw the underlying data before the commitment, and it does not supply trusted wall-clock ordering.
 
-It also does not provide trusted wall-clock ordering by itself.
+## Execution binding
+
+`BenchmarkExecutionBinding` binds:
+
+- declared repository;
+- declared 40-hex Git commit subject;
+- schema version;
+- SHA-256 of the exact runtime `benchmark.py`;
+- SHA-256 of the exact runtime `calibration.py`;
+- SHA-256 of the exact runtime `comparison.py`.
+
+`assert_runtime_sources_match()` re-hashes those three local source files at seal, reveal, and run admission.
+
+The source-file hashes are locally rechecked evidence.
+
+The repository and Git commit strings are declared provenance fields. R11 does not independently interrogate Git to prove that the running files came from the declared commit.
+
+A stronger code-origin claim would require a separately trusted package/build/signature or Git-attestation boundary.
 
 ## Precommit plan
 
 `BenchmarkPrecommitPlan` freezes before governed reveal:
 
+- study ID;
+- attempt ID;
+- precommit ID;
+- exact predecessor terminal-attempt receipt digests;
+- exact disclosed predecessor holdout digests;
+- exact execution binding;
 - DESIGN manifest digest;
 - HOLDOUT seal;
 - exact R8 CUSUM spec digest;
@@ -165,43 +175,67 @@ It also does not provide trusted wall-clock ordering by itself.
 - selection rule:
   `COMPARE_ONLY_NO_PROMOTION`.
 
-The CUSUM candidate must bind the exact precommitted CUSUM spec.
+The R11 HOLDOUT digest must differ from every disclosed predecessor holdout digest.
 
-R9 family-policy IDs must exactly equal the HOLDOUT family IDs.
+The predecessor-holdout list is itself a declared governance input. R11 can enforce non-reuse only for holdouts actually disclosed to the plan; it cannot discover hidden prior holdouts by itself.
 
-The candidate tuple must be canonical.
+## Durable attempt ledger
 
-Construction also instantiates the exact future R9/R10 plan objects, so an invalid
-future comparison contract fails during precommit rather than after reveal.
+`BenchmarkAttemptLedger` persists one study's attempt state in SQLite.
 
-## What "precommitted" means here
+Attempt states are:
 
-Within R11, "precommitted" means:
+- `SEALED`
+- `REVEALED`
+- `EXECUTING`
+- `EXECUTED`
+- `INVALIDATED`
+- `ABORTED`
 
-> the exact candidate, criterion, benchmark-metadata, HOLDOUT-digest, future
-> calibration-plan, and future comparison-plan subject is fixed in the
-> `BenchmarkPrecommitPlan` before R11's governed reveal/run call.
+The current attempt row is supplemented by an append-only `benchmark_attempt_events` trail.
 
-It does not mean:
+A successful attempt therefore leaves:
 
-> R11 proved that the human, process, model, CI system, repository administrator, or
-> another tool had never inspected the HOLDOUT data before that call.
+`SEALED -> REVEALED -> EXECUTING -> EXECUTED`
 
-That stronger claim requires an external custody/time/authorization system.
+An abandoned revealed attempt can leave:
 
-R11 intentionally refuses to invent one.
+`SEALED -> REVEALED -> ABORTED`
 
-## Reveal
+An execution failure after the single-use execution claim is converted to `INVALIDATED`.
+
+## One active attempt per study
+
+A study may not seal another attempt while one is:
+
+- `SEALED`;
+- `REVEALED`;
+- `EXECUTING`.
+
+A successor attempt may be sealed only after all prior attempts are terminal.
+
+The successor precommit must reference every prior terminal attempt receipt digest.
+
+It must also disclose every prior attempt HOLDOUT digest.
+
+This makes abandoned and failed attempts durable ancestry rather than optional history.
+
+## Single-use reveal
 
 `reveal_holdout()` requires:
 
-- exact precommit object;
+- exact `BenchmarkAttemptLedger`;
+- an already durably `SEALED` attempt;
+- exact precommit;
+- exact execution binding;
 - exact precommitted HOLDOUT manifest;
 - exact R9 HOLDOUT corpus;
 - exact canonical corpus artifact bytes.
 
 It verifies:
 
+- runtime source hashes;
+- study/attempt/precommit identity;
 - manifest digest;
 - corpus role;
 - corpus ID/version/digest;
@@ -212,34 +246,53 @@ It verifies:
 - exact canonical artifact bytes;
 - exact artifact SHA-256.
 
+The ledger transition from `SEALED` to `REVEALED` is CAS-like and single-use.
+
 Only that path can emit a `HoldoutRevealReceipt`.
 
 The receipt claim is:
 
 `EXACT_DIGEST_REVEAL_MATCH_NOT_NONACCESS_PROOF`.
 
-## Run
+## Single-use execution
 
-`run_precommitted_holdout()` requires the exact:
+`run_precommitted_holdout()` first re-admits:
 
-- precommit;
-- reveal receipt;
-- manifest;
-- corpus;
-- CUSUM spec.
+- exact precommit;
+- exact execution binding;
+- exact durable `REVEALED` attempt;
+- exact reveal receipt;
+- exact manifest/corpus;
+- exact CUSUM spec;
+- exact future R9/R10 plans.
 
-It then reconstructs the already-precommitted R9 calibration plan and R10 comparison
-plan and executes `compare_detectors()`.
+Immediately before detector comparison, the ledger atomically claims:
 
-It cannot substitute:
+`REVEALED -> EXECUTING`
 
-- another CUSUM spec;
-- another HOLDOUT corpus;
-- another R9 policy;
-- another R10 candidate;
-- another comparison plan.
+A concurrent or replayed execution can no longer reach the comparison path after that claim is consumed.
 
-Only this path can emit a `BenchmarkRunReceipt`.
+If comparison execution raises after the claim, the attempt is terminalized as `INVALIDATED`.
+
+On success, the run receipt is persisted through:
+
+`EXECUTING -> EXECUTED`
+
+The run receipt remains non-promoting.
+
+## What "precommitted" means here
+
+Within R11, "precommitted" means:
+
+> the exact candidate, criterion, benchmark metadata, HOLDOUT digest, future calibration/comparison plans, attempt ancestry, prior-holdout disclosure, and execution-source hashes were fixed in the durable precommit before R11's governed reveal/run transitions.
+
+It does not mean:
+
+> R11 proved that no human, process, model, repository administrator, CI system, or other tool had ever inspected the HOLDOUT before the precommit.
+
+That stronger claim requires external custody, trusted time, access-control, and provenance evidence.
+
+R11 intentionally does not invent those guarantees.
 
 ## Promotion boundary
 
@@ -249,68 +302,71 @@ The run receipt requires:
 
 `promotion_authorized = false`
 
-and R10's embedded comparison receipt must also remain non-promoting.
+and the embedded R10 comparison receipt must also remain non-promoting.
 
 The run claim is:
 
 `PRECOMMITTED_COMPARISON_EXECUTED_NO_SELECTION_OR_PROMOTION_AUTHORITY`.
 
-If one detector appears better on this HOLDOUT, R11 still does not authorize adopting
-it.
+If one detector appears better on this HOLDOUT, R11 still does not authorize adopting it.
 
-A subsequent promotion requires a separately governed selection/qualification
-protocol and, where selection occurred using this HOLDOUT, another untouched
-qualification subject.
+A subsequent promotion requires a separately governed selection/qualification protocol and, where selection occurred using this HOLDOUT, another independently governed qualification subject.
 
 ## Receipt integrity
 
-`HoldoutRevealReceipt` and `BenchmarkRunReceipt` are factory-gated.
+`BenchmarkAttemptReceipt`, `HoldoutRevealReceipt`, and `BenchmarkRunReceipt` are factory-gated.
 
-Direct construction of a digest-bearing lookalike is rejected.
+Direct construction of digest-bearing lookalikes is rejected.
 
-`BenchmarkRunResult` cross-checks the run receipt against the exact embedded R10
-comparison receipt digest.
+`BenchmarkRunResult` cross-checks the run receipt against the exact embedded R10 comparison receipt digest.
 
-As elsewhere in DriftGuard, Python module-private/factory tokens are API-governance
-boundaries, not hostile-process or hardware isolation.
+As elsewhere in DriftGuard, Python module-private/factory tokens and a writable local SQLite database are API-governance boundaries, not hostile-process, operating-system, or hardware isolation.
 
 ## Hostile regressions
 
-R11 tests freeze:
+R11 V2 tests freeze:
 
 - exact eight-phenomenon coverage;
 - one exact global dimension set;
-- exact corpus/manifest binding;
 - exact DESIGN/HOLDOUT portfolio matching;
 - rejection of identical DESIGN/HOLDOUT trajectory content;
 - exact future R9/R10 plan digest binding;
-- candidate mutation moves precommit identity;
-- R9 policy mutation moves precommit identity;
+- exact execution-source hash binding;
+- declared prior R9/R10 holdout exclusion;
+- one active attempt per study;
+- same attempt/precommit ID cannot bind divergent subject;
+- reveal requires durable seal;
+- reveal replay rejection;
+- execution claim is single-use before comparison;
+- run replay rejection;
+- append-only successful attempt history;
+- durable aborted-attempt history;
+- successor attempt must reference all terminal predecessors;
+- successor attempt must disclose prior attempt holdouts;
 - exact canonical artifact-byte reveal;
-- changed HOLDOUT rejection;
-- direct reveal-receipt construction rejection;
-- explicit non-access/trusted-time claim ceiling;
+- changed execution binding rejection;
 - exact precommitted R10 execution;
 - no promotion authority;
 - changed CUSUM spec rejection;
-- direct run-receipt construction rejection;
-- DESIGN manifest cannot be sealed as HOLDOUT.
+- direct attempt/reveal/run receipt construction rejection;
+- explicit non-access/trusted-time claim ceiling.
 
-The test corpus is a protocol fixture, not production benchmark evidence.
+The test corpora are protocol fixtures, not production benchmark evidence.
 
 ## Claim ceiling
 
-An R11 PASS means:
+An R11 V2 PASS means:
 
-> these exact benchmark manifests, candidate/criterion commitments, HOLDOUT digest,
-> reveal bytes, R9 qualification plan, and R10 comparison plan compose
-> deterministically under the governed protocol.
+> these exact benchmark manifests, study/attempt commitments, disclosed prior-holdout set, execution-source hashes, HOLDOUT digest/bytes, R9 qualification plan, R10 comparison plan, and durable single-use state transitions compose deterministically under the governed protocol.
 
 It does not prove:
 
 - HOLDOUT non-access before precommit;
 - trusted timestamp ordering;
+- complete discovery of every historical holdout;
 - external custody;
+- repository/commit authenticity beyond declared metadata;
+- database tamper resistance against arbitrary local write access;
 - data independence;
 - production representativeness;
 - causal truth of phenomenon labels;
@@ -322,15 +378,17 @@ It does not prove:
 - causal model drift;
 - control/reload safety.
 
-## Separate integration gate
+## Composition base
 
-R11 is a statistical/research layer on the repaired R7-R10 stack.
+R11 V2 is stacked on the clean composed DriftGuard subject that carries:
 
-It does not erase the independent whole-system composition gate.
+- R6 measurement validity;
+- repaired R7 subject identity/epoch authority;
+- R8 sequential detection;
+- final R9 calibration semantics;
+- R10 detector comparison;
+- subject-bound evaluator attestation;
+- subject-current reload/effect admission;
+- generic actuator non-promotion semantics.
 
-Before DriftGuard as a whole can be called integrated, the reviewed measurement,
-subject, evaluator-attestation, and effect-boundary controls still need one composed,
-cross-qualified source subject, after which the statistical stack must be restacked
-and requalified on that composed base.
-
-R11's evidence remains useful, but it is not a substitute for that integration work.
+R11 remains statistical/research evidence. It does not authorize merge, deployment, credentials, provider actions, reloads, or other protected effects.

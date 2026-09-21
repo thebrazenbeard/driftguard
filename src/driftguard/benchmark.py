@@ -889,6 +889,7 @@ class BenchmarkRunResult:
 class BenchmarkAttemptStatus(StrEnum):
     SEALED = "SEALED"
     REVEALED = "REVEALED"
+    EXECUTING = "EXECUTING"
     EXECUTED = "EXECUTED"
     INVALIDATED = "INVALIDATED"
     ABORTED = "ABORTED"
@@ -1020,6 +1021,13 @@ class BenchmarkAttemptReceipt:
                 )
             if self.reason is not None:
                 raise ValueError("REVEALED attempt cannot contain terminal reason")
+        elif self.status is BenchmarkAttemptStatus.EXECUTING:
+            if self.reveal_digest is None or self.run_digest is not None:
+                raise ValueError(
+                    "EXECUTING attempt requires reveal digest and no run digest"
+                )
+            if self.reason is not None:
+                raise ValueError("EXECUTING attempt cannot contain terminal reason")
         elif self.status is BenchmarkAttemptStatus.EXECUTED:
             if self.reveal_digest is None or self.run_digest is None:
                 raise ValueError(
@@ -1308,6 +1316,7 @@ class BenchmarkAttemptLedger:
                 in {
                     BenchmarkAttemptStatus.SEALED,
                     BenchmarkAttemptStatus.REVEALED,
+                    BenchmarkAttemptStatus.EXECUTING,
                 }
             )
             if active:
@@ -1467,6 +1476,61 @@ class BenchmarkAttemptLedger:
             ).fetchone()
             return self._row_to_receipt(row)
 
+    def begin_execution(
+        self,
+        *,
+        precommit: BenchmarkPrecommitPlan,
+        reveal: HoldoutRevealReceipt,
+    ) -> BenchmarkAttemptReceipt:
+        current = self._assert_exact_precommit(
+            precommit=precommit,
+            required_status=BenchmarkAttemptStatus.EXECUTING,
+        )
+        if current.reveal_digest != reveal.digest:
+            raise ValueError(
+                "benchmark attempt reveal digest mismatch"
+            )
+        with closing(sqlite3.connect(self.path)) as db:
+            db.row_factory = sqlite3.Row
+            db.execute("BEGIN IMMEDIATE")
+            updated = db.execute(
+                """
+                UPDATE benchmark_attempts
+                   SET status=?
+                 WHERE attempt_id=?
+                   AND precommit_digest=?
+                   AND status=?
+                   AND reveal_digest=?
+                   AND run_digest IS NULL
+                """,
+                (
+                    BenchmarkAttemptStatus.EXECUTING.value,
+                    precommit.attempt_id,
+                    precommit.digest,
+                    BenchmarkAttemptStatus.REVEALED.value,
+                    reveal.digest,
+                ),
+            )
+            if updated.rowcount != 1:
+                raise ValueError(
+                    "benchmark execution is single-use or attempt is stale"
+                )
+            self._append_event(
+                db,
+                attempt_id=precommit.attempt_id,
+                study_id=precommit.study_id,
+                precommit_digest=precommit.digest,
+                status=BenchmarkAttemptStatus.EXECUTING,
+                reveal_digest=reveal.digest,
+                run_digest=None,
+                reason=None,
+            )
+            row = db.execute(
+                "SELECT * FROM benchmark_attempts WHERE attempt_id=?",
+                (precommit.attempt_id,),
+            ).fetchone()
+            return self._row_to_receipt(row)
+
     def mark_executed(
         self,
         *,
@@ -1550,6 +1614,7 @@ class BenchmarkAttemptLedger:
             if current.status not in {
                 BenchmarkAttemptStatus.SEALED,
                 BenchmarkAttemptStatus.REVEALED,
+                BenchmarkAttemptStatus.EXECUTING,
             }:
                 raise ValueError(
                     "only active benchmark attempt can be aborted/invalidated"

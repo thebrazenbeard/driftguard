@@ -52,6 +52,23 @@ def _nonempty(value: Any, label: str) -> str:
     return value
 
 
+def _family_policy_digest(
+    policies: tuple[CalibrationFamilyPolicy, ...],
+) -> str:
+    return canonical_digest(
+        {
+            "schema": "DRIFTGUARD_PROMOTION_FAMILY_POLICY_SET_V1",
+            "family_policies": [
+                item.payload()
+                for item in sorted(
+                    policies,
+                    key=lambda row: row.family_id,
+                )
+            ],
+        }
+    )
+
+
 @dataclass(frozen=True)
 class PromotionExecutionBinding:
     benchmark_binding: BenchmarkExecutionBinding
@@ -109,6 +126,9 @@ class CandidateNominationReceipt:
     source_run_receipt_digest: str
     source_comparison_receipt_digest: str
     source_holdout_digest: str
+    source_portfolio_digest: str
+    source_family_policy_digest: str
+    source_reference_cusum_spec_digest: str
     consumed_holdout_digests: tuple[str, ...]
     candidate_id: str
     candidate_algorithm: DetectorAlgorithm
@@ -124,6 +144,9 @@ class CandidateNominationReceipt:
         source_run_receipt_digest: str,
         source_comparison_receipt_digest: str,
         source_holdout_digest: str,
+        source_portfolio_digest: str,
+        source_family_policy_digest: str,
+        source_reference_cusum_spec_digest: str,
         consumed_holdout_digests: tuple[str, ...],
         candidate_id: str,
         candidate_algorithm: DetectorAlgorithm,
@@ -156,6 +179,21 @@ class CandidateNominationReceipt:
             self,
             "source_holdout_digest",
             source_holdout_digest,
+        )
+        object.__setattr__(
+            self,
+            "source_portfolio_digest",
+            source_portfolio_digest,
+        )
+        object.__setattr__(
+            self,
+            "source_family_policy_digest",
+            source_family_policy_digest,
+        )
+        object.__setattr__(
+            self,
+            "source_reference_cusum_spec_digest",
+            source_reference_cusum_spec_digest,
         )
         object.__setattr__(
             self,
@@ -192,6 +230,18 @@ class CandidateNominationReceipt:
             (
                 self.source_holdout_digest,
                 "nomination source holdout digest",
+            ),
+            (
+                self.source_portfolio_digest,
+                "nomination source portfolio digest",
+            ),
+            (
+                self.source_family_policy_digest,
+                "nomination source family policy digest",
+            ),
+            (
+                self.source_reference_cusum_spec_digest,
+                "nomination source reference CUSUM spec digest",
             ),
             (self.candidate_digest, "nomination candidate digest"),
         ):
@@ -231,6 +281,13 @@ class CandidateNominationReceipt:
                     self.source_comparison_receipt_digest
                 ),
                 "source_holdout_digest": self.source_holdout_digest,
+                "source_portfolio_digest": self.source_portfolio_digest,
+                "source_family_policy_digest": (
+                    self.source_family_policy_digest
+                ),
+                "source_reference_cusum_spec_digest": (
+                    self.source_reference_cusum_spec_digest
+                ),
                 "consumed_holdout_digests": list(
                     self.consumed_holdout_digests
                 ),
@@ -319,6 +376,13 @@ def nominate_candidate(
         source_run_receipt_digest=receipt.digest,
         source_comparison_receipt_digest=comparison.digest,
         source_holdout_digest=source_holdout,
+        source_portfolio_digest=(
+            precommit.holdout_seal.manifest.portfolio_digest
+        ),
+        source_family_policy_digest=_family_policy_digest(
+            precommit.family_policies
+        ),
+        source_reference_cusum_spec_digest=precommit.cusum_spec_digest,
         consumed_holdout_digests=consumed,
         candidate_id=candidate.candidate_id,
         candidate_algorithm=candidate.algorithm,
@@ -376,6 +440,13 @@ class PromotionQualificationPlan:
                 "promotion qualification requires HOLDOUT_QUALIFICATION manifest"
             )
         if (
+            self.qualification_manifest.portfolio_digest
+            != self.nomination.source_portfolio_digest
+        ):
+            raise ValueError(
+                "promotion qualification portfolio must match source R11 portfolio"
+            )
+        if (
             self.qualification_manifest.corpus_digest
             in self.nomination.consumed_holdout_digests
         ):
@@ -390,6 +461,13 @@ class PromotionQualificationPlan:
             self.reference_cusum_spec_digest,
             "promotion reference CUSUM spec digest",
         )
+        if (
+            self.reference_cusum_spec_digest
+            != self.nomination.source_reference_cusum_spec_digest
+        ):
+            raise ValueError(
+                "promotion reference CUSUM spec must match source R11 contract"
+            )
         if (
             self.candidate.algorithm is DetectorAlgorithm.CUSUM
             and self.candidate.cusum_spec_digest
@@ -420,6 +498,13 @@ class PromotionQualificationPlan:
         if policy_ids != manifest_ids:
             raise ValueError(
                 "promotion family policies must exactly match qualification families"
+            )
+        if (
+            _family_policy_digest(self.family_policies)
+            != self.nomination.source_family_policy_digest
+        ):
+            raise ValueError(
+                "promotion family policies must exactly match source R11 criteria"
             )
         if (
             type(self.predecessor_attempt_digests) is not tuple

@@ -1507,7 +1507,7 @@ class BenchmarkAttemptLedger:
                     BenchmarkAttemptStatus.EXECUTING.value,
                     precommit.attempt_id,
                     precommit.digest,
-                    BenchmarkAttemptStatus.EXECUTING.value,
+                    BenchmarkAttemptStatus.REVEALED.value,
                     reveal.digest,
                 ),
             )
@@ -1564,7 +1564,7 @@ class BenchmarkAttemptLedger:
                     run.digest,
                     precommit.attempt_id,
                     precommit.digest,
-                    BenchmarkAttemptStatus.REVEALED.value,
+                    BenchmarkAttemptStatus.EXECUTING.value,
                     reveal.digest,
                 ),
             )

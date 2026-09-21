@@ -1046,6 +1046,32 @@ class R11BenchmarkTests(unittest.TestCase):
         ):
             self.execute_holdout(plan, spec, holdout, reveal)
 
+        for operation in (
+            self.registry.abort_attempt,
+            self.registry.invalidate_attempt,
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                "EXECUTING attempt cannot be operator-aborted/invalidated",
+            ):
+                operation(
+                    attempt_id=plan.attempt_id,
+                    reason="ambiguous completion cannot be operator-resolved",
+                )
+
+        successor, _, _ = make_precommit(
+            study_id=plan.study_id,
+            attempt_id="attempt-after-ambiguous-completion",
+            precommit_id="precommit-after-ambiguous-completion",
+            holdout_label="holdout-after-ambiguous-completion",
+            holdout_offset=0.05,
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "already has an active benchmark attempt",
+        ):
+            self.registry.seal_precommit(precommit=successor)
+
     def test_changed_cusum_spec_after_reveal_fails_and_attempt_remains_revealed(self):
         plan, spec, holdout, _ = self.seal()
         reveal = self.reveal(plan, holdout)

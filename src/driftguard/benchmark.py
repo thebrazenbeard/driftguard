@@ -440,7 +440,12 @@ class HoldoutCorpusSeal:
 
 @dataclass(frozen=True)
 class BenchmarkPrecommitPlan:
+    study_id: str
+    attempt_id: str
     precommit_id: str
+    predecessor_attempt_digests: tuple[str, ...]
+    predecessor_holdout_digests: tuple[str, ...]
+    execution_binding: BenchmarkExecutionBinding
     design_manifest: BenchmarkCorpusManifest
     holdout_seal: HoldoutCorpusSeal
     cusum_spec_digest: str
@@ -454,7 +459,42 @@ class BenchmarkPrecommitPlan:
     precommit_claim: str = PRECOMMIT_CLAIM
 
     def __post_init__(self) -> None:
+        _nonempty(self.study_id, "benchmark study id")
+        _nonempty(self.attempt_id, "benchmark attempt id")
         _nonempty(self.precommit_id, "benchmark precommit id")
+        if (
+            type(self.predecessor_attempt_digests) is not tuple
+            or any(
+                type(item) is not str
+                for item in self.predecessor_attempt_digests
+            )
+            or self.predecessor_attempt_digests
+            != tuple(sorted(set(self.predecessor_attempt_digests)))
+        ):
+            raise ValueError(
+                "predecessor attempt digests must be a canonical unique tuple"
+            )
+        for item in self.predecessor_attempt_digests:
+            require_sha256_digest(item, "predecessor attempt digest")
+        if (
+            type(self.predecessor_holdout_digests) is not tuple
+            or not self.predecessor_holdout_digests
+            or any(
+                type(item) is not str
+                for item in self.predecessor_holdout_digests
+            )
+            or self.predecessor_holdout_digests
+            != tuple(sorted(set(self.predecessor_holdout_digests)))
+        ):
+            raise ValueError(
+                "predecessor holdout digests must be a non-empty canonical unique tuple"
+            )
+        for item in self.predecessor_holdout_digests:
+            require_sha256_digest(item, "predecessor holdout digest")
+        if type(self.execution_binding) is not BenchmarkExecutionBinding:
+            raise ValueError(
+                "execution_binding must be exact BenchmarkExecutionBinding"
+            )
         if type(self.design_manifest) is not BenchmarkCorpusManifest:
             raise ValueError(
                 "design manifest must be exact BenchmarkCorpusManifest"
@@ -463,6 +503,13 @@ class BenchmarkPrecommitPlan:
             raise ValueError("benchmark precommit requires DESIGN manifest")
         if type(self.holdout_seal) is not HoldoutCorpusSeal:
             raise ValueError("holdout_seal must be exact HoldoutCorpusSeal")
+        if (
+            self.holdout_seal.manifest.corpus_digest
+            in self.predecessor_holdout_digests
+        ):
+            raise ValueError(
+                "R11 holdout cannot reuse a predecessor R9/R10 or prior-attempt holdout"
+            )
         if (
             self.design_manifest.portfolio_digest
             != self.holdout_seal.manifest.portfolio_digest
@@ -577,8 +624,17 @@ class BenchmarkPrecommitPlan:
 
     def payload(self) -> dict[str, Any]:
         return {
-            "schema": "DRIFTGUARD_BENCHMARK_PRECOMMIT_PLAN_V1",
+            "schema": "DRIFTGUARD_BENCHMARK_PRECOMMIT_PLAN_V2",
+            "study_id": self.study_id,
+            "attempt_id": self.attempt_id,
             "precommit_id": self.precommit_id,
+            "predecessor_attempt_digests": list(
+                self.predecessor_attempt_digests
+            ),
+            "predecessor_holdout_digests": list(
+                self.predecessor_holdout_digests
+            ),
+            "execution_binding": self.execution_binding.payload(),
             "design_manifest_digest": self.design_manifest.digest,
             "design_portfolio_digest": self.design_manifest.portfolio_digest,
             "holdout_seal": self.holdout_seal.payload(),

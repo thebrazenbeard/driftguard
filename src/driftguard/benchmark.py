@@ -1443,12 +1443,80 @@ class BenchmarkAttemptLedger:
             )
         return receipt
 
+    @staticmethod
+    def _assert_reveal_matches_precommit(
+        *,
+        precommit: BenchmarkPrecommitPlan,
+        reveal: HoldoutRevealReceipt,
+    ) -> None:
+        if type(reveal) is not HoldoutRevealReceipt:
+            raise ValueError(
+                "reveal must be exact HoldoutRevealReceipt"
+            )
+        seal = precommit.holdout_seal
+        if reveal.study_id != precommit.study_id:
+            raise ValueError("reveal/precommit study id mismatch")
+        if reveal.attempt_id != precommit.attempt_id:
+            raise ValueError("reveal/precommit attempt id mismatch")
+        if reveal.precommit_digest != precommit.digest:
+            raise ValueError("reveal/precommit digest mismatch")
+        if (
+            reveal.execution_binding_digest
+            != precommit.execution_binding.digest
+        ):
+            raise ValueError("reveal/precommit execution binding mismatch")
+        if reveal.seal_digest != seal.digest:
+            raise ValueError("reveal/precommit seal digest mismatch")
+        if reveal.manifest_digest != seal.manifest.digest:
+            raise ValueError("reveal/precommit manifest digest mismatch")
+        if reveal.corpus_digest != seal.manifest.corpus_digest:
+            raise ValueError("reveal/precommit corpus digest mismatch")
+        if reveal.artifact_digest != seal.manifest.artifact_digest:
+            raise ValueError("reveal/precommit artifact digest mismatch")
+
+    @staticmethod
+    def _assert_run_matches_precommit(
+        *,
+        precommit: BenchmarkPrecommitPlan,
+        reveal: HoldoutRevealReceipt,
+        run: BenchmarkRunReceipt,
+    ) -> None:
+        if type(run) is not BenchmarkRunReceipt:
+            raise ValueError("run must be exact BenchmarkRunReceipt")
+        if run.study_id != precommit.study_id:
+            raise ValueError("run/precommit study id mismatch")
+        if run.attempt_id != precommit.attempt_id:
+            raise ValueError("run/precommit attempt id mismatch")
+        if run.precommit_digest != precommit.digest:
+            raise ValueError("run/precommit digest mismatch")
+        if (
+            run.execution_binding_digest
+            != precommit.execution_binding.digest
+        ):
+            raise ValueError("run/precommit execution binding mismatch")
+        if run.reveal_digest != reveal.digest:
+            raise ValueError("run/reveal digest mismatch")
+        if (
+            run.calibration_plan_digest
+            != precommit.holdout_calibration_plan.digest
+        ):
+            raise ValueError("run/precommit calibration plan mismatch")
+        if (
+            run.comparison_plan_digest
+            != precommit.holdout_comparison_plan.digest
+        ):
+            raise ValueError("run/precommit comparison plan mismatch")
+
     def mark_revealed(
         self,
         *,
         precommit: BenchmarkPrecommitPlan,
         reveal: HoldoutRevealReceipt,
     ) -> BenchmarkAttemptReceipt:
+        self._assert_reveal_matches_precommit(
+            precommit=precommit,
+            reveal=reveal,
+        )
         self._assert_exact_precommit(
             precommit=precommit,
             required_status=BenchmarkAttemptStatus.SEALED,
@@ -1500,6 +1568,10 @@ class BenchmarkAttemptLedger:
         precommit: BenchmarkPrecommitPlan,
         reveal: HoldoutRevealReceipt,
     ) -> BenchmarkAttemptReceipt:
+        self._assert_reveal_matches_precommit(
+            precommit=precommit,
+            reveal=reveal,
+        )
         current = self._assert_exact_precommit(
             precommit=precommit,
             required_status=BenchmarkAttemptStatus.REVEALED,
@@ -1556,6 +1628,15 @@ class BenchmarkAttemptLedger:
         reveal: HoldoutRevealReceipt,
         run: BenchmarkRunReceipt,
     ) -> BenchmarkAttemptReceipt:
+        self._assert_reveal_matches_precommit(
+            precommit=precommit,
+            reveal=reveal,
+        )
+        self._assert_run_matches_precommit(
+            precommit=precommit,
+            reveal=reveal,
+            run=run,
+        )
         current = self._assert_exact_precommit(
             precommit=precommit,
             required_status=BenchmarkAttemptStatus.EXECUTING,

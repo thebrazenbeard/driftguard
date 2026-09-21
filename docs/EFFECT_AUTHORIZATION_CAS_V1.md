@@ -91,6 +91,14 @@ A future effect-authorizing consumer must preserve all of these invariants.
     assert `NOT_APPLIED`, has no V1 operator-clear transition, and cannot authorize
     a successor attempt.
 
+12. **One local SQLite transaction domain.**
+    Every authoritative effect-attempt row, fence row, provider-verification binding,
+    reload acknowledgement row, session row, evaluation row, and subject-currentness
+    row used by a V1 CAS must be co-resident in the same DriftLedger SQLite database
+    and mutated/read through the same SQLite connection for that transaction.
+    A second SQLite file, sidecar ledger, or separately committed store cannot
+    participate in an operation that V1 calls atomic.
+
 ## Proposed durable object: EffectAttemptReservation
 
 A reservation would bind at least:
@@ -114,6 +122,48 @@ digest-bearing reservation and present it as ledger evidence.
 
 A reservation is **mechanical single-attempt eligibility only**. It is necessary but
 never sufficient authority for a protected provider effect.
+
+## Storage topology and atomicity boundary
+
+V1's local atomicity claim is deliberately narrower than a distributed transaction.
+
+The authoritative effect-attempt protocol state must be stored in the **same
+DriftLedger SQLite database file** that already contains the bound:
+
+- `sessions`;
+- `evaluation_events`;
+- `reload_acknowledgements`;
+- `subject_epochs` / subject-transition state.
+
+The future effect-attempt schema may use additional tables for reservations, fences,
+provider-verification receipts, dispatch events, and attempt-event history, but those
+tables must be co-resident in that same database.
+
+For every operation described here as one `BEGIN IMMEDIATE` CAS:
+
+- exactly one DriftLedger SQLite connection opens the transaction;
+- every predicate read that participates in admission is read through that
+  connection;
+- every local mutation that establishes the transition is written through that
+  connection;
+- the effect-attempt state transition and any session/acknowledgement/fence mutation
+  commit or roll back together.
+
+An implementation may expose a separate `EffectAttemptLedger` class or adapter as
+an API boundary, but in V1 it may not own a separate SQLite file or independently
+committed authoritative store for these transitions.
+
+A sidecar database cannot safely provide the claimed atomic relationship between,
+for example, `VERIFIED_APPLIED_AWAITING_ACK` and the session-generation/reload-
+acknowledgement update. Two successful local commits are still two failure windows.
+
+Provider network I/O remains outside the SQLite transaction. Provider truth is
+represented locally only by the durable, exact provider-verification binding after
+external readback has completed.
+
+This requirement does not make SQLite a cross-host lock service and does not claim
+distributed consensus. A future multi-host/shared-database design requires a
+different concurrency/transaction contract.
 
 ## Proposed attempt state machine
 
@@ -342,7 +392,10 @@ Monitored-subject currentness advances through:
 
 - `DriftLedger.transition_subject_epoch()`.
 
-The fence check must execute inside the same `BEGIN IMMEDIATE` transaction used by each mutation path, before the mutation can commit.
+The fence check must execute inside the same `BEGIN IMMEDIATE` transaction and on
+the same DriftLedger SQLite connection used by each mutation path, before the
+mutation can commit. The authoritative fence row therefore must be co-resident in
+the same database; a separately committed sidecar fence is rejected.
 
 A partial implementation is rejected. For example, blocking `acknowledge_reload()` while allowing `evaluate_and_commit()` to advance the same fenced session would defeat the reservation contract.
 
@@ -432,7 +485,9 @@ For an outcome that cannot be authoritatively resolved:
 A verified applied effect is not closed merely because provider truth is known.
 
 The only V1 path that may consume `VERIFIED_APPLIED_AWAITING_ACK` is a dedicated
-effect-aware acknowledgement operation using one `BEGIN IMMEDIATE` transaction.
+effect-aware acknowledgement operation using one `BEGIN IMMEDIATE` transaction on
+the same DriftLedger SQLite connection that owns the session, reload acknowledgement,
+effect-attempt, provider-verification, and fence rows.
 
 That transaction must verify, inside the same snapshot:
 
@@ -546,7 +601,15 @@ A future implementation should include at least these adversarial cases:
 29. cancellation after `DISPATCH_UNCERTAIN` is rejected and cannot be used as a
     reconciliation shortcut;
 30. a cancelled pre-dispatch reservation cannot be replayed and any later attempt
-    requires fresh currentness plus a new reservation.
+    requires fresh currentness plus a new reservation;
+31. effect-attempt/fence/provider-verification state stored in a separate SQLite file
+    is rejected as non-conforming for any transition claimed atomic with session,
+    acknowledgement, evaluation, or subject state;
+32. acknowledgement consumption proves attempt closure, reload acknowledgement,
+    session-generation advancement, and fence release commit or roll back together
+    on one DriftLedger SQLite connection;
+33. injected failure between those local writes rolls back the entire transaction
+    with `VERIFIED_APPLIED_AWAITING_ACK` still authoritative and fenced.
 
 ## Relationship to Discovery effect-envelope work
 
@@ -576,6 +639,7 @@ It does not:
 - establish provider honesty;
 - establish distributed consensus;
 - make SQLite a cross-host lock service;
+- provide atomicity across separately committed databases or sidecar ledgers;
 - prove a provider supports idempotency;
 - prove an effect happened;
 - grant retry authority;
@@ -584,8 +648,9 @@ It does not:
 
 The key safety rule is:
 
-**reserve and fence locally, record uncertainty before I/O, reconcile provider truth,
-keep verified application fenced until native acknowledgement is atomically consumed,
-and quarantine permanently ambiguous outcomes without retry authority. Never infer
-retry safety from silence, generic receipts, timeout, restart, idempotency expiry, or
-operator choice.**
+**keep every authoritative local fence/attempt/session/acknowledgement transition in
+one DriftLedger SQLite transaction domain; reserve and fence locally, record
+uncertainty before I/O, reconcile provider truth, keep verified application fenced
+until native acknowledgement is atomically consumed, and quarantine permanently
+ambiguous outcomes without retry authority. Never infer retry safety from silence,
+generic receipts, timeout, restart, idempotency expiry, or operator choice.**

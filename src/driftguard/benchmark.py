@@ -1085,6 +1085,28 @@ class BenchmarkAttemptLedger:
                     ON benchmark_attempts(study_id)
                 """
             )
+            db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS benchmark_attempt_events (
+                    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    attempt_id TEXT NOT NULL,
+                    study_id TEXT NOT NULL,
+                    precommit_digest TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    reveal_digest TEXT NULL,
+                    run_digest TEXT NULL,
+                    reason TEXT NULL,
+                    FOREIGN KEY(attempt_id)
+                        REFERENCES benchmark_attempts(attempt_id)
+                )
+                """
+            )
+            db.execute(
+                """
+                CREATE INDEX IF NOT EXISTS benchmark_attempt_events_attempt_idx
+                    ON benchmark_attempt_events(attempt_id, event_id)
+                """
+            )
 
     @staticmethod
     def _row_to_receipt(row: sqlite3.Row) -> BenchmarkAttemptReceipt:
@@ -1152,6 +1174,80 @@ class BenchmarkAttemptLedger:
                 (study_id,),
             ).fetchall()
         return tuple(self._row_to_receipt(row) for row in rows)
+
+    def attempt_history(
+        self,
+        *,
+        attempt_id: str,
+    ) -> tuple[dict[str, Any], ...]:
+        _nonempty(attempt_id, "benchmark attempt id")
+        with closing(sqlite3.connect(self.path)) as db:
+            db.row_factory = sqlite3.Row
+            rows = db.execute(
+                """
+                SELECT event_id,attempt_id,study_id,precommit_digest,
+                       status,reveal_digest,run_digest,reason
+                  FROM benchmark_attempt_events
+                 WHERE attempt_id=?
+                 ORDER BY event_id
+                """,
+                (attempt_id,),
+            ).fetchall()
+        return tuple(
+            {
+                "event_id": int(row["event_id"]),
+                "attempt_id": str(row["attempt_id"]),
+                "study_id": str(row["study_id"]),
+                "precommit_digest": str(row["precommit_digest"]),
+                "status": str(row["status"]),
+                "reveal_digest": (
+                    str(row["reveal_digest"])
+                    if row["reveal_digest"] is not None
+                    else None
+                ),
+                "run_digest": (
+                    str(row["run_digest"])
+                    if row["run_digest"] is not None
+                    else None
+                ),
+                "reason": (
+                    str(row["reason"])
+                    if row["reason"] is not None
+                    else None
+                ),
+            }
+            for row in rows
+        )
+
+    @staticmethod
+    def _append_event(
+        db: sqlite3.Connection,
+        *,
+        attempt_id: str,
+        study_id: str,
+        precommit_digest: str,
+        status: BenchmarkAttemptStatus,
+        reveal_digest: str | None,
+        run_digest: str | None,
+        reason: str | None,
+    ) -> None:
+        db.execute(
+            """
+            INSERT INTO benchmark_attempt_events(
+                attempt_id,study_id,precommit_digest,status,
+                reveal_digest,run_digest,reason
+            ) VALUES(?,?,?,?,?,?,?)
+            """,
+            (
+                attempt_id,
+                study_id,
+                precommit_digest,
+                status.value,
+                reveal_digest,
+                run_digest,
+                reason,
+            ),
+        )
 
     def seal_precommit(
         self,
@@ -1270,6 +1366,16 @@ class BenchmarkAttemptLedger:
                     None,
                 ),
             )
+            self._append_event(
+                db,
+                attempt_id=precommit.attempt_id,
+                study_id=precommit.study_id,
+                precommit_digest=precommit.digest,
+                status=BenchmarkAttemptStatus.SEALED,
+                reveal_digest=None,
+                run_digest=None,
+                reason=None,
+            )
             row = db.execute(
                 "SELECT * FROM benchmark_attempts WHERE attempt_id=?",
                 (precommit.attempt_id,),
@@ -1345,6 +1451,16 @@ class BenchmarkAttemptLedger:
                 raise ValueError(
                     "benchmark reveal is single-use or attempt is stale"
                 )
+            self._append_event(
+                db,
+                attempt_id=precommit.attempt_id,
+                study_id=precommit.study_id,
+                precommit_digest=precommit.digest,
+                status=BenchmarkAttemptStatus.REVEALED,
+                reveal_digest=reveal.digest,
+                run_digest=None,
+                reason=None,
+            )
             row = db.execute(
                 "SELECT * FROM benchmark_attempts WHERE attempt_id=?",
                 (precommit.attempt_id,),
@@ -1392,6 +1508,16 @@ class BenchmarkAttemptLedger:
                 raise ValueError(
                     "benchmark run is single-use or attempt is stale"
                 )
+            self._append_event(
+                db,
+                attempt_id=precommit.attempt_id,
+                study_id=precommit.study_id,
+                precommit_digest=precommit.digest,
+                status=BenchmarkAttemptStatus.EXECUTED,
+                reveal_digest=reveal.digest,
+                run_digest=run.digest,
+                reason=None,
+            )
             row = db.execute(
                 "SELECT * FROM benchmark_attempts WHERE attempt_id=?",
                 (precommit.attempt_id,),
@@ -1435,6 +1561,16 @@ class BenchmarkAttemptLedger:
                  WHERE attempt_id=?
                 """,
                 (status.value, reason, attempt_id),
+            )
+            self._append_event(
+                db,
+                attempt_id=attempt_id,
+                study_id=current.study_id,
+                precommit_digest=current.precommit_digest,
+                status=status,
+                reveal_digest=current.reveal_digest,
+                run_digest=current.run_digest,
+                reason=reason,
             )
             row = db.execute(
                 "SELECT * FROM benchmark_attempts WHERE attempt_id=?",

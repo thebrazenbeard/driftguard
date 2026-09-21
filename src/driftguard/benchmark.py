@@ -1484,7 +1484,7 @@ class BenchmarkAttemptLedger:
     ) -> BenchmarkAttemptReceipt:
         current = self._assert_exact_precommit(
             precommit=precommit,
-            required_status=BenchmarkAttemptStatus.EXECUTING,
+            required_status=BenchmarkAttemptStatus.REVEALED,
         )
         if current.reveal_digest != reveal.digest:
             raise ValueError(
@@ -1507,7 +1507,7 @@ class BenchmarkAttemptLedger:
                     BenchmarkAttemptStatus.EXECUTING.value,
                     precommit.attempt_id,
                     precommit.digest,
-                    BenchmarkAttemptStatus.REVEALED.value,
+                    BenchmarkAttemptStatus.EXECUTING.value,
                     reveal.digest,
                 ),
             )
@@ -1540,7 +1540,7 @@ class BenchmarkAttemptLedger:
     ) -> BenchmarkAttemptReceipt:
         current = self._assert_exact_precommit(
             precommit=precommit,
-            required_status=BenchmarkAttemptStatus.REVEALED,
+            required_status=BenchmarkAttemptStatus.EXECUTING,
         )
         if current.reveal_digest != reveal.digest:
             raise ValueError(
@@ -1796,12 +1796,23 @@ def run_precommitted_holdout(
 
     calibration_plan = precommit.holdout_calibration_plan
     comparison_plan = precommit.holdout_comparison_plan
-    comparison = compare_detectors(
-        plan=comparison_plan,
-        calibration_plan=calibration_plan,
-        corpus=corpus,
-        cusum_spec=cusum_spec,
+    registry.begin_execution(
+        precommit=precommit,
+        reveal=reveal,
     )
+    try:
+        comparison = compare_detectors(
+            plan=comparison_plan,
+            calibration_plan=calibration_plan,
+            corpus=corpus,
+            cusum_spec=cusum_spec,
+        )
+    except Exception as exc:
+        registry.invalidate_attempt(
+            attempt_id=precommit.attempt_id,
+            reason=f"execution_failed:{type(exc).__name__}",
+        )
+        raise
     if comparison.promotion_authorized:
         raise ValueError(
             "R10 comparison unexpectedly authorized promotion"

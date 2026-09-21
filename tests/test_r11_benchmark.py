@@ -566,6 +566,134 @@ class R11BenchmarkTests(unittest.TestCase):
             durable.status,
         )
 
+    def test_cross_study_reveal_receipt_cannot_rebind_attempt(self):
+        plan_a, _, holdout_a = make_precommit(
+            study_id="study-a",
+            attempt_id="attempt-a",
+            precommit_id="precommit-a",
+            holdout_label="holdout-a",
+            holdout_offset=0.01,
+        )
+        plan_b, _, holdout_b = make_precommit(
+            study_id="study-b",
+            attempt_id="attempt-b",
+            precommit_id="precommit-b",
+            holdout_label="holdout-b",
+            holdout_offset=0.02,
+        )
+        self.registry.seal_precommit(precommit=plan_a)
+        self.registry.seal_precommit(precommit=plan_b)
+        reveal_b = self.reveal(plan_b, holdout_b)
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "reveal/precommit study id mismatch",
+        ):
+            self.registry.mark_revealed(
+                precommit=plan_a,
+                reveal=reveal_b,
+            )
+
+        durable_a = self.registry.attempt_receipt(
+            attempt_id=plan_a.attempt_id,
+        )
+        self.assertEqual(
+            BenchmarkAttemptStatus.SEALED,
+            durable_a.status,
+        )
+
+    def test_cross_study_reveal_cannot_start_execution(self):
+        plan_a, _, holdout_a = make_precommit(
+            study_id="study-a-start",
+            attempt_id="attempt-a-start",
+            precommit_id="precommit-a-start",
+            holdout_label="holdout-a-start",
+            holdout_offset=0.03,
+        )
+        plan_b, _, holdout_b = make_precommit(
+            study_id="study-b-start",
+            attempt_id="attempt-b-start",
+            precommit_id="precommit-b-start",
+            holdout_label="holdout-b-start",
+            holdout_offset=0.04,
+        )
+        self.registry.seal_precommit(precommit=plan_a)
+        self.registry.seal_precommit(precommit=plan_b)
+        reveal_a = self.reveal(plan_a, holdout_a)
+        reveal_b = self.reveal(plan_b, holdout_b)
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "reveal/precommit study id mismatch",
+        ):
+            self.registry.begin_execution(
+                precommit=plan_a,
+                reveal=reveal_b,
+            )
+
+        durable_a = self.registry.attempt_receipt(
+            attempt_id=plan_a.attempt_id,
+        )
+        self.assertEqual(
+            BenchmarkAttemptStatus.REVEALED,
+            durable_a.status,
+        )
+        self.assertEqual(reveal_a.digest, durable_a.reveal_digest)
+
+    def test_cross_study_run_receipt_cannot_complete_other_attempt(self):
+        plan_a, spec_a, holdout_a = make_precommit(
+            study_id="study-a-run",
+            attempt_id="attempt-a-run",
+            precommit_id="precommit-a-run",
+            holdout_label="holdout-a-run",
+            holdout_offset=0.05,
+        )
+        plan_b, spec_b, holdout_b = make_precommit(
+            study_id="study-b-run",
+            attempt_id="attempt-b-run",
+            precommit_id="precommit-b-run",
+            holdout_label="holdout-b-run",
+            holdout_offset=0.06,
+        )
+        self.registry.seal_precommit(precommit=plan_a)
+        self.registry.seal_precommit(precommit=plan_b)
+
+        reveal_a = self.reveal(plan_a, holdout_a)
+        self.registry.begin_execution(
+            precommit=plan_a,
+            reveal=reveal_a,
+        )
+
+        reveal_b = self.reveal(plan_b, holdout_b)
+        result_b = self.execute_holdout(
+            plan_b,
+            spec_b,
+            holdout_b,
+            reveal_b,
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "run/precommit study id mismatch",
+        ):
+            self.registry.mark_executed(
+                precommit=plan_a,
+                reveal=reveal_a,
+                run=result_b.receipt,
+            )
+
+        durable_a = self.registry.attempt_receipt(
+            attempt_id=plan_a.attempt_id,
+        )
+        self.assertEqual(
+            BenchmarkAttemptStatus.EXECUTING,
+            durable_a.status,
+        )
+        self.registry.invalidate_attempt(
+            attempt_id=plan_a.attempt_id,
+            reason="test cleanup after rejected cross-study run",
+        )
+
     def test_second_active_attempt_for_same_study_is_rejected(self):
         self.seal()
         second, _, _ = make_precommit(

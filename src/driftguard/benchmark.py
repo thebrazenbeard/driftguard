@@ -1631,7 +1631,11 @@ def run_precommitted_holdout(
 
 
 __all__ = [
+    "BenchmarkAttemptLedger",
+    "BenchmarkAttemptReceipt",
+    "BenchmarkAttemptStatus",
     "BenchmarkCorpusManifest",
+    "BenchmarkExecutionBinding",
     "BenchmarkFamilyManifest",
     "BenchmarkPhenomenon",
     "BenchmarkPrecommitPlan",
@@ -1645,8 +1649,10 @@ __all__ = [
     "REVEAL_CLAIM",
     "RUN_CLAIM",
     "SELECTION_RULE",
-    "reveal_holdout",
     "canonical_corpus_artifact_bytes",
-    "trajectory_content_digest",
+    "current_execution_binding",
+    "reveal_holdout",
     "run_precommitted_holdout",
+    "runtime_source_digests",
+    "trajectory_content_digest",
 ]

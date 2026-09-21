@@ -635,9 +635,8 @@ def validate_reload_directive(
 ) -> str:
     """Re-admit a transportable reload directive against durable current state.
 
-    A well-shaped ReloadDirective is not effect authority.  This check binds the
-    directive back to the exact pinned SaveState and current reload-required
-    evaluation receipt before any actuator receipt may be interpreted.
+    Pure state/restore-packet checks occur first. Durable evaluation, session, and
+    subject-currentness admission is then performed atomically by DriftLedger.
     """
     if type(directive) is not ReloadDirective:
         raise ValueError("directive must be exact ReloadDirective")
@@ -656,8 +655,6 @@ def validate_reload_directive(
         raise ValueError("reload directive subject digest mismatch")
     if directive.subject_epoch != expected_subject_epoch:
         raise ValueError("reload directive subject epoch mismatch")
-    if subject is not None:
-        ledger.assert_subject_current(subject)
 
     if directive.state_digest != state.digest:
         raise ValueError("reload directive state digest mismatch")
@@ -669,51 +666,23 @@ def validate_reload_directive(
     if directive.restore_packet_sha256 != expected_packet_digest:
         raise ValueError("reload directive restore packet digest mismatch")
 
-    durable = ledger.evaluation_receipt(
+    admission = ledger.admit_reload_directive_current(
         session_id=directive.session_id,
         evaluation_digest=directive.evaluation_digest,
+        state_digest=directive.state_digest,
+        turn_index=directive.turn_index,
+        expected_generation=directive.expected_generation,
+        subject=subject,
     )
-    if durable is None:
-        raise ValueError(
-            "reload directive requires durable ledger evaluation receipt"
-        )
     if (
-        durable.evaluation_digest != directive.evaluation_digest
-        or durable.state_digest != directive.state_digest
-        or durable.turn_index != directive.turn_index
-        or durable.generation_after != directive.expected_generation
-        or durable.generation_before + 1 != directive.expected_generation
-        or durable.reload_required is not True
-        or durable.subject_digest != directive.subject_digest
-        or durable.subject_epoch != directive.subject_epoch
+        admission.evaluation_digest != directive.evaluation_digest
+        or admission.state_digest != directive.state_digest
+        or admission.turn_index != directive.turn_index
+        or admission.expected_generation != directive.expected_generation
+        or admission.subject_digest != directive.subject_digest
+        or admission.subject_epoch != directive.subject_epoch
     ):
-        raise ValueError(
-            "reload directive does not match durable reload-required evaluation"
-        )
-
-    session = ledger.session_row(directive.session_id)
-    if session is None:
-        raise ValueError("reload directive requires current durable session")
-    if int(session["generation"]) != directive.expected_generation:
-        raise ValueError("reload directive is not current durable generation")
-    if session["last_evaluation_digest"] != directive.evaluation_digest:
-        raise ValueError("reload directive is not current durable evaluation")
-    if session["state_digest"] != directive.state_digest:
-        raise ValueError("reload directive current session state mismatch")
-    stored_subject_digest = (
-        str(session["subject_digest"])
-        if session["subject_digest"] is not None
-        else None
-    )
-    stored_subject_epoch = (
-        int(session["subject_epoch"])
-        if session["subject_epoch"] is not None
-        else None
-    )
-    if stored_subject_digest != directive.subject_digest:
-        raise ValueError("reload directive current session subject digest mismatch")
-    if stored_subject_epoch != directive.subject_epoch:
-        raise ValueError("reload directive current session subject epoch mismatch")
+        raise ValueError("atomic reload directive admission mismatch")
 
     return directive.digest
 

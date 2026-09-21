@@ -1082,7 +1082,7 @@ class BenchmarkAttemptLedger:
             db.execute(
                 """
                 CREATE INDEX IF NOT EXISTS benchmark_attempts_study_idx
-                    ON benchmark_attempts(study_id, rowid)
+                    ON benchmark_attempts(study_id)
                 """
             )
 

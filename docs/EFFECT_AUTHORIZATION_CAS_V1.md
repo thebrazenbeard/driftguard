@@ -161,6 +161,47 @@ Provider network I/O remains outside the SQLite transaction. Provider truth is
 represented locally only by the durable, exact provider-verification binding after
 external readback has completed.
 
+### Connection-scoped primitive requirement
+
+The exact PR #31 base matters here.
+
+At `9df4800d81ab2e937ffa97263b8095305a845661`,
+`DriftLedger.reload_currentness_readback()` opens its own SQLite connection and
+starts its own `BEGIN IMMEDIATE`. Public `validate_reload_directive()` calls that
+method.
+
+That behavior is correct for PR #31's standalone re-admission claim, but a future
+`reserve_effect_attempt(...)` **must not** call the public validator and then open a
+second transaction to write the reservation. That would recreate a validation-to-
+reservation race after the first transaction closes.
+
+Implementation therefore requires a connection-scoped internal primitive, for
+example:
+
+`_validate_reload_directive_in_tx(db, ...)`
+
+or an equivalent exact helper that:
+
+- receives the already-open DriftLedger connection;
+- performs subject/evaluation/session/current-generation checks on that connection;
+- returns the exact currentness/readback subject needed for reservation binding;
+- never commits, rolls back, or opens a nested/fresh connection itself.
+
+The public `validate_reload_directive()` may wrap that primitive in its own
+standalone transaction for compatibility. The effect-reservation path must call the
+connection-scoped primitive inside the same transaction that inserts the reservation
+and fence.
+
+The acknowledgement side has the same rule. The effect-aware acknowledgement
+consumer must not call public `DriftLedger.acknowledge_reload()`, because that
+method opens its own connection/transaction. Native acknowledgement validation and
+mutation must be extracted into or implemented as a connection-scoped primitive on
+the already-open effect-aware transaction.
+
+The required atomicity is therefore not merely "same database"; it is **same database,
+same connection, same transaction** for every local predicate and mutation in the
+claimed CAS.
+
 This requirement does not make SQLite a cross-host lock service and does not claim
 distributed consensus. A future multi-host/shared-database design requires a
 different concurrency/transaction contract.
@@ -247,7 +288,9 @@ choice must never manufacture retry authority.
 A future `reserve_effect_attempt(...)` operation should use one
 `BEGIN IMMEDIATE` transaction and:
 
-1. re-admit the exact reload directive using the same currentness facts as PR #31;
+1. re-admit the exact reload directive through the connection-scoped PR #31
+   currentness validator on this already-open transaction; do not call the standalone
+   public validator and then reserve in a second transaction;
 2. reject any unresolved reservation for that directive or bound
    session-generation/evaluation;
 3. verify no incompatible effect fence already exists for the session/subject;
@@ -506,7 +549,8 @@ That transaction must verify, inside the same snapshot:
 
 Only after every predicate matches may the transaction:
 
-1. apply the native reload acknowledgement semantics;
+1. apply the native reload acknowledgement semantics through the connection-scoped
+   acknowledgement primitive on this same SQLite connection;
 2. advance the reload anchor/session generation exactly once;
 3. transition the attempt to `CLOSED_ACKNOWLEDGED_APPLIED`;
 4. release the effect fence;
@@ -609,7 +653,14 @@ A future implementation should include at least these adversarial cases:
     session-generation advancement, and fence release commit or roll back together
     on one DriftLedger SQLite connection;
 33. injected failure between those local writes rolls back the entire transaction
-    with `VERIFIED_APPLIED_AWAITING_ACK` still authoritative and fenced.
+    with `VERIFIED_APPLIED_AWAITING_ACK` still authoritative and fenced;
+34. reservation admission that validates through a separate PR #31 readback
+    transaction and then writes the reservation in a second transaction is rejected;
+35. effect-aware acknowledgement that calls public `acknowledge_reload()` on a
+    separate connection is rejected;
+36. connection-scoped validation plus reservation insertion are exercised under a
+    concurrent session/subject writer and prove the writer cannot commit between
+    validation and fence acquisition.
 
 ## Relationship to Discovery effect-envelope work
 

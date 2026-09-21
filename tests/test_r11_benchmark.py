@@ -521,6 +521,18 @@ class R11BenchmarkTests(unittest.TestCase):
         )
         self.assertEqual(BenchmarkAttemptStatus.EXECUTED, durable.status)
         self.assertEqual(result.receipt.digest, durable.run_digest)
+        history = self.registry.attempt_history(
+            attempt_id=plan.attempt_id,
+        )
+        self.assertEqual(
+            (
+                BenchmarkAttemptStatus.SEALED.value,
+                BenchmarkAttemptStatus.REVEALED.value,
+                BenchmarkAttemptStatus.EXECUTING.value,
+                BenchmarkAttemptStatus.EXECUTED.value,
+            ),
+            tuple(item["status"] for item in history),
+        )
         with self.assertRaisesRegex(
             ValueError,
             "must be REVEALED",
@@ -539,6 +551,15 @@ class R11BenchmarkTests(unittest.TestCase):
         reopened = BenchmarkAttemptLedger(self.path)
         readback = reopened.attempt_receipt(attempt_id=plan.attempt_id)
         self.assertEqual(aborted, readback)
+        history = reopened.attempt_history(attempt_id=plan.attempt_id)
+        self.assertEqual(
+            (
+                BenchmarkAttemptStatus.SEALED.value,
+                BenchmarkAttemptStatus.REVEALED.value,
+                BenchmarkAttemptStatus.ABORTED.value,
+            ),
+            tuple(item["status"] for item in history),
+        )
 
     def test_successor_attempt_without_predecessor_reference_is_rejected(self):
         first, _, first_holdout, _ = self.seal()
@@ -602,6 +623,30 @@ class R11BenchmarkTests(unittest.TestCase):
         self.assertEqual(
             (terminal.digest,),
             sealed.predecessor_attempt_digests,
+        )
+
+    def test_execution_claim_is_single_use_before_comparison(self):
+        plan, _, holdout, _ = self.seal()
+        reveal = self.reveal(plan, holdout)
+        executing = self.registry.begin_execution(
+            precommit=plan,
+            reveal=reveal,
+        )
+        self.assertEqual(
+            BenchmarkAttemptStatus.EXECUTING,
+            executing.status,
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "must be REVEALED",
+        ):
+            self.registry.begin_execution(
+                precommit=plan,
+                reveal=reveal,
+            )
+        self.registry.invalidate_attempt(
+            attempt_id=plan.attempt_id,
+            reason="test cleanup after execution claim",
         )
 
     def test_execution_binding_change_after_seal_blocks_reveal(self):

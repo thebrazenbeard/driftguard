@@ -117,7 +117,7 @@ class BenchmarkExecutionBinding:
 
     def payload(self) -> dict[str, Any]:
         return {
-            "schema": "DRIFTGUARD_BENCHMARK_EXECUTION_BINDING_V1",
+            "schema": "DRIFTGUARD_BENCHMARK_EXECUTION_BINDING_V2",
             "repository": self.repository,
             "commit_sha": self.commit_sha,
             "schema_version": self.schema_version,
@@ -165,7 +165,7 @@ def current_execution_binding(
     *,
     repository: str,
     commit_sha: str,
-    schema_version: str = "DRIFTGUARD_R11_ATTEMPT_GOVERNANCE_V2",
+    schema_version: str = "DRIFTGUARD_R11_ATTEMPT_GOVERNANCE_V3",
 ) -> BenchmarkExecutionBinding:
     (
         benchmark_digest,

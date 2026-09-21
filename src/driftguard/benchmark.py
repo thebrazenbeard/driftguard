@@ -1843,6 +1843,10 @@ def run_precommitted_holdout(
             run_claim=RUN_CLAIM,
             _run_token=_RUN_RECEIPT_TOKEN,
         )
+        result = BenchmarkRunResult(
+            receipt=receipt,
+            comparison=comparison,
+        )
     except Exception as exc:
         registry.invalidate_attempt(
             attempt_id=precommit.attempt_id,
@@ -1858,10 +1862,7 @@ def run_precommitted_holdout(
         reveal=reveal,
         run=receipt,
     )
-    return BenchmarkRunResult(
-        receipt=receipt,
-        comparison=comparison,
-    )
+    return result
 
 
 __all__ = [

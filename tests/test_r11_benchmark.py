@@ -346,7 +346,7 @@ class R11BenchmarkTests(unittest.TestCase):
             artifact_bytes=canonical_corpus_artifact_bytes(holdout),
         )
 
-    def run(self, plan, spec, holdout, reveal):
+    def execute_holdout(self, plan, spec, holdout, reveal):
         return run_precommitted_holdout(
             registry=self.registry,
             precommit=plan,
@@ -515,7 +515,7 @@ class R11BenchmarkTests(unittest.TestCase):
     def test_run_replay_is_rejected(self):
         plan, spec, holdout, _ = self.seal()
         reveal = self.reveal(plan, holdout)
-        result = self.run(plan, spec, holdout, reveal)
+        result = self.execute_holdout(plan, spec, holdout, reveal)
         durable = self.registry.attempt_receipt(
             attempt_id=plan.attempt_id,
         )
@@ -525,7 +525,7 @@ class R11BenchmarkTests(unittest.TestCase):
             ValueError,
             "must be REVEALED",
         ):
-            self.run(plan, spec, holdout, reveal)
+            self.execute_holdout(plan, spec, holdout, reveal)
 
     def test_revealed_attempt_can_be_aborted_but_history_remains(self):
         plan, _, holdout, _ = self.seal()
@@ -641,7 +641,7 @@ class R11BenchmarkTests(unittest.TestCase):
     def test_exact_precommitted_holdout_executes_r10_without_promotion(self):
         plan, spec, holdout, _ = self.seal()
         reveal = self.reveal(plan, holdout)
-        result = self.run(plan, spec, holdout, reveal)
+        result = self.execute_holdout(plan, spec, holdout, reveal)
         self.assertFalse(result.receipt.promotion_authorized)
         self.assertFalse(result.comparison.promotion_authorized)
         self.assertEqual(RUN_CLAIM, result.receipt.run_claim)
@@ -668,7 +668,7 @@ class R11BenchmarkTests(unittest.TestCase):
             ValueError,
             "CUSUM spec digest mismatch",
         ):
-            self.run(plan, changed_spec, holdout, reveal)
+            self.execute_holdout(plan, changed_spec, holdout, reveal)
         durable = self.registry.attempt_receipt(
             attempt_id=plan.attempt_id,
         )

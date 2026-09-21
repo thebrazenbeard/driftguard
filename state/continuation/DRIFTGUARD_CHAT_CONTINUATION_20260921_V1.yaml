@@ -1,0 +1,63 @@
+schema: DRIFTGUARD_CHAT_CONTINUATION_V1
+saved_date: "2026-09-21"
+repository: thebrazenbeard/driftguard
+state_branch: state/driftguard-chat-continuation-20260921-v1
+canonical_main:
+  branch: main
+  head_at_save: 9894692ff6b549e4378bcc2b8ca46813ff18bf37
+primary:
+  path: state/continuation/DRIFTGUARD_CHAT_CONTINUATION_20260921_V1.md
+  creation_commit: 7f8a08b063e895d4265dd88d6569086031328dd1
+backup:
+  path: state/continuation/backups/DRIFTGUARD_CHAT_CONTINUATION_20260921_V1_BACKUP.md
+  creation_commit: b702b130bf9179de5aef27e87c4702275ccaed55
+active_subjects:
+  pr31:
+    pr: 31
+    branch: bt2/effect-currentness-snapshot-v1-20260921
+    head: 9df4800d81ab2e937ffa97263b8095305a845661
+    disposition: PASS_WITH_CLAIM_CEILING
+    independent_vera_review: true
+    test_count: 246
+  pr32:
+    pr: 32
+    head: fb810b21612e6c1a935ff108602f76f4fbdaaf68
+    disposition: CHANGES_REQUIRED_DESIGN
+    next_design_frontier: durable_effect_authorization_CAS
+  pr34:
+    pr: 34
+    branch: bt2/r11-governed-benchmark-final-v4
+    base: 9df4800d81ab2e937ffa97263b8095305a845661
+    head: 351b7a57b7213bd72cf881aa2bbaa449fb0fbc8f
+    self_review_disposition: PASS_WITH_CLAIM_CEILING
+    independent_current_head_disposition: PENDING_AT_SAVE
+    test_count: 279
+    exact_current_head_review_required: true
+review_history:
+  pr34_25874ad:
+    head: 25874ad9d937ad47ed017fb46ce90f038292b813
+    disposition: CHANGES_REQUIRED
+    blockers:
+      - execution binding omitted sequential.py
+      - post_EXECUTING semantic failure coverage too narrow
+  pr34_1f477980:
+    head: 1f4779800a9f45ae0a499823c7c1757f7103e4ab
+    disposition: CHANGES_REQUIRED
+    blocker: public abort/invalidate could terminalize EXECUTING and restore retry authority
+  pr34_351b7a57:
+    head: 351b7a57b7213bd72cf881aa2bbaa449fb0fbc8f
+    self_review_disposition: PASS_WITH_CLAIM_CEILING
+    independent_vera_review: pending_at_save
+bus_anchors:
+  - messages/20260921T0526-0400-vera-to-bt2-driftguard-pr31-pass.md
+  - messages/20260921T0534-0400-vera-to-bt2-driftguard-pr32-design-review.md
+  - messages/20260921T0518-0400-vera-to-bt2-driftguard-pr34-r11-review-return.md
+  - messages/20260921-vera-unbound-to-bt2-driftguard-pr34-1f47798-rereview.md
+  - messages/20260921-bt2-to-vera-driftguard-pr34-351b7a5-final-rereview.md
+next_actions:
+  - fresh_check_main_pr31_pr32_pr34_and_bus
+  - require_exact_current_head_review_for_pr34_351b7a57
+  - never_transfer_pass_across_head_movement
+  - do_not_treat_self_review_as_independent
+  - after_pr34_disposition_resume_pr32_effect_CAS_design
+protected_effects_authorized: false

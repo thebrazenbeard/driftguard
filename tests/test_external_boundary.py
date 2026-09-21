@@ -37,7 +37,7 @@ from driftguard.external_boundary import (
     validate_evaluator_response,
     validate_reload_directive,
 )
-from driftguard.ledger import CommitResult, DriftLedger
+from driftguard.ledger import CommitResult, DriftLedger, ReloadCurrentnessReadback
 from driftguard.model import raw_bytes_digest
 
 
@@ -501,6 +501,30 @@ class ExternalActuatorBoundaryTests(LedgerHarness):
                 ),
                 state=self.s,
                 ledger=self.ledger,
+            )
+
+    def test_reload_currentness_readback_cannot_be_directly_constructed(self):
+        with self.assertRaisesRegex(
+            ValueError,
+            "must come from DriftLedger.reload_currentness_readback",
+        ):
+            ReloadCurrentnessReadback(
+                session_id="session",
+                evaluation_digest="a" * 64,
+                state_digest="b" * 64,
+                evaluation_generation_before=0,
+                evaluation_generation_after=1,
+                evaluation_turn_index=1,
+                evaluation_reload_required=True,
+                session_generation=1,
+                session_last_evaluation_digest="a" * 64,
+                evaluation_subject_digest=None,
+                evaluation_subject_epoch=None,
+                session_subject_digest=None,
+                session_subject_epoch=None,
+                current_subject_id=None,
+                current_subject_digest=None,
+                current_subject_epoch=None,
             )
 
     def test_reload_currentness_readback_binds_one_snapshot(self):

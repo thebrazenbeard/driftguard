@@ -126,3 +126,32 @@ This source does not:
 - deploy a service;
 - mutate a provider;
 - merge any PR.
+
+## Atomic reload-currentness readback
+
+Directive construction and directive re-admission read subject currentness, the durable
+evaluation event, and the durable session row through one explicit SQLite read
+transaction.
+
+The ledger emits a digest-bearing `ReloadCurrentnessReadback` whose claim is exactly:
+
+`SINGLE_SQLITE_READ_TRANSACTION_SNAPSHOT_ONLY`
+
+That receipt binds the evaluation generation/turn/state, session generation/latest
+evaluation, and the evaluation/session/current-subject bindings observed in that one
+snapshot.
+
+This closes an intra-validation inconsistency where separate database connections
+could observe different durable generations or subject epochs during one logical
+currentness check.
+
+The claim ceiling is strict:
+
+- the receipt does **not** prove the snapshot stayed current after the read transaction ended;
+- the receipt does **not** authorize an actuator/provider effect;
+- a future effect-authorizing adapter must still re-admit/CAS currentness at its
+  authorization boundary rather than treating an older snapshot digest as permanent
+  authority;
+- generic `APPLIED`, `NOT_APPLIED`, and `UNKNOWN` receipts remain
+  `READBACK_REQUIRED` and cannot manufacture a reload acknowledgement.
+

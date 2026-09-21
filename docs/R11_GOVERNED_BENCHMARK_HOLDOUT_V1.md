@@ -209,11 +209,25 @@ A successful attempt therefore leaves:
 
 `SEALED -> REVEALED -> EXECUTING -> EXECUTED`
 
-An abandoned revealed attempt can leave:
+An abandoned pre-execution attempt can leave:
+
+`SEALED -> ABORTED`
+
+or:
 
 `SEALED -> REVEALED -> ABORTED`
 
-A semantic execution failure after the single-use execution claim triggers a durable `INVALIDATED` transition. If that terminalization write is ambiguous, retry authority is not restored; the attempt requires durable reconciliation.
+Once an attempt reaches `EXECUTING`, ordinary operator abort/invalidate APIs can no
+longer make it terminal. The execution claim has consumed retry authority.
+
+A known semantic execution failure inside the governed run path may transition
+`EXECUTING -> INVALIDATED` only through the factory-gated semantic-failure
+transition bound to the exact precommit, reveal receipt, and execution binding.
+
+If completion, storage, or reconciliation is ambiguous after the execution claim,
+the attempt remains `EXECUTING`. R11 V2 provides no operator reason-string escape
+from that state. A future resolution would require a separately typed reconciliation
+protocol; until then the active attempt blocks a successor.
 
 ## One active attempt per study, per ledger
 
@@ -289,9 +303,17 @@ Immediately before detector comparison, the ledger atomically claims:
 
 A concurrent or replayed execution can no longer reach the comparison path after that claim is consumed.
 
-Any semantic exception after the execution claim and before durable completion—
-including detector comparison, non-promotion enforcement, run-receipt construction,
-or result-integrity validation—triggers a durable `INVALIDATED` transition.
+Any known semantic exception after the execution claim and before durable
+completion—including detector comparison, non-promotion enforcement, run-receipt
+construction, or result-integrity validation—uses the internal factory-gated
+semantic-failure path to attempt a durable `INVALIDATED` transition.
+
+Public `abort_attempt()` and `invalidate_attempt()` are limited to pre-execution
+`SEALED` / `REVEALED` states. They cannot resolve `EXECUTING`.
+
+If semantic-failure invalidation or durable completion is itself ambiguous, R11 does
+not infer safe retry. The attempt remains active/ambiguous until separately
+reconciled.
 
 If that invalidation write itself fails ambiguously, R11 does not infer that
 invalidation succeeded and does not restore retry authority; the attempt remains

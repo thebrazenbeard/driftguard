@@ -30,6 +30,7 @@ from .sequential import SequentialDetectorSpec
 _REVEAL_RECEIPT_TOKEN = object()
 _RUN_RECEIPT_TOKEN = object()
 _ATTEMPT_RECEIPT_TOKEN = object()
+_SEMANTIC_FAILURE_INVALIDATION_TOKEN = object()
 
 
 def _nonempty(value: Any, label: str) -> str:
@@ -1710,13 +1711,19 @@ class BenchmarkAttemptLedger:
             if row is None:
                 raise ValueError("benchmark attempt not found")
             current = self._row_to_receipt(row)
+            if current.status is BenchmarkAttemptStatus.EXECUTING:
+                raise ValueError(
+                    "EXECUTING attempt cannot be operator-aborted/invalidated; "
+                    "semantic failure requires the bound run path and ambiguous "
+                    "execution requires separate reconciliation"
+                )
             if current.status not in {
                 BenchmarkAttemptStatus.SEALED,
                 BenchmarkAttemptStatus.REVEALED,
-                BenchmarkAttemptStatus.EXECUTING,
             }:
                 raise ValueError(
-                    "only active benchmark attempt can be aborted/invalidated"
+                    "only pre-execution active benchmark attempt can be "
+                    "aborted/invalidated"
                 )
             db.execute(
                 """
@@ -1739,6 +1746,130 @@ class BenchmarkAttemptLedger:
             row = db.execute(
                 "SELECT * FROM benchmark_attempts WHERE attempt_id=?",
                 (attempt_id,),
+            ).fetchone()
+            return self._row_to_receipt(row)
+
+    def _invalidate_execution_failure(
+        self,
+        *,
+        precommit: BenchmarkPrecommitPlan,
+        reveal: HoldoutRevealReceipt,
+        execution_binding: BenchmarkExecutionBinding,
+        reason: str,
+        _semantic_failure_token: object | None = None,
+    ) -> BenchmarkAttemptReceipt:
+        """Terminalize one exact EXECUTING attempt after known semantic failure.
+
+        This is an API-governance transition used only by the governed run path.
+        It is deliberately unavailable as generic ambiguity/retry resolution.
+        """
+        if (
+            _semantic_failure_token
+            is not _SEMANTIC_FAILURE_INVALIDATION_TOKEN
+        ):
+            raise ValueError(
+                "execution failure invalidation requires governed run capability"
+            )
+        if type(precommit) is not BenchmarkPrecommitPlan:
+            raise ValueError(
+                "precommit must be exact BenchmarkPrecommitPlan"
+            )
+        if type(reveal) is not HoldoutRevealReceipt:
+            raise ValueError("reveal must be exact HoldoutRevealReceipt")
+        if type(execution_binding) is not BenchmarkExecutionBinding:
+            raise ValueError(
+                "execution_binding must be exact BenchmarkExecutionBinding"
+            )
+        if execution_binding != precommit.execution_binding:
+            raise ValueError(
+                "execution failure binding does not match precommit"
+            )
+        execution_binding.assert_runtime_sources_match()
+        self._assert_reveal_matches_precommit(
+            precommit=precommit,
+            reveal=reveal,
+        )
+        _nonempty(reason, "execution semantic-failure reason")
+
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.row_factory = sqlite3.Row
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT * FROM benchmark_attempts WHERE attempt_id=?",
+                (precommit.attempt_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError("benchmark attempt not found")
+            current = self._row_to_receipt(row)
+            if current.study_id != precommit.study_id:
+                raise ValueError(
+                    "execution failure study id mismatch"
+                )
+            if current.precommit_id != precommit.precommit_id:
+                raise ValueError(
+                    "execution failure precommit id mismatch"
+                )
+            if current.precommit_digest != precommit.digest:
+                raise ValueError(
+                    "execution failure precommit digest mismatch"
+                )
+            if (
+                current.execution_binding_digest
+                != execution_binding.digest
+            ):
+                raise ValueError(
+                    "execution failure execution binding mismatch"
+                )
+            if current.status is not BenchmarkAttemptStatus.EXECUTING:
+                raise ValueError(
+                    "execution failure invalidation requires exact EXECUTING attempt"
+                )
+            if current.reveal_digest != reveal.digest:
+                raise ValueError(
+                    "execution failure reveal digest mismatch"
+                )
+            updated = db.execute(
+                """
+                UPDATE benchmark_attempts
+                   SET status=?, reason=?
+                 WHERE attempt_id=?
+                   AND study_id=?
+                   AND precommit_id=?
+                   AND precommit_digest=?
+                   AND execution_binding_digest=?
+                   AND status=?
+                   AND reveal_digest=?
+                   AND run_digest IS NULL
+                """,
+                (
+                    BenchmarkAttemptStatus.INVALIDATED.value,
+                    reason,
+                    precommit.attempt_id,
+                    precommit.study_id,
+                    precommit.precommit_id,
+                    precommit.digest,
+                    execution_binding.digest,
+                    BenchmarkAttemptStatus.EXECUTING.value,
+                    reveal.digest,
+                ),
+            )
+            if updated.rowcount != 1:
+                raise ValueError(
+                    "execution failure invalidation is stale or mismatched"
+                )
+            self._append_event(
+                db,
+                attempt_id=precommit.attempt_id,
+                study_id=precommit.study_id,
+                precommit_digest=precommit.digest,
+                status=BenchmarkAttemptStatus.INVALIDATED,
+                reveal_digest=reveal.digest,
+                run_digest=None,
+                reason=reason,
+            )
+            row = db.execute(
+                "SELECT * FROM benchmark_attempts WHERE attempt_id=?",
+                (precommit.attempt_id,),
             ).fetchone()
             return self._row_to_receipt(row)
 
@@ -1929,9 +2060,12 @@ def run_precommitted_holdout(
             comparison=comparison,
         )
     except Exception as exc:
-        registry.invalidate_attempt(
-            attempt_id=precommit.attempt_id,
+        registry._invalidate_execution_failure(
+            precommit=precommit,
+            reveal=reveal,
+            execution_binding=execution_binding,
             reason=f"semantic_execution_failed:{type(exc).__name__}",
+            _semantic_failure_token=_SEMANTIC_FAILURE_INVALIDATION_TOKEN,
         )
         raise
 

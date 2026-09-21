@@ -3,6 +3,7 @@ import sqlite3
 from contextlib import closing
 import tempfile
 import unittest
+from unittest.mock import patch
 from dataclasses import replace
 from hashlib import sha256
 
@@ -501,6 +502,106 @@ class ExternalActuatorBoundaryTests(LedgerHarness):
                 state=self.s,
                 ledger=self.ledger,
             )
+
+    def test_reload_currentness_readback_binds_one_snapshot(self):
+        commit = self.reload_commit()
+        evaluation, session, readback = self.ledger.reload_currentness_readback(
+            session_id="session",
+            evaluation_digest=commit.evaluation.digest,
+        )
+        self.assertIsNotNone(evaluation)
+        self.assertIsNotNone(session)
+        self.assertIsNotNone(readback)
+        self.assertEqual(commit.evaluation.digest, readback.evaluation_digest)
+        self.assertEqual(self.s.digest, readback.state_digest)
+        self.assertEqual(
+            commit.successor_generation,
+            readback.session_generation,
+        )
+        self.assertEqual(
+            commit.evaluation.digest,
+            readback.session_last_evaluation_digest,
+        )
+        self.assertEqual(
+            "SINGLE_SQLITE_READ_TRANSACTION_SNAPSHOT_ONLY",
+            readback.snapshot_claim,
+        )
+        self.assertEqual(64, len(readback.digest))
+
+        before = readback.digest
+        self.ledger.acknowledge_reload(
+            session_id="session",
+            state=self.s,
+            acknowledgement=ReloadAcknowledgement(
+                "ack-currentness-snapshot",
+                commit.evaluation.digest,
+                self.s.digest,
+                commit.evaluation.turn_index,
+            ),
+            expected_generation=commit.successor_generation,
+        )
+        _, _, moved = self.ledger.reload_currentness_readback(
+            session_id="session",
+            evaluation_digest=commit.evaluation.digest,
+        )
+        self.assertIsNotNone(moved)
+        self.assertNotEqual(before, moved.digest)
+        self.assertEqual(
+            commit.successor_generation + 1,
+            moved.session_generation,
+        )
+
+    def test_build_reload_directive_uses_one_currentness_connection(self):
+        commit = self.reload_commit()
+        original_connect = self.ledger._connect
+        calls = 0
+
+        def counted_connect():
+            nonlocal calls
+            calls += 1
+            return original_connect()
+
+        with patch.object(
+            self.ledger,
+            "_connect",
+            side_effect=counted_connect,
+        ):
+            directive = build_reload_directive(
+                session_id="session",
+                commit=commit,
+                ledger=self.ledger,
+            )
+        self.assertEqual(1, calls)
+        self.assertEqual(commit.evaluation.digest, directive.evaluation_digest)
+
+    def test_validate_reload_directive_uses_one_currentness_connection(self):
+        directive = build_reload_directive(
+            session_id="session",
+            commit=self.reload_commit(),
+            ledger=self.ledger,
+        )
+        original_connect = self.ledger._connect
+        calls = 0
+
+        def counted_connect():
+            nonlocal calls
+            calls += 1
+            return original_connect()
+
+        with patch.object(
+            self.ledger,
+            "_connect",
+            side_effect=counted_connect,
+        ):
+            self.assertEqual(
+                directive.digest,
+                validate_reload_directive(
+                    directive=directive,
+                    state=self.s,
+                    ledger=self.ledger,
+                ),
+            )
+        self.assertEqual(1, calls)
 
     def test_validate_reload_directive_accepts_factory_directive(self):
         directive = build_reload_directive(

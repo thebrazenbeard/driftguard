@@ -1469,13 +1469,45 @@ class BenchmarkAttemptLedger:
 
 def reveal_holdout(
     *,
+    registry: BenchmarkAttemptLedger,
     precommit: BenchmarkPrecommitPlan,
+    execution_binding: BenchmarkExecutionBinding,
     manifest: BenchmarkCorpusManifest,
     corpus: CalibrationCorpus,
     artifact_bytes: bytes,
 ) -> HoldoutRevealReceipt:
+    if type(registry) is not BenchmarkAttemptLedger:
+        raise ValueError("registry must be exact BenchmarkAttemptLedger")
+    if type(registry) is not BenchmarkAttemptLedger:
+        raise ValueError("registry must be exact BenchmarkAttemptLedger")
     if type(precommit) is not BenchmarkPrecommitPlan:
         raise ValueError("precommit must be exact BenchmarkPrecommitPlan")
+    if type(execution_binding) is not BenchmarkExecutionBinding:
+        raise ValueError(
+            "execution_binding must be exact BenchmarkExecutionBinding"
+        )
+    if execution_binding != precommit.execution_binding:
+        raise ValueError(
+            "run execution binding does not match precommit"
+        )
+    execution_binding.assert_runtime_sources_match()
+    current_attempt = registry._assert_exact_precommit(
+        precommit=precommit,
+        required_status=BenchmarkAttemptStatus.REVEALED,
+    )
+    if type(execution_binding) is not BenchmarkExecutionBinding:
+        raise ValueError(
+            "execution_binding must be exact BenchmarkExecutionBinding"
+        )
+    if execution_binding != precommit.execution_binding:
+        raise ValueError(
+            "reveal execution binding does not match precommit"
+        )
+    execution_binding.assert_runtime_sources_match()
+    registry._assert_exact_precommit(
+        precommit=precommit,
+        required_status=BenchmarkAttemptStatus.SEALED,
+    )
     if type(manifest) is not BenchmarkCorpusManifest:
         raise ValueError("manifest must be exact BenchmarkCorpusManifest")
     if type(corpus) is not CalibrationCorpus:
@@ -1496,8 +1528,11 @@ def reveal_holdout(
     observed_artifact_digest = sha256(artifact_bytes).hexdigest()
     if observed_artifact_digest != manifest.artifact_digest:
         raise ValueError("revealed holdout artifact digest mismatch")
-    return HoldoutRevealReceipt(
+    receipt = HoldoutRevealReceipt(
+        study_id=precommit.study_id,
+        attempt_id=precommit.attempt_id,
         precommit_digest=precommit.digest,
+        execution_binding_digest=execution_binding.digest,
         seal_digest=seal.digest,
         manifest_digest=manifest.digest,
         corpus_digest=corpus.digest,
@@ -1505,11 +1540,18 @@ def reveal_holdout(
         reveal_claim=REVEAL_CLAIM,
         _reveal_token=_REVEAL_RECEIPT_TOKEN,
     )
+    registry.mark_revealed(
+        precommit=precommit,
+        reveal=receipt,
+    )
+    return receipt
 
 
 def run_precommitted_holdout(
     *,
+    registry: BenchmarkAttemptLedger,
     precommit: BenchmarkPrecommitPlan,
+    execution_binding: BenchmarkExecutionBinding,
     reveal: HoldoutRevealReceipt,
     manifest: BenchmarkCorpusManifest,
     corpus: CalibrationCorpus,
@@ -1525,8 +1567,16 @@ def run_precommitted_holdout(
         raise ValueError("corpus must be exact CalibrationCorpus")
     if type(cusum_spec) is not SequentialDetectorSpec:
         raise ValueError("cusum_spec must be exact SequentialDetectorSpec")
+    if reveal.study_id != precommit.study_id:
+        raise ValueError("benchmark reveal study id mismatch")
+    if reveal.attempt_id != precommit.attempt_id:
+        raise ValueError("benchmark reveal attempt id mismatch")
     if reveal.precommit_digest != precommit.digest:
         raise ValueError("benchmark reveal/precommit digest mismatch")
+    if reveal.execution_binding_digest != execution_binding.digest:
+        raise ValueError("benchmark reveal execution binding mismatch")
+    if current_attempt.reveal_digest != reveal.digest:
+        raise ValueError("benchmark durable reveal digest mismatch")
     if reveal.seal_digest != precommit.holdout_seal.digest:
         raise ValueError("benchmark reveal/seal digest mismatch")
     if reveal.manifest_digest != manifest.digest:
@@ -1552,7 +1602,10 @@ def run_precommitted_holdout(
             "R10 comparison unexpectedly authorized promotion"
         )
     receipt = BenchmarkRunReceipt(
+        study_id=precommit.study_id,
+        attempt_id=precommit.attempt_id,
         precommit_digest=precommit.digest,
+        execution_binding_digest=execution_binding.digest,
         reveal_digest=reveal.digest,
         calibration_plan_digest=calibration_plan.digest,
         comparison_plan_digest=comparison_plan.digest,
@@ -1560,6 +1613,11 @@ def run_precommitted_holdout(
         promotion_authorized=False,
         run_claim=RUN_CLAIM,
         _run_token=_RUN_RECEIPT_TOKEN,
+    )
+    registry.mark_executed(
+        precommit=precommit,
+        reveal=reveal,
+        run=receipt,
     )
     return BenchmarkRunResult(
         receipt=receipt,

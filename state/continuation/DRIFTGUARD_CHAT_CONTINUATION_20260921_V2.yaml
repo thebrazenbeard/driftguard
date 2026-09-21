@@ -1,0 +1,38 @@
+schema: DRIFTGUARD_CHAT_CONTINUATION_V2
+saved_at_local: "2026-09-21T15:23:00-04:00"
+repository: thebrazenbeard/driftguard
+continuation_branch: state/driftguard-chat-continuation-20260921-v2
+canonical_main_at_save: 9894692ff6b549e4378bcc2b8ca46813ff18bf37
+primary:
+  path: state/continuation/DRIFTGUARD_CHAT_CONTINUATION_20260921_V2.md
+  git_blob: c3100b4b52e746f86bafb3118736f6dbb4039f2d
+backup:
+  path: state/continuation/backups/DRIFTGUARD_CHAT_CONTINUATION_20260921_V2_BACKUP.md
+  git_blob: c3100b4b52e746f86bafb3118736f6dbb4039f2d
+predecessor:
+  branch: state/driftguard-chat-continuation-20260921-v1
+  head: 73946c9e0b3025dd21322c6cb589d488dac0ea7b
+live_parallel_bus:
+  repository: thebrazenbeard/chat-communication-bus
+  vera_lane: bus/vera-v2
+  bt2_lane: bus/bt2-v1
+current_exact_heads:
+  pr_31_atomic_currentness: 9df4800d81ab2e937ffa97263b8095305a845661
+  pr_32_effect_cas_design: 8a81745b24278e6e2e948115ae6ff3ada56c250b
+  pr_34_r11_final: 351b7a57b7213bd72cf881aa2bbaa449fb0fbc8f
+controlling_verdicts:
+  pr_31: PASS_WITH_CLAIM_CEILING
+  pr_32: CHANGES_REQUIRED_DESIGN
+  pr_34: CHANGES_REQUIRED
+next_blockers:
+  pr_32:
+    - atomic one-shot DispatchPermit consumption before network I/O
+    - second sequential/concurrent use must fail before send
+    - no serialization/copy reconstruction or reissue
+    - crash after consume before send remains DISPATCH_UNCERTAIN
+  pr_34:
+    - only typed deterministic semantic failures may invalidate EXECUTING
+    - runtime/infrastructure/unknown exceptions must remain EXECUTING
+    - successor attempts stay blocked under ambiguous execution
+restore_rule: "Fresh-check main, exact PR heads/reviews/CI, and Bus before relying on this snapshot."
+protected_effects_performed_by_save: []

@@ -1695,6 +1695,76 @@ class DriftLedger:
                 restore_anchor_turn=acknowledgement.turn_index,
             )
 
+    @staticmethod
+    def _evaluation_row_to_receipt(
+        row: sqlite3.Row,
+    ) -> EvaluationEventReceipt:
+        return EvaluationEventReceipt(
+            session_id=str(row["session_id"]),
+            generation_before=int(row["generation_before"]),
+            generation_after=int(row["generation_after"]),
+            turn_index=int(row["turn_index"]),
+            state_digest=str(row["state_digest"]),
+            observation_digest=(
+                str(row["observation_digest"])
+                if row["observation_digest"] is not None
+                else None
+            ),
+            evidence_digest=str(row["evidence_digest"]),
+            evaluation_digest=str(row["evaluation_digest"]),
+            decision=Decision(str(row["decision"])),
+            reload_required=bool(row["reload_required"]),
+            aggregate_drift=(
+                float(row["aggregate_drift"])
+                if row["aggregate_drift"] is not None
+                else None
+            ),
+            reasons=tuple(
+                item
+                for item in str(row["reasons"]).split("|")
+                if item
+            ),
+            dimension_scores=(
+                tuple(
+                    (str(item[0]), float(item[1]))
+                    for item in json.loads(str(row["dimension_scores"]))
+                )
+                if row["dimension_scores"] is not None
+                else ()
+            ),
+            behavioral_decision=(
+                Decision(str(row["behavioral_decision"]))
+                if row["behavioral_decision"] is not None
+                else None
+            ),
+            evidence_trace=(
+                tuple(
+                    (
+                        str(item[0]),
+                        str(item[1]),
+                        str(item[2]),
+                        str(item[3]),
+                        float(item[4]),
+                        str(item[5]),
+                        str(item[6]),
+                    )
+                    for item in json.loads(str(row["evidence_trace"]))
+                )
+                if row["evidence_trace"] is not None
+                else ()
+            ),
+            subject_digest=(
+                str(row["subject_digest"])
+                if row["subject_digest"] is not None
+                else None
+            ),
+            subject_epoch=(
+                int(row["subject_epoch"])
+                if row["subject_epoch"] is not None
+                else None
+            ),
+        )
+
     def evaluation_receipt(
         self,
         *,
@@ -1712,73 +1782,103 @@ class DriftLedger:
                 """,
                 (session_id, evaluation_digest),
             ).fetchone()
-            if row is None:
-                return None
-            return EvaluationEventReceipt(
-                session_id=str(row["session_id"]),
-                generation_before=int(row["generation_before"]),
-                generation_after=int(row["generation_after"]),
-                turn_index=int(row["turn_index"]),
-                state_digest=str(row["state_digest"]),
-                observation_digest=(
-                    str(row["observation_digest"])
-                    if row["observation_digest"] is not None
-                    else None
-                ),
-                evidence_digest=str(row["evidence_digest"]),
-                evaluation_digest=str(row["evaluation_digest"]),
-                decision=Decision(str(row["decision"])),
-                reload_required=bool(row["reload_required"]),
-                aggregate_drift=(
-                    float(row["aggregate_drift"])
-                    if row["aggregate_drift"] is not None
-                    else None
-                ),
-                reasons=tuple(
-                    item
-                    for item in str(row["reasons"]).split("|")
-                    if item
-                ),
-                dimension_scores=(
-                    tuple(
-                        (str(item[0]), float(item[1]))
-                        for item in json.loads(str(row["dimension_scores"]))
-                    )
-                    if row["dimension_scores"] is not None
-                    else ()
-                ),
-                behavioral_decision=(
-                    Decision(str(row["behavioral_decision"]))
-                    if row["behavioral_decision"] is not None
-                    else None
-                ),
-                evidence_trace=(
-                    tuple(
-                        (
-                            str(item[0]),
-                            str(item[1]),
-                            str(item[2]),
-                            str(item[3]),
-                            float(item[4]),
-                            str(item[5]),
-                            str(item[6]),
-                        )
-                        for item in json.loads(str(row["evidence_trace"]))
-                    )
-                    if row["evidence_trace"] is not None
-                    else ()
-                ),
-                subject_digest=(
-                    str(row["subject_digest"])
-                    if row["subject_digest"] is not None
-                    else None
-                ),
-                subject_epoch=(
-                    int(row["subject_epoch"])
-                    if row["subject_epoch"] is not None
-                    else None
-                ),
+            return (
+                self._evaluation_row_to_receipt(row)
+                if row is not None
+                else None
             )
+
+    def reload_currentness_readback(
+        self,
+        *,
+        session_id: str,
+        evaluation_digest: str,
+        subject: MonitoredSubject | None = None,
+    ) -> tuple[
+        EvaluationEventReceipt | None,
+        dict | None,
+        ReloadCurrentnessReadback | None,
+    ]:
+        """Read reload effect-currentness inputs from one SQLite snapshot.
+
+        This receipt is consistency evidence only.  It does not authorize a
+        provider effect and it does not prove that the snapshot remained current
+        after this read transaction ended.
+        """
+        if type(session_id) is not str or not session_id.strip():
+            raise ValueError("session_id must be a non-empty exact string")
+        require_sha256_digest(evaluation_digest, "evaluation digest")
+        if subject is not None and type(subject) is not MonitoredSubject:
+            raise ValueError("subject must be exact MonitoredSubject or None")
+
+        with closing(self._connect()) as db:
+            # SELECT statements do not reliably open a read transaction under
+            # Python sqlite3's legacy transaction control.  BEGIN establishes
+            # one snapshot before subject/evaluation/session currentness reads.
+            db.execute("BEGIN")
+            if subject is not None:
+                self._assert_registered_subject_exact(db, subject)
+
+            evaluation_row = db.execute(
+                """
+                SELECT * FROM evaluation_events
+                 WHERE session_id=? AND evaluation_digest=?
+                """,
+                (session_id, evaluation_digest),
+            ).fetchone()
+            session_row = db.execute(
+                "SELECT * FROM sessions WHERE session_id=?",
+                (session_id,),
+            ).fetchone()
+
+            evaluation = (
+                self._evaluation_row_to_receipt(evaluation_row)
+                if evaluation_row is not None
+                else None
+            )
+            session = dict(session_row) if session_row is not None else None
+            if evaluation is None or session_row is None:
+                return evaluation, session, None
+
+            current_subject_id = (
+                subject.subject_id if subject is not None else None
+            )
+            current_subject_digest = (
+                subject.configuration_digest if subject is not None else None
+            )
+            current_subject_epoch = subject.epoch if subject is not None else None
+
+            readback = ReloadCurrentnessReadback(
+                session_id=session_id,
+                evaluation_digest=evaluation.evaluation_digest,
+                state_digest=evaluation.state_digest,
+                evaluation_generation_before=evaluation.generation_before,
+                evaluation_generation_after=evaluation.generation_after,
+                evaluation_turn_index=evaluation.turn_index,
+                evaluation_reload_required=evaluation.reload_required,
+                session_generation=int(session_row["generation"]),
+                session_last_evaluation_digest=(
+                    str(session_row["last_evaluation_digest"])
+                    if session_row["last_evaluation_digest"] is not None
+                    else None
+                ),
+                evaluation_subject_digest=evaluation.subject_digest,
+                evaluation_subject_epoch=evaluation.subject_epoch,
+                session_subject_digest=(
+                    str(session_row["subject_digest"])
+                    if session_row["subject_digest"] is not None
+                    else None
+                ),
+                session_subject_epoch=(
+                    int(session_row["subject_epoch"])
+                    if session_row["subject_epoch"] is not None
+                    else None
+                ),
+                current_subject_id=current_subject_id,
+                current_subject_digest=current_subject_digest,
+                current_subject_epoch=current_subject_epoch,
+            )
+            return evaluation, session, readback
 
     @staticmethod
     def _attestation_row_to_receipt(row: sqlite3.Row) -> EvaluatorAttestationEventReceipt:

@@ -689,10 +689,14 @@ class R11BenchmarkTests(unittest.TestCase):
             BenchmarkAttemptStatus.EXECUTING,
             durable_a.status,
         )
-        self.registry.invalidate_attempt(
-            attempt_id=plan_a.attempt_id,
-            reason="test cleanup after rejected cross-study run",
-        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "EXECUTING attempt cannot be operator-aborted/invalidated",
+        ):
+            self.registry.invalidate_attempt(
+                attempt_id=plan_a.attempt_id,
+                reason="operator cannot resolve cross-study ambiguity",
+            )
 
     def test_second_active_attempt_for_same_study_is_rejected(self):
         self.seal()

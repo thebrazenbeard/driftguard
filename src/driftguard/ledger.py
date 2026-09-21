@@ -30,6 +30,9 @@ from .sequential import (
 )
 
 
+_RELOAD_CURRENTNESS_READBACK_TOKEN = object()
+
+
 @dataclass(frozen=True)
 class CommitResult:
     evaluation: Evaluation
@@ -66,7 +69,7 @@ class EvaluationEventReceipt:
     subject_epoch: int | None = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class ReloadCurrentnessReadback:
     session_id: str
     evaluation_digest: str
@@ -84,7 +87,57 @@ class ReloadCurrentnessReadback:
     current_subject_id: str | None
     current_subject_digest: str | None
     current_subject_epoch: int | None
-    snapshot_claim: str = "SINGLE_SQLITE_READ_TRANSACTION_SNAPSHOT_ONLY"
+    snapshot_claim: str
+
+    def __init__(
+        self,
+        *,
+        session_id: str,
+        evaluation_digest: str,
+        state_digest: str,
+        evaluation_generation_before: int,
+        evaluation_generation_after: int,
+        evaluation_turn_index: int,
+        evaluation_reload_required: bool,
+        session_generation: int,
+        session_last_evaluation_digest: str | None,
+        evaluation_subject_digest: str | None,
+        evaluation_subject_epoch: int | None,
+        session_subject_digest: str | None,
+        session_subject_epoch: int | None,
+        current_subject_id: str | None,
+        current_subject_digest: str | None,
+        current_subject_epoch: int | None,
+        snapshot_claim: str = "SINGLE_SQLITE_READ_TRANSACTION_SNAPSHOT_ONLY",
+        _readback_token: object | None = None,
+    ) -> None:
+        if _readback_token is not _RELOAD_CURRENTNESS_READBACK_TOKEN:
+            raise ValueError(
+                "ReloadCurrentnessReadback must come from "
+                "DriftLedger.reload_currentness_readback"
+            )
+        values = {
+            "session_id": session_id,
+            "evaluation_digest": evaluation_digest,
+            "state_digest": state_digest,
+            "evaluation_generation_before": evaluation_generation_before,
+            "evaluation_generation_after": evaluation_generation_after,
+            "evaluation_turn_index": evaluation_turn_index,
+            "evaluation_reload_required": evaluation_reload_required,
+            "session_generation": session_generation,
+            "session_last_evaluation_digest": session_last_evaluation_digest,
+            "evaluation_subject_digest": evaluation_subject_digest,
+            "evaluation_subject_epoch": evaluation_subject_epoch,
+            "session_subject_digest": session_subject_digest,
+            "session_subject_epoch": session_subject_epoch,
+            "current_subject_id": current_subject_id,
+            "current_subject_digest": current_subject_digest,
+            "current_subject_epoch": current_subject_epoch,
+            "snapshot_claim": snapshot_claim,
+        }
+        for name, value in values.items():
+            object.__setattr__(self, name, value)
+        self.__post_init__()
 
     def __post_init__(self) -> None:
         if type(self.session_id) is not str or not self.session_id.strip():
@@ -1877,6 +1930,7 @@ class DriftLedger:
                 current_subject_id=current_subject_id,
                 current_subject_digest=current_subject_digest,
                 current_subject_epoch=current_subject_epoch,
+                _readback_token=_RELOAD_CURRENTNESS_READBACK_TOKEN,
             )
             return evaluation, session, readback
 

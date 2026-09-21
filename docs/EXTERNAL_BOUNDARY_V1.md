@@ -1,6 +1,6 @@
 # DriftGuard External Evaluator / Actuator Boundary V1
 
-Status: DRAFT SOURCE CANDIDATE / STACKED ON PR #4 / NO EXTERNAL EFFECT.
+Status: DRAFT COMPOSED SOURCE CANDIDATE / NO EXTERNAL EFFECT.
 
 ## Purpose
 
@@ -44,13 +44,23 @@ The directive is not evidence that the effect happened.
 
 A transportable ReloadDirective remains an untrusted value even if its fields and
 self-digest are well formed. Before an actuator receipt is interpreted,
-validate_reload_directive() re-admits the directive against:
+validate_reload_directive() first checks the pure directive/state/restore-packet
+subject and then delegates durable admission to
+`DriftLedger.admit_reload_directive_current()`.
 
-- the exact pinned SaveState;
-- the exact deterministic restore-packet bytes for that state;
-- the durable reload-required evaluation receipt;
-- the receipt generation transition;
-- the session current generation, state digest, and last evaluation.
+That ledger method performs one `BEGIN IMMEDIATE` transaction covering:
+
+- current monitored-subject epoch, when subject-bound;
+- the exact durable reload-required evaluation row;
+- the evaluation generation transition;
+- the exact evaluation subject digest/epoch;
+- the session current generation, state digest, last evaluation;
+- the session subject digest/epoch.
+
+A subject epoch transition also requires `BEGIN IMMEDIATE`, so it cannot commit
+between the subject-currentness check and the later evaluation/session readback.
+The typed `ReloadDirectiveAdmissionReceipt` is emitted only after the whole
+durable subject passes within that one transaction.
 
 reconcile_actuator_receipt() requires the same SaveState and DriftLedger and
 performs that validation before any APPLIED, NOT_APPLIED, or UNKNOWN receipt is
@@ -80,17 +90,24 @@ becomes stale after the durable session moves forward.
 
 Reconciliation is fail-closed:
 
-- `APPLIED` -> construct a digest-bound `ReloadAcknowledgement` candidate;
-- `NOT_APPLIED` -> `READBACK_REQUIRED`;
-- `UNKNOWN` -> `READBACK_REQUIRED`.
+- `APPLIED` -> `READBACK_REQUIRED`, no acknowledgement;
+- `NOT_APPLIED` -> `READBACK_REQUIRED`, no acknowledgement;
+- `UNKNOWN` -> `READBACK_REQUIRED`, no acknowledgement.
+
+A generic transport receipt never manufactures a `ReloadAcknowledgement`,
+regardless of its status label.
 
 A bare generic receipt never grants retry authority. This module does not perform retries. A provider-specific adapter must establish independently verified non-application through provider readback before any later layer may authorize a retry.
 
 ## Acknowledgement is not recovery
 
-An actuator `APPLIED` receipt may support a reload acknowledgement. That acknowledgement may advance DriftGuard's restore anchor through the existing ledger.
+A generic actuator `APPLIED` receipt is not sufficient support for a reload
+acknowledgement. Provider application must be independently established outside the
+generic receipt path before a caller may submit a `ReloadAcknowledgement` to the
+ledger.
 
-It still does not prove behavioral recovery.
+A valid acknowledgement may advance DriftGuard's restore anchor. It still does not
+prove behavioral recovery.
 
 `qualify_post_reload_behavior()` requires the acknowledgement and the later replay to be present in the same `DriftLedger`; bare caller-constructed result objects are insufficient. It also requires the exact `SaveState`, whose digest must match both acknowledgement and replay. The later committed evaluation must:
 
@@ -112,6 +129,25 @@ This receipt says the governed replay was stable at that later turn. It does not
 `ExternalReceiptChainEntry` provides a hash-linked subject suitable for persistence in an external append-only or independently anchored store.
 
 The SQLite cross-check prevents ordinary caller-side laundering of unrecorded dataclasses into effect/recovery claims, but it does not defend against a local administrator who can rewrite the database. The hash chain is tamper-evident only relative to a trusted external anchor. Keeping both the mutable SQLite ledger and the only copy of the receipt-chain root under the same local administrator does not create tamper-proof storage.
+
+
+## R7 subject-currentness composition
+
+Legacy V1 reload directives remain valid only on an unbound `subject=None` path.
+
+A subject-bound V2 directive requires one exact subject across:
+
+- directive subject digest/epoch;
+- durable evaluation subject digest/epoch;
+- durable session subject digest/epoch;
+- supplied `MonitoredSubject`;
+- durable subject-epoch currentness.
+
+Those checks are one atomic ledger admission snapshot. A directive valid for S@N is
+therefore stale after S@N -> S@N+1 commits, while a transition attempting to race an
+in-progress admission is serialized until that admission transaction completes.
+
+This is SQLite transactional currentness, not provider-effect proof.
 
 ## Non-effects
 

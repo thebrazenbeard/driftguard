@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from contextlib import closing
 from dataclasses import dataclass
 from enum import StrEnum
 from hashlib import sha256
+import inspect
 import json
+from pathlib import Path
+import sqlite3
 from typing import Any
 
 from .calibration import (
@@ -25,6 +29,7 @@ from .sequential import SequentialDetectorSpec
 
 _REVEAL_RECEIPT_TOKEN = object()
 _RUN_RECEIPT_TOKEN = object()
+_ATTEMPT_RECEIPT_TOKEN = object()
 
 
 def _nonempty(value: Any, label: str) -> str:
@@ -79,6 +84,93 @@ PRECOMMIT_CLAIM = "DIGEST_PRECOMMIT_NOT_PROOF_OF_NONACCESS_OR_TRUSTED_TIME"
 REVEAL_CLAIM = "EXACT_DIGEST_REVEAL_MATCH_NOT_NONACCESS_PROOF"
 RUN_CLAIM = "PRECOMMITTED_COMPARISON_EXECUTED_NO_SELECTION_OR_PROMOTION_AUTHORITY"
 SELECTION_RULE = "COMPARE_ONLY_NO_PROMOTION"
+
+
+@dataclass(frozen=True)
+class BenchmarkExecutionBinding:
+    repository: str
+    commit_sha: str
+    schema_version: str
+    benchmark_source_digest: str
+    calibration_source_digest: str
+    comparison_source_digest: str
+
+    def __post_init__(self) -> None:
+        _nonempty(self.repository, "benchmark execution repository")
+        _nonempty(self.schema_version, "benchmark execution schema version")
+        if (
+            type(self.commit_sha) is not str
+            or len(self.commit_sha) != 40
+            or any(ch not in "0123456789abcdef" for ch in self.commit_sha.lower())
+        ):
+            raise ValueError(
+                "benchmark execution commit_sha must be an exact 40-hex Git SHA"
+            )
+        for value, label in (
+            (self.benchmark_source_digest, "benchmark.py source digest"),
+            (self.calibration_source_digest, "calibration.py source digest"),
+            (self.comparison_source_digest, "comparison.py source digest"),
+        ):
+            require_sha256_digest(value, label)
+
+    def payload(self) -> dict[str, Any]:
+        return {
+            "schema": "DRIFTGUARD_BENCHMARK_EXECUTION_BINDING_V1",
+            "repository": self.repository,
+            "commit_sha": self.commit_sha,
+            "schema_version": self.schema_version,
+            "benchmark_source_digest": self.benchmark_source_digest,
+            "calibration_source_digest": self.calibration_source_digest,
+            "comparison_source_digest": self.comparison_source_digest,
+        }
+
+    @property
+    def digest(self) -> str:
+        return canonical_digest(self.payload())
+
+    def assert_runtime_sources_match(self) -> None:
+        observed = runtime_source_digests()
+        expected = (
+            self.benchmark_source_digest,
+            self.calibration_source_digest,
+            self.comparison_source_digest,
+        )
+        if observed != expected:
+            raise ValueError(
+                "benchmark runtime source digests do not match precommitted execution binding"
+            )
+
+
+def _source_digest_for_object(value: object) -> str:
+    path = inspect.getsourcefile(value)
+    if path is None:
+        raise ValueError("cannot resolve source file for execution binding")
+    return sha256(Path(path).read_bytes()).hexdigest()
+
+
+def runtime_source_digests() -> tuple[str, str, str]:
+    return (
+        sha256(Path(__file__).read_bytes()).hexdigest(),
+        _source_digest_for_object(CalibrationCorpus),
+        _source_digest_for_object(DetectorCandidate),
+    )
+
+
+def current_execution_binding(
+    *,
+    repository: str,
+    commit_sha: str,
+    schema_version: str = "DRIFTGUARD_R11_ATTEMPT_GOVERNANCE_V2",
+) -> BenchmarkExecutionBinding:
+    benchmark_digest, calibration_digest, comparison_digest = runtime_source_digests()
+    return BenchmarkExecutionBinding(
+        repository=repository,
+        commit_sha=commit_sha,
+        schema_version=schema_version,
+        benchmark_source_digest=benchmark_digest,
+        calibration_source_digest=calibration_digest,
+        comparison_source_digest=comparison_digest,
+    )
 
 
 @dataclass(frozen=True, order=True)

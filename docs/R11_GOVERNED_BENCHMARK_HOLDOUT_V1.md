@@ -144,11 +144,16 @@ It does not prove that nobody saw the underlying data before the commitment, and
 - schema version;
 - SHA-256 of the exact runtime `benchmark.py`;
 - SHA-256 of the exact runtime `calibration.py`;
-- SHA-256 of the exact runtime `comparison.py`.
+- SHA-256 of the exact runtime `comparison.py`;
+- SHA-256 of the exact runtime `sequential.py`.
 
 `assert_runtime_sources_match()` re-hashes those three local source files at seal, reveal, and run admission.
 
-The source-file hashes are locally rechecked evidence.
+The four source-file hashes are locally rechecked evidence.
+
+`sequential.py` is part of the execution subject because the calibrated CUSUM
+recurrence used by R9/R10 is implemented there; binding only the detector parameters
+would not bind the detector implementation.
 
 The repository and Git commit strings are declared provenance fields. R11 does not independently interrogate Git to prove that the running files came from the declared commit.
 
@@ -272,9 +277,17 @@ Immediately before detector comparison, the ledger atomically claims:
 
 A concurrent or replayed execution can no longer reach the comparison path after that claim is consumed.
 
-If comparison execution raises after the claim, the attempt is terminalized as `INVALIDATED`.
+Any semantic exception after the execution claim and before durable completion—
+including detector comparison, non-promotion enforcement, or run-receipt
+construction—terminalizes the attempt as `INVALIDATED`.
 
-On success, the run receipt is persisted through:
+Durable completion itself is a separate ambiguity boundary. If the final
+`EXECUTING -> EXECUTED` storage transition fails ambiguously, R11 deliberately
+does **not** convert the attempt to retryable state. It remains `EXECUTING` until
+an external recovery/reconciliation procedure establishes what durable transition
+occurred.
+
+On successful durable completion, the run receipt is persisted through:
 
 `EXECUTING -> EXECUTED`
 
@@ -331,7 +344,7 @@ R11 V2 tests freeze:
 - exact DESIGN/HOLDOUT portfolio matching;
 - rejection of identical DESIGN/HOLDOUT trajectory content;
 - exact future R9/R10 plan digest binding;
-- exact execution-source hash binding;
+- exact execution-source hash binding, including `sequential.py`;
 - declared prior R9/R10 holdout exclusion;
 - one active attempt per study;
 - same attempt/precommit ID cannot bind divergent subject;
@@ -339,6 +352,8 @@ R11 V2 tests freeze:
 - reveal replay rejection;
 - execution claim is single-use before comparison;
 - run replay rejection;
+- semantic post-claim failure terminalizes `INVALIDATED`;
+- ambiguous completion failure remains `EXECUTING` and blocks retry;
 - append-only successful attempt history;
 - durable aborted-attempt history;
 - successor attempt must reference all terminal predecessors;
@@ -357,7 +372,7 @@ The test corpora are protocol fixtures, not production benchmark evidence.
 
 An R11 V2 PASS means:
 
-> these exact benchmark manifests, study/attempt commitments, disclosed prior-holdout set, execution-source hashes, HOLDOUT digest/bytes, R9 qualification plan, R10 comparison plan, and durable single-use state transitions compose deterministically under the governed protocol.
+> these exact benchmark manifests, study/attempt commitments, disclosed prior-holdout set, benchmark/calibration/comparison/sequential execution-source hashes, HOLDOUT digest/bytes, R9 qualification plan, R10 comparison plan, and durable single-use state transitions compose deterministically under the governed protocol.
 
 It does not prove:
 

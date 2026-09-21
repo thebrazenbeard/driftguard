@@ -341,6 +341,18 @@ A subsequent promotion requires a separately governed selection/qualification pr
 
 Direct construction of digest-bearing lookalikes is rejected.
 
+Factory provenance alone is not treated as sufficient transition authority.
+Every durable reveal/run transition re-binds the supplied receipt to the exact:
+
+- study ID;
+- attempt ID;
+- precommit digest;
+- execution-binding digest;
+- HOLDOUT seal / manifest / corpus / artifact digests for reveal;
+- reveal digest plus exact R9 calibration-plan and R10 comparison-plan digests for run.
+
+A valid receipt from study B therefore cannot advance or complete study A.
+
 `BenchmarkRunResult` cross-checks the run receipt against the exact embedded R10 comparison receipt digest.
 
 As elsewhere in DriftGuard, Python module-private/factory tokens and a writable local SQLite database are API-governance boundaries, not hostile-process, operating-system, or hardware isolation.
@@ -374,6 +386,9 @@ R11 V3 tests freeze:
 - no promotion authority;
 - changed CUSUM spec rejection;
 - direct attempt/reveal/run receipt construction rejection;
+- cross-study reveal receipt replay rejection;
+- cross-study execution-start replay rejection;
+- cross-study run receipt replay rejection;
 - explicit non-access/trusted-time claim ceiling.
 
 The test corpora are protocol fixtures, not production benchmark evidence.

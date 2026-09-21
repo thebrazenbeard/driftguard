@@ -833,6 +833,26 @@ class R11BenchmarkTests(unittest.TestCase):
             tuple(item["status"] for item in history),
         )
 
+    def test_run_result_semantic_failure_invalidates_before_completion(self):
+        plan, spec, holdout, _ = self.seal()
+        reveal = self.reveal(plan, holdout)
+        with patch(
+            "driftguard.benchmark.BenchmarkRunResult",
+            side_effect=ValueError("simulated result semantic failure"),
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                "simulated result semantic failure",
+            ):
+                self.execute_holdout(plan, spec, holdout, reveal)
+        durable = self.registry.attempt_receipt(
+            attempt_id=plan.attempt_id,
+        )
+        self.assertEqual(
+            BenchmarkAttemptStatus.INVALIDATED,
+            durable.status,
+        )
+
     def test_ambiguous_completion_failure_remains_executing_and_blocks_retry(self):
         plan, spec, holdout, _ = self.seal()
         reveal = self.reveal(plan, holdout)

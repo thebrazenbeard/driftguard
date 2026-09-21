@@ -67,6 +67,117 @@ class EvaluationEventReceipt:
 
 
 @dataclass(frozen=True)
+class ReloadCurrentnessReadback:
+    session_id: str
+    evaluation_digest: str
+    state_digest: str
+    evaluation_generation_before: int
+    evaluation_generation_after: int
+    evaluation_turn_index: int
+    evaluation_reload_required: bool
+    session_generation: int
+    session_last_evaluation_digest: str | None
+    evaluation_subject_digest: str | None
+    evaluation_subject_epoch: int | None
+    session_subject_digest: str | None
+    session_subject_epoch: int | None
+    current_subject_id: str | None
+    current_subject_digest: str | None
+    current_subject_epoch: int | None
+    snapshot_claim: str = "SINGLE_SQLITE_READ_TRANSACTION_SNAPSHOT_ONLY"
+
+    def __post_init__(self) -> None:
+        if type(self.session_id) is not str or not self.session_id.strip():
+            raise ValueError("session_id must be a non-empty exact string")
+        require_sha256_digest(self.evaluation_digest, "evaluation digest")
+        require_sha256_digest(self.state_digest, "state digest")
+        for value, label in (
+            (self.evaluation_generation_before, "evaluation_generation_before"),
+            (self.evaluation_generation_after, "evaluation_generation_after"),
+            (self.evaluation_turn_index, "evaluation_turn_index"),
+            (self.session_generation, "session_generation"),
+        ):
+            if type(value) is not int or isinstance(value, bool) or value < 0:
+                raise ValueError(f"{label} must be a non-negative exact integer")
+        if type(self.evaluation_reload_required) is not bool:
+            raise ValueError("evaluation_reload_required must be exact bool")
+        if self.session_last_evaluation_digest is not None:
+            require_sha256_digest(
+                self.session_last_evaluation_digest,
+                "session last evaluation digest",
+            )
+        for digest, epoch, label in (
+            (
+                self.evaluation_subject_digest,
+                self.evaluation_subject_epoch,
+                "evaluation subject",
+            ),
+            (
+                self.session_subject_digest,
+                self.session_subject_epoch,
+                "session subject",
+            ),
+            (
+                self.current_subject_digest,
+                self.current_subject_epoch,
+                "current subject",
+            ),
+        ):
+            if (digest is None) != (epoch is None):
+                raise ValueError(f"{label} digest/epoch must be supplied together")
+            if digest is not None:
+                require_sha256_digest(digest, f"{label} digest")
+                if type(epoch) is not int or isinstance(epoch, bool) or epoch < 0:
+                    raise ValueError(
+                        f"{label} epoch must be a non-negative exact integer"
+                    )
+        if (self.current_subject_id is None) != (
+            self.current_subject_digest is None
+        ):
+            raise ValueError(
+                "current subject id/digest must be supplied together"
+            )
+        if self.current_subject_id is not None and (
+            type(self.current_subject_id) is not str
+            or not self.current_subject_id.strip()
+        ):
+            raise ValueError("current_subject_id must be a non-empty exact string")
+        if (
+            type(self.snapshot_claim) is not str
+            or self.snapshot_claim
+            != "SINGLE_SQLITE_READ_TRANSACTION_SNAPSHOT_ONLY"
+        ):
+            raise ValueError("invalid reload currentness snapshot claim")
+
+    @property
+    def digest(self) -> str:
+        return canonical_digest(
+            {
+                "schema": "DRIFTGUARD_RELOAD_CURRENTNESS_READBACK_V1",
+                "session_id": self.session_id,
+                "evaluation_digest": self.evaluation_digest,
+                "state_digest": self.state_digest,
+                "evaluation_generation_before": self.evaluation_generation_before,
+                "evaluation_generation_after": self.evaluation_generation_after,
+                "evaluation_turn_index": self.evaluation_turn_index,
+                "evaluation_reload_required": self.evaluation_reload_required,
+                "session_generation": self.session_generation,
+                "session_last_evaluation_digest": (
+                    self.session_last_evaluation_digest
+                ),
+                "evaluation_subject_digest": self.evaluation_subject_digest,
+                "evaluation_subject_epoch": self.evaluation_subject_epoch,
+                "session_subject_digest": self.session_subject_digest,
+                "session_subject_epoch": self.session_subject_epoch,
+                "current_subject_id": self.current_subject_id,
+                "current_subject_digest": self.current_subject_digest,
+                "current_subject_epoch": self.current_subject_epoch,
+                "snapshot_claim": self.snapshot_claim,
+            }
+        )
+
+
+@dataclass(frozen=True)
 class SubjectEpochRegistrationReceipt:
     subject_id: str
     epoch: int

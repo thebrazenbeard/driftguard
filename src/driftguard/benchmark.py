@@ -94,6 +94,7 @@ class BenchmarkExecutionBinding:
     benchmark_source_digest: str
     calibration_source_digest: str
     comparison_source_digest: str
+    sequential_source_digest: str
 
     def __post_init__(self) -> None:
         _nonempty(self.repository, "benchmark execution repository")
@@ -110,6 +111,7 @@ class BenchmarkExecutionBinding:
             (self.benchmark_source_digest, "benchmark.py source digest"),
             (self.calibration_source_digest, "calibration.py source digest"),
             (self.comparison_source_digest, "comparison.py source digest"),
+            (self.sequential_source_digest, "sequential.py source digest"),
         ):
             require_sha256_digest(value, label)
 
@@ -122,6 +124,7 @@ class BenchmarkExecutionBinding:
             "benchmark_source_digest": self.benchmark_source_digest,
             "calibration_source_digest": self.calibration_source_digest,
             "comparison_source_digest": self.comparison_source_digest,
+            "sequential_source_digest": self.sequential_source_digest,
         }
 
     @property
@@ -134,6 +137,7 @@ class BenchmarkExecutionBinding:
             self.benchmark_source_digest,
             self.calibration_source_digest,
             self.comparison_source_digest,
+            self.sequential_source_digest,
         )
         if observed != expected:
             raise ValueError(
@@ -148,11 +152,12 @@ def _source_digest_for_object(value: object) -> str:
     return sha256(Path(path).read_bytes()).hexdigest()
 
 
-def runtime_source_digests() -> tuple[str, str, str]:
+def runtime_source_digests() -> tuple[str, str, str, str]:
     return (
         sha256(Path(__file__).read_bytes()).hexdigest(),
         _source_digest_for_object(CalibrationCorpus),
         _source_digest_for_object(DetectorCandidate),
+        _source_digest_for_object(SequentialDetectorSpec),
     )
 
 
@@ -162,7 +167,12 @@ def current_execution_binding(
     commit_sha: str,
     schema_version: str = "DRIFTGUARD_R11_ATTEMPT_GOVERNANCE_V2",
 ) -> BenchmarkExecutionBinding:
-    benchmark_digest, calibration_digest, comparison_digest = runtime_source_digests()
+    (
+        benchmark_digest,
+        calibration_digest,
+        comparison_digest,
+        sequential_digest,
+    ) = runtime_source_digests()
     return BenchmarkExecutionBinding(
         repository=repository,
         commit_sha=commit_sha,
@@ -170,6 +180,7 @@ def current_execution_binding(
         benchmark_source_digest=benchmark_digest,
         calibration_source_digest=calibration_digest,
         comparison_source_digest=comparison_digest,
+        sequential_source_digest=sequential_digest,
     )
 
 
@@ -1807,30 +1818,34 @@ def run_precommitted_holdout(
             corpus=corpus,
             cusum_spec=cusum_spec,
         )
+        if comparison.promotion_authorized:
+            raise ValueError(
+                "R10 comparison unexpectedly authorized promotion"
+            )
+
+        receipt = BenchmarkRunReceipt(
+            study_id=precommit.study_id,
+            attempt_id=precommit.attempt_id,
+            precommit_digest=precommit.digest,
+            execution_binding_digest=execution_binding.digest,
+            reveal_digest=reveal.digest,
+            calibration_plan_digest=calibration_plan.digest,
+            comparison_plan_digest=comparison_plan.digest,
+            comparison_receipt_digest=comparison.digest,
+            promotion_authorized=False,
+            run_claim=RUN_CLAIM,
+            _run_token=_RUN_RECEIPT_TOKEN,
+        )
     except Exception as exc:
         registry.invalidate_attempt(
             attempt_id=precommit.attempt_id,
-            reason=f"execution_failed:{type(exc).__name__}",
+            reason=f"semantic_execution_failed:{type(exc).__name__}",
         )
         raise
-    if comparison.promotion_authorized:
-        raise ValueError(
-            "R10 comparison unexpectedly authorized promotion"
-        )
 
-    receipt = BenchmarkRunReceipt(
-        study_id=precommit.study_id,
-        attempt_id=precommit.attempt_id,
-        precommit_digest=precommit.digest,
-        execution_binding_digest=execution_binding.digest,
-        reveal_digest=reveal.digest,
-        calibration_plan_digest=calibration_plan.digest,
-        comparison_plan_digest=comparison_plan.digest,
-        comparison_receipt_digest=comparison.digest,
-        promotion_authorized=False,
-        run_claim=RUN_CLAIM,
-        _run_token=_RUN_RECEIPT_TOKEN,
-    )
+    # Durable completion is deliberately outside the semantic-failure catch.
+    # If finalization/storage itself fails ambiguously, the attempt remains
+    # EXECUTING and therefore cannot be retried as a fresh governed run.
     registry.mark_executed(
         precommit=precommit,
         reveal=reveal,

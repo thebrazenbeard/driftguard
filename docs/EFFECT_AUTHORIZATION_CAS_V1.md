@@ -74,6 +74,11 @@ A future effect-authorizing consumer must preserve all of these invariants.
    Independently verified provider application may support a native
    `ReloadAcknowledgement`; it still does not establish behavioral recovery.
 
+9. **Durable state is not dispatch authority.**
+   Only the caller that wins the pre-dispatch CAS may receive the single-use
+   dispatch permit. Observing `DISPATCH_UNCERTAIN` never grants a second caller
+   permission to send.
+
 ## Proposed durable object: EffectAttemptReservation
 
 A reservation would bind at least:
@@ -176,6 +181,44 @@ This ordering intentionally creates a conservative crash window:
 That false-positive uncertainty is safer than a false-negative “nothing happened”
 claim followed by a duplicate effect.
 
+## Single-use dispatch permit
+
+The durable state `DISPATCH_UNCERTAIN` is **not** itself permission to call the provider.
+
+Otherwise, two processes could behave unsafely:
+
+1. process A wins `RESERVED -> DISPATCH_UNCERTAIN`;
+2. process B observes the durable `DISPATCH_UNCERTAIN` row;
+3. both decide that the state authorizes dispatch;
+4. both send the provider operation.
+
+A future `begin_effect_dispatch(...)` operation must therefore combine the exact
+status CAS with issuance of a **single-use dispatch permit** returned only to the
+caller that won the CAS.
+
+The permit should:
+
+- be factory-gated;
+- bind the exact reservation/attempt digest;
+- bind the exact provider target and idempotency key;
+- be accepted only by the provider adapter's dispatch entry point;
+- never be reconstructed merely by reading the durable `DISPATCH_UNCERTAIN` row;
+- never be reissued after process restart.
+
+A process that loses the CAS receives no permit and therefore has no valid dispatch
+path.
+
+If the winning process crashes after the CAS but before sending the network request,
+the permit disappears while durable state remains `DISPATCH_UNCERTAIN`.
+
+That is intentional.
+
+Recovery must reconcile provider state. It must not mint a replacement permit and
+guess that the original request was never sent.
+
+This converts the post-CAS crash window into conservative uncertainty rather than a
+duplicate-dispatch opportunity.
+
 ## Durable effect fence
 
 While a reservation is in any unresolved state, operations that would invalidate its
@@ -230,6 +273,9 @@ including:
 - provider operation id when one exists;
 - authenticated or independently retrievable provider readback;
 - exact outcome classification;
+- whether the provider result is terminal for the exact operation/idempotency key,
+  rather than merely "not currently observed";
+- provider idempotency retention/replay semantics when relevant;
 - raw-response digest/provenance sufficient for later audit.
 
 A future digest-bearing `ProviderEffectVerification` should be factory-gated in the
@@ -310,7 +356,15 @@ A future implementation should include at least these adversarial cases:
 13. direct construction of reservation/verification receipts fails;
 14. provider without idempotency cannot be automatically retried from an uncertain
     state;
-15. process restart reconstructs unresolved fences solely from durable state.
+15. process restart reconstructs unresolved fences solely from durable state;
+16. two dispatchers race after one CAS winner: only the winner receives a dispatch
+    permit and only one provider send path is valid;
+17. direct construction or replay of a dispatch permit fails;
+18. crash after dispatch CAS but before network send does not permit permit
+    reissuance;
+19. provider idempotency-window expiry does not manufacture retry authority;
+20. a non-terminal "not currently observed" provider response cannot be promoted to
+    verified non-application.
 
 ## Relationship to Discovery effect-envelope work
 

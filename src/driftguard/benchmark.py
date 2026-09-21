@@ -95,6 +95,7 @@ class BenchmarkExecutionBinding:
     calibration_source_digest: str
     comparison_source_digest: str
     sequential_source_digest: str
+    model_source_digest: str
 
     def __post_init__(self) -> None:
         _nonempty(self.repository, "benchmark execution repository")
@@ -112,6 +113,7 @@ class BenchmarkExecutionBinding:
             (self.calibration_source_digest, "calibration.py source digest"),
             (self.comparison_source_digest, "comparison.py source digest"),
             (self.sequential_source_digest, "sequential.py source digest"),
+            (self.model_source_digest, "model.py source digest"),
         ):
             require_sha256_digest(value, label)
 
@@ -125,6 +127,7 @@ class BenchmarkExecutionBinding:
             "calibration_source_digest": self.calibration_source_digest,
             "comparison_source_digest": self.comparison_source_digest,
             "sequential_source_digest": self.sequential_source_digest,
+            "model_source_digest": self.model_source_digest,
         }
 
     @property
@@ -138,6 +141,7 @@ class BenchmarkExecutionBinding:
             self.calibration_source_digest,
             self.comparison_source_digest,
             self.sequential_source_digest,
+            self.model_source_digest,
         )
         if observed != expected:
             raise ValueError(
@@ -152,12 +156,13 @@ def _source_digest_for_object(value: object) -> str:
     return sha256(Path(path).read_bytes()).hexdigest()
 
 
-def runtime_source_digests() -> tuple[str, str, str, str]:
+def runtime_source_digests() -> tuple[str, str, str, str, str]:
     return (
         sha256(Path(__file__).read_bytes()).hexdigest(),
         _source_digest_for_object(CalibrationCorpus),
         _source_digest_for_object(DetectorCandidate),
         _source_digest_for_object(SequentialDetectorSpec),
+        _source_digest_for_object(SourceBinding),
     )
 
 
@@ -172,6 +177,7 @@ def current_execution_binding(
         calibration_digest,
         comparison_digest,
         sequential_digest,
+        model_digest,
     ) = runtime_source_digests()
     return BenchmarkExecutionBinding(
         repository=repository,
@@ -181,6 +187,7 @@ def current_execution_binding(
         calibration_source_digest=calibration_digest,
         comparison_source_digest=comparison_digest,
         sequential_source_digest=sequential_digest,
+        model_source_digest=model_digest,
     )
 
 

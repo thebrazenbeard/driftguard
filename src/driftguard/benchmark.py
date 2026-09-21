@@ -1271,7 +1271,7 @@ class BenchmarkAttemptLedger:
             list(precommit.predecessor_attempt_digests),
             separators=(",", ":"),
         )
-        with closing(sqlite3.connect(self.path)) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             db.row_factory = sqlite3.Row
             db.execute("BEGIN IMMEDIATE")
             existing_attempt = db.execute(
@@ -1435,7 +1435,7 @@ class BenchmarkAttemptLedger:
             precommit=precommit,
             required_status=BenchmarkAttemptStatus.SEALED,
         )
-        with closing(sqlite3.connect(self.path)) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             db.row_factory = sqlite3.Row
             db.execute("BEGIN IMMEDIATE")
             updated = db.execute(
@@ -1490,7 +1490,7 @@ class BenchmarkAttemptLedger:
             raise ValueError(
                 "benchmark attempt reveal digest mismatch"
             )
-        with closing(sqlite3.connect(self.path)) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             db.row_factory = sqlite3.Row
             db.execute("BEGIN IMMEDIATE")
             updated = db.execute(
@@ -1546,7 +1546,7 @@ class BenchmarkAttemptLedger:
             raise ValueError(
                 "benchmark attempt reveal digest mismatch"
             )
-        with closing(sqlite3.connect(self.path)) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             db.row_factory = sqlite3.Row
             db.execute("BEGIN IMMEDIATE")
             updated = db.execute(
@@ -1601,7 +1601,7 @@ class BenchmarkAttemptLedger:
         }:
             raise ValueError("unsupported benchmark terminal status")
         _nonempty(reason, "benchmark terminal reason")
-        with closing(sqlite3.connect(self.path)) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             db.row_factory = sqlite3.Row
             db.execute("BEGIN IMMEDIATE")
             row = db.execute(

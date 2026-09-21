@@ -1478,23 +1478,8 @@ def reveal_holdout(
 ) -> HoldoutRevealReceipt:
     if type(registry) is not BenchmarkAttemptLedger:
         raise ValueError("registry must be exact BenchmarkAttemptLedger")
-    if type(registry) is not BenchmarkAttemptLedger:
-        raise ValueError("registry must be exact BenchmarkAttemptLedger")
     if type(precommit) is not BenchmarkPrecommitPlan:
         raise ValueError("precommit must be exact BenchmarkPrecommitPlan")
-    if type(execution_binding) is not BenchmarkExecutionBinding:
-        raise ValueError(
-            "execution_binding must be exact BenchmarkExecutionBinding"
-        )
-    if execution_binding != precommit.execution_binding:
-        raise ValueError(
-            "run execution binding does not match precommit"
-        )
-    execution_binding.assert_runtime_sources_match()
-    current_attempt = registry._assert_exact_precommit(
-        precommit=precommit,
-        required_status=BenchmarkAttemptStatus.REVEALED,
-    )
     if type(execution_binding) is not BenchmarkExecutionBinding:
         raise ValueError(
             "execution_binding must be exact BenchmarkExecutionBinding"
@@ -1514,6 +1499,7 @@ def reveal_holdout(
         raise ValueError("corpus must be exact CalibrationCorpus")
     if type(artifact_bytes) is not bytes:
         raise ValueError("artifact_bytes must be exact bytes")
+
     seal = precommit.holdout_seal
     if manifest.digest != seal.manifest.digest:
         raise ValueError("revealed holdout manifest digest mismatch")
@@ -1528,6 +1514,7 @@ def reveal_holdout(
     observed_artifact_digest = sha256(artifact_bytes).hexdigest()
     if observed_artifact_digest != manifest.artifact_digest:
         raise ValueError("revealed holdout artifact digest mismatch")
+
     receipt = HoldoutRevealReceipt(
         study_id=precommit.study_id,
         attempt_id=precommit.attempt_id,
@@ -1557,8 +1544,23 @@ def run_precommitted_holdout(
     corpus: CalibrationCorpus,
     cusum_spec: SequentialDetectorSpec,
 ) -> BenchmarkRunResult:
+    if type(registry) is not BenchmarkAttemptLedger:
+        raise ValueError("registry must be exact BenchmarkAttemptLedger")
     if type(precommit) is not BenchmarkPrecommitPlan:
         raise ValueError("precommit must be exact BenchmarkPrecommitPlan")
+    if type(execution_binding) is not BenchmarkExecutionBinding:
+        raise ValueError(
+            "execution_binding must be exact BenchmarkExecutionBinding"
+        )
+    if execution_binding != precommit.execution_binding:
+        raise ValueError(
+            "run execution binding does not match precommit"
+        )
+    execution_binding.assert_runtime_sources_match()
+    current_attempt = registry._assert_exact_precommit(
+        precommit=precommit,
+        required_status=BenchmarkAttemptStatus.REVEALED,
+    )
     if type(reveal) is not HoldoutRevealReceipt:
         raise ValueError("reveal must be exact HoldoutRevealReceipt")
     if type(manifest) is not BenchmarkCorpusManifest:
@@ -1567,6 +1569,7 @@ def run_precommitted_holdout(
         raise ValueError("corpus must be exact CalibrationCorpus")
     if type(cusum_spec) is not SequentialDetectorSpec:
         raise ValueError("cusum_spec must be exact SequentialDetectorSpec")
+
     if reveal.study_id != precommit.study_id:
         raise ValueError("benchmark reveal study id mismatch")
     if reveal.attempt_id != precommit.attempt_id:
@@ -1585,6 +1588,7 @@ def run_precommitted_holdout(
         raise ValueError("benchmark reveal/corpus digest mismatch")
     if manifest.digest != precommit.holdout_seal.manifest.digest:
         raise ValueError("benchmark manifest is not the precommitted holdout")
+
     manifest.validate_corpus(corpus)
     if cusum_spec.digest != precommit.cusum_spec_digest:
         raise ValueError("benchmark CUSUM spec digest mismatch")
@@ -1601,6 +1605,7 @@ def run_precommitted_holdout(
         raise ValueError(
             "R10 comparison unexpectedly authorized promotion"
         )
+
     receipt = BenchmarkRunReceipt(
         study_id=precommit.study_id,
         attempt_id=precommit.attempt_id,

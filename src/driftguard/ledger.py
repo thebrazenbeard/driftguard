@@ -2196,6 +2196,122 @@ class DriftLedger:
                 successor_generation=successor,
             )
 
+    def admit_reload_directive_current(
+        self,
+        *,
+        session_id: str,
+        evaluation_digest: str,
+        state_digest: str,
+        turn_index: int,
+        expected_generation: int,
+        subject: MonitoredSubject | None = None,
+    ) -> ReloadDirectiveAdmissionReceipt:
+        """Atomically re-admit one reload-required evaluation/current session.
+
+        Subject currentness, evaluation provenance, and session currentness are
+        read under one BEGIN IMMEDIATE transaction so a subject epoch transition
+        cannot commit between those checks.
+        """
+        if type(session_id) is not str or not session_id.strip():
+            raise ValueError("session_id must be a non-empty exact string")
+        require_sha256_digest(evaluation_digest, "evaluation digest")
+        require_sha256_digest(state_digest, "state digest")
+        if (
+            type(turn_index) is not int
+            or isinstance(turn_index, bool)
+            or turn_index < 0
+        ):
+            raise ValueError("turn_index must be a non-negative exact int")
+        if (
+            type(expected_generation) is not int
+            or isinstance(expected_generation, bool)
+            or expected_generation < 1
+        ):
+            raise ValueError(
+                "expected_generation must be a positive exact int"
+            )
+        if subject is not None and type(subject) is not MonitoredSubject:
+            raise ValueError("subject must be exact MonitoredSubject or None")
+
+        expected_subject_digest = (
+            subject.configuration_digest if subject is not None else None
+        )
+        expected_subject_epoch = subject.epoch if subject is not None else None
+
+        with closing(self._connect()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            if subject is not None:
+                self._assert_subject_epoch_current(db, subject)
+
+            event = db.execute(
+                """
+                SELECT * FROM evaluation_events
+                 WHERE session_id=? AND evaluation_digest=?
+                """,
+                (session_id, evaluation_digest),
+            ).fetchone()
+            if event is None:
+                raise ValueError(
+                    "reload directive requires durable ledger evaluation receipt"
+                )
+
+            event_subject_digest = (
+                str(event["subject_digest"])
+                if event["subject_digest"] is not None
+                else None
+            )
+            event_subject_epoch = (
+                int(event["subject_epoch"])
+                if event["subject_epoch"] is not None
+                else None
+            )
+            if (
+                str(event["evaluation_digest"]) != evaluation_digest
+                or str(event["state_digest"]) != state_digest
+                or int(event["turn_index"]) != turn_index
+                or int(event["generation_after"]) != expected_generation
+                or int(event["generation_before"]) + 1
+                != expected_generation
+                or bool(event["reload_required"]) is not True
+                or event_subject_digest != expected_subject_digest
+                or event_subject_epoch != expected_subject_epoch
+            ):
+                raise ValueError(
+                    "reload directive does not match durable reload-required evaluation"
+                )
+
+            session = db.execute(
+                "SELECT * FROM sessions WHERE session_id=?",
+                (session_id,),
+            ).fetchone()
+            if session is None:
+                raise ValueError(
+                    "reload directive requires current durable session"
+                )
+            if int(session["generation"]) != expected_generation:
+                raise ValueError(
+                    "reload directive is not current durable generation"
+                )
+            if str(session["last_evaluation_digest"]) != evaluation_digest:
+                raise ValueError(
+                    "reload directive is not current durable evaluation"
+                )
+            if str(session["state_digest"]) != state_digest:
+                raise ValueError(
+                    "reload directive current session state mismatch"
+                )
+            self._validate_subject_readback(session, subject)
+
+            return ReloadDirectiveAdmissionReceipt(
+                session_id=session_id,
+                evaluation_digest=evaluation_digest,
+                state_digest=state_digest,
+                turn_index=turn_index,
+                expected_generation=expected_generation,
+                subject_digest=expected_subject_digest,
+                subject_epoch=expected_subject_epoch,
+            )
+
     def session_row(self, session_id: str) -> dict | None:
         with closing(self._connect()) as db, db:
             row = db.execute(

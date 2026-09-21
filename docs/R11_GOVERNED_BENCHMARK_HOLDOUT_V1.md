@@ -225,7 +225,7 @@ A known semantic execution failure inside the governed run path may transition
 transition bound to the exact precommit, reveal receipt, and execution binding.
 
 If completion, storage, or reconciliation is ambiguous after the execution claim,
-the attempt remains `EXECUTING`. R11 V2 provides no operator reason-string escape
+the attempt remains `EXECUTING`. R11 V3 provides no operator reason-string escape
 from that state. A future resolution would require a separately typed reconciliation
 protocol; until then the active attempt blocks a successor.
 

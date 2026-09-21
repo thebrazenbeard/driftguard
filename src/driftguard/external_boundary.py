@@ -441,20 +441,21 @@ def build_reload_directive(
         raise ValueError(
             "reload directive monitored subject epoch mismatch"
         )
-    if subject is not None:
-        ledger.assert_subject_current(subject)
     if evaluation.reload_required is not True:
         raise ValueError("reload directive requires reload-required evaluation")
     if type(evaluation.restore_packet) is not str or not evaluation.restore_packet:
         raise ValueError("reload-required evaluation is missing restore packet")
     if commit.successor_generation != evaluation.generation + 1:
         raise ValueError("commit generation does not bind evaluation generation")
-    receipt = ledger.evaluation_receipt(
+    receipt, session, currentness = ledger.reload_currentness_readback(
         session_id=session_id,
         evaluation_digest=evaluation.digest,
+        subject=subject,
     )
     if receipt is None:
         raise ValueError("reload directive requires durable ledger evaluation receipt")
+    if session is None or currentness is None:
+        raise ValueError("reload directive requires current durable session")
     if (
         receipt.generation_before != evaluation.generation
         or receipt.generation_after != commit.successor_generation
@@ -469,9 +470,6 @@ def build_reload_directive(
         or receipt.subject_epoch != evaluation.subject_epoch
     ):
         raise ValueError("reload directive commit does not match durable ledger receipt")
-    session = ledger.session_row(session_id)
-    if session is None:
-        raise ValueError("reload directive requires current durable session")
     if int(session["generation"]) != commit.successor_generation:
         raise ValueError("reload directive commit is not current durable generation")
     if session["last_evaluation_digest"] != evaluation.digest:

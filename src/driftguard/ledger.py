@@ -159,6 +159,76 @@ class EvaluatorAttestationEventReceipt:
 
 
 @dataclass(frozen=True)
+class ReloadDirectiveAdmissionReceipt:
+    session_id: str
+    evaluation_digest: str
+    state_digest: str
+    turn_index: int
+    expected_generation: int
+    subject_digest: str | None
+    subject_epoch: int | None
+    admission_claim: str = "ATOMIC_CURRENT_SUBJECT_LEDGER_READBACK_V1"
+
+    def __post_init__(self) -> None:
+        if type(self.session_id) is not str or not self.session_id.strip():
+            raise ValueError("admission session_id must be non-empty exact string")
+        require_sha256_digest(
+            self.evaluation_digest,
+            "admission evaluation digest",
+        )
+        require_sha256_digest(self.state_digest, "admission state digest")
+        if (
+            type(self.turn_index) is not int
+            or isinstance(self.turn_index, bool)
+            or self.turn_index < 0
+        ):
+            raise ValueError("admission turn_index must be non-negative int")
+        if (
+            type(self.expected_generation) is not int
+            or isinstance(self.expected_generation, bool)
+            or self.expected_generation < 1
+        ):
+            raise ValueError(
+                "admission expected_generation must be positive int"
+            )
+        if (self.subject_digest is None) != (self.subject_epoch is None):
+            raise ValueError(
+                "admission subject digest/epoch must be supplied together"
+            )
+        if self.subject_digest is not None:
+            require_sha256_digest(
+                self.subject_digest,
+                "admission subject digest",
+            )
+            if (
+                type(self.subject_epoch) is not int
+                or isinstance(self.subject_epoch, bool)
+                or self.subject_epoch < 0
+            ):
+                raise ValueError(
+                    "admission subject_epoch must be non-negative int"
+                )
+        if self.admission_claim != "ATOMIC_CURRENT_SUBJECT_LEDGER_READBACK_V1":
+            raise ValueError("unsupported reload directive admission claim")
+
+    @property
+    def digest(self) -> str:
+        return canonical_digest(
+            {
+                "schema": "DRIFTGUARD_RELOAD_DIRECTIVE_ADMISSION_V1",
+                "session_id": self.session_id,
+                "evaluation_digest": self.evaluation_digest,
+                "state_digest": self.state_digest,
+                "turn_index": self.turn_index,
+                "expected_generation": self.expected_generation,
+                "subject_digest": self.subject_digest,
+                "subject_epoch": self.subject_epoch,
+                "admission_claim": self.admission_claim,
+            }
+        )
+
+
+@dataclass(frozen=True)
 class ReloadAcknowledgementEventReceipt:
     ack_id: str
     session_id: str

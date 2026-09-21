@@ -108,7 +108,7 @@ class ReloadCurrentnessReadback:
         current_subject_id: str | None,
         current_subject_digest: str | None,
         current_subject_epoch: int | None,
-        snapshot_claim: str = "SINGLE_SQLITE_READ_TRANSACTION_SNAPSHOT_ONLY",
+        snapshot_claim: str = "SINGLE_SQLITE_BEGIN_IMMEDIATE_CURRENTNESS_SNAPSHOT_ONLY",
         _readback_token: object | None = None,
     ) -> None:
         if _readback_token is not _RELOAD_CURRENTNESS_READBACK_TOKEN:
@@ -198,7 +198,7 @@ class ReloadCurrentnessReadback:
         if (
             type(self.snapshot_claim) is not str
             or self.snapshot_claim
-            != "SINGLE_SQLITE_READ_TRANSACTION_SNAPSHOT_ONLY"
+            != "SINGLE_SQLITE_BEGIN_IMMEDIATE_CURRENTNESS_SNAPSHOT_ONLY"
         ):
             raise ValueError("invalid reload currentness snapshot claim")
 
@@ -1865,10 +1865,11 @@ class DriftLedger:
             raise ValueError("subject must be exact MonitoredSubject or None")
 
         with closing(self._connect()) as db:
-            # SELECT statements do not reliably open a read transaction under
-            # Python sqlite3's legacy transaction control.  BEGIN establishes
-            # one snapshot before subject/evaluation/session currentness reads.
-            db.execute("BEGIN")
+            # BEGIN IMMEDIATE establishes one snapshot and reserves the SQLite
+            # writer slot before subject/evaluation/session currentness reads.
+            # A concurrent subject/session transition therefore cannot commit
+            # inside this re-admission window.
+            db.execute("BEGIN IMMEDIATE")
             if subject is not None:
                 self._assert_registered_subject_exact(db, subject)
 

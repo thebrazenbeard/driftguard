@@ -192,7 +192,7 @@ The predecessor-holdout list is itself a declared governance input. R11 can enfo
 
 ## Durable attempt ledger
 
-`BenchmarkAttemptLedger` persists one study's attempt state in SQLite.
+`BenchmarkAttemptLedger` persists one study's attempt state inside one exact chosen SQLite ledger.
 
 Attempt states are:
 
@@ -213,11 +213,11 @@ An abandoned revealed attempt can leave:
 
 `SEALED -> REVEALED -> ABORTED`
 
-An execution failure after the single-use execution claim is converted to `INVALIDATED`.
+A semantic execution failure after the single-use execution claim triggers a durable `INVALIDATED` transition. If that terminalization write is ambiguous, retry authority is not restored; the attempt requires durable reconciliation.
 
-## One active attempt per study
+## One active attempt per study, per ledger
 
-A study may not seal another attempt while one is:
+Within one exact `BenchmarkAttemptLedger`, a study may not seal another attempt while one is:
 
 - `SEALED`;
 - `REVEALED`;
@@ -229,7 +229,13 @@ The successor precommit must reference every prior terminal attempt receipt dige
 
 It must also disclose every prior attempt HOLDOUT digest.
 
-This makes abandoned and failed attempts durable ancestry rather than optional history.
+This makes abandoned and failed attempts durable ancestry rather than optional history
+inside that ledger.
+
+R11 does not prove that no parallel/replacement ledger exists. A stronger
+"complete study history" claim requires external custody or an independently anchored
+ledger identity/root; creating or substituting another unanchored SQLite file is
+outside this local-ledger claim.
 
 ## Single-use reveal
 
@@ -408,6 +414,7 @@ It does not prove:
 - repository/commit authenticity beyond declared metadata;
 - exact Python interpreter / standard-library implementation identity;
 - database tamper resistance against arbitrary local write access;
+- absence of parallel/replacement unanchored ledgers;
 - data independence;
 - production representativeness;
 - causal truth of phenomenon labels;

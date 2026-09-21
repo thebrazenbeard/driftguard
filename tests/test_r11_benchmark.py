@@ -26,7 +26,6 @@ from driftguard.benchmark import (
     current_execution_binding,
     reveal_holdout,
     run_precommitted_holdout,
-    runtime_source_digests,
     trajectory_content_digest,
 )
 from driftguard.calibration import (
@@ -481,6 +480,28 @@ class R11BenchmarkTests(unittest.TestCase):
                 bound.calibration_source_digest,
                 bound.comparison_source_digest,
                 changed_sequential,
+                bound.model_source_digest,
+            ),
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                "runtime source digests do not match",
+            ):
+                self.registry.seal_precommit(precommit=plan)
+
+    def test_only_model_runtime_source_change_rejects_seal(self):
+        plan, _, _ = make_precommit()
+        bound = plan.execution_binding
+        changed_model = raw_bytes_digest(b"changed-model-code")
+        self.assertNotEqual(bound.model_source_digest, changed_model)
+        with patch(
+            "driftguard.benchmark.runtime_source_digests",
+            return_value=(
+                bound.benchmark_source_digest,
+                bound.calibration_source_digest,
+                bound.comparison_source_digest,
+                bound.sequential_source_digest,
+                changed_model,
             ),
         ):
             with self.assertRaisesRegex(
@@ -502,6 +523,7 @@ class R11BenchmarkTests(unittest.TestCase):
                 bound.calibration_source_digest,
                 bound.comparison_source_digest,
                 changed_sequential,
+                bound.model_source_digest,
             ),
         ):
             with self.assertRaisesRegex(
@@ -528,6 +550,7 @@ class R11BenchmarkTests(unittest.TestCase):
                 bound.calibration_source_digest,
                 bound.comparison_source_digest,
                 changed_sequential,
+                bound.model_source_digest,
             ),
         ):
             with self.assertRaisesRegex(

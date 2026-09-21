@@ -654,9 +654,6 @@ def validate_reload_directive(
         raise ValueError("reload directive subject digest mismatch")
     if directive.subject_epoch != expected_subject_epoch:
         raise ValueError("reload directive subject epoch mismatch")
-    if subject is not None:
-        ledger.assert_subject_current(subject)
-
     if directive.state_digest != state.digest:
         raise ValueError("reload directive state digest mismatch")
 
@@ -667,14 +664,17 @@ def validate_reload_directive(
     if directive.restore_packet_sha256 != expected_packet_digest:
         raise ValueError("reload directive restore packet digest mismatch")
 
-    durable = ledger.evaluation_receipt(
+    durable, session, currentness = ledger.reload_currentness_readback(
         session_id=directive.session_id,
         evaluation_digest=directive.evaluation_digest,
+        subject=subject,
     )
     if durable is None:
         raise ValueError(
             "reload directive requires durable ledger evaluation receipt"
         )
+    if session is None or currentness is None:
+        raise ValueError("reload directive requires current durable session")
     if (
         durable.evaluation_digest != directive.evaluation_digest
         or durable.state_digest != directive.state_digest
@@ -689,9 +689,6 @@ def validate_reload_directive(
             "reload directive does not match durable reload-required evaluation"
         )
 
-    session = ledger.session_row(directive.session_id)
-    if session is None:
-        raise ValueError("reload directive requires current durable session")
     if int(session["generation"]) != directive.expected_generation:
         raise ValueError("reload directive is not current durable generation")
     if session["last_evaluation_digest"] != directive.evaluation_digest:

@@ -124,6 +124,13 @@ The minimal conservative states are:
 The exact directive/currentness tuple has acquired the durable effect fence. No
 provider call may have happened yet. The fence is active.
 
+`CANCELLED_BEFORE_DISPATCH`
+
+The exact reservation was cancelled while still durably `RESERVED`, before any
+dispatch CAS could issue a permit. Cancellation and fence release occur atomically.
+This state is terminal. It never means provider non-application; it means only that
+DriftGuard never consumed the local dispatch claim for this reservation.
+
 `DISPATCH_UNCERTAIN`
 
 The ledger records this state **before** network I/O. From this point onward the
@@ -171,6 +178,7 @@ escape and no automatic retry path.
 
 Allowed outcome transitions are therefore intentionally asymmetric:
 
+- `RESERVED -> CANCELLED_BEFORE_DISPATCH`;
 - `RESERVED -> DISPATCH_UNCERTAIN`;
 - `DISPATCH_UNCERTAIN -> READBACK_REQUIRED`;
 - `DISPATCH_UNCERTAIN|READBACK_REQUIRED -> VERIFIED_NOT_APPLIED`;
@@ -199,6 +207,35 @@ A future `reserve_effect_attempt(...)` operation should use one
 
 The unique constraints, not caller convention, must prevent duplicate live
 reservations.
+
+## Pre-dispatch cancellation CAS
+
+A reservation that is still exactly `RESERVED` may be abandoned without provider
+reconciliation because no dispatch claim has been consumed and no dispatch permit
+has ever been issued.
+
+Cancellation must use one `BEGIN IMMEDIATE` transaction that verifies:
+
+- exact reservation id/digest;
+- exact current state = `RESERVED`;
+- exact directive/session/evaluation/state/subject binding;
+- no dispatch event/permit-issuance record exists for the reservation;
+- the same fence row being released belongs to this exact reservation.
+
+Only then may it atomically:
+
+1. transition `RESERVED -> CANCELLED_BEFORE_DISPATCH`;
+2. release the fence;
+3. append the terminal cancellation event;
+4. read back the terminal receipt;
+5. commit.
+
+Cancellation from `DISPATCH_UNCERTAIN`, `READBACK_REQUIRED`,
+`VERIFIED_APPLIED_AWAITING_ACK`, or `QUARANTINED_UNRESOLVED` is forbidden.
+Once the dispatch CAS is consumed, reconciliation—not cancellation—is required.
+
+`CANCELLED_BEFORE_DISPATCH` does not authorize replay of the old reservation. Any
+later attempt requires fresh PR #31 currentness re-admission and a new reservation.
 
 ## Pre-dispatch transition
 
@@ -438,9 +475,12 @@ another attempt on the same fence domain.
 
 Recovery rules:
 
-- `RESERVED`: no provider call should have occurred, but the reservation remains
-  fenced until a separately specified pre-dispatch cancellation path proves no
-  dispatch claim was consumed;
+- `RESERVED`: no provider call should have occurred; recovery may either resume
+  toward the single dispatch CAS or execute the exact
+  `RESERVED -> CANCELLED_BEFORE_DISPATCH` transaction. Cancellation is forbidden
+  once the dispatch claim has been consumed;
+- `CANCELLED_BEFORE_DISPATCH`: terminal; fence is already released by the exact
+  pre-dispatch cancellation CAS and any later attempt starts from fresh currentness;
 - `DISPATCH_UNCERTAIN`: reconcile against provider state before any retry;
 - `READBACK_REQUIRED`: reconcile against provider state before any retry;
 - `VERIFIED_APPLIED_AWAITING_ACK`: do not re-dispatch and do not release the
@@ -500,7 +540,13 @@ A future implementation should include at least these adversarial cases:
     reservation;
 27. `QUARANTINED_UNRESOLVED` survives process restart, keeps the fence active,
     rejects successor reservation, and has no V1 operator/admin reason-string
-    escape.
+    escape;
+28. exact `RESERVED -> CANCELLED_BEFORE_DISPATCH` atomically releases the fence
+    only when no dispatch claim/permit issuance exists;
+29. cancellation after `DISPATCH_UNCERTAIN` is rejected and cannot be used as a
+    reconciliation shortcut;
+30. a cancelled pre-dispatch reservation cannot be replayed and any later attempt
+    requires fresh currentness plus a new reservation.
 
 ## Relationship to Discovery effect-envelope work
 

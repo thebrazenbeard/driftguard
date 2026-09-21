@@ -79,6 +79,18 @@ A future effect-authorizing consumer must preserve all of these invariants.
    dispatch permit. Observing `DISPATCH_UNCERTAIN` never grants a second caller
    permission to send.
 
+10. **Verified application stays fenced until acknowledgement is consumed.**
+    Provider-specific proof that the effect applied transitions the attempt to
+    `VERIFIED_APPLIED_AWAITING_ACK`. It does **not** release the session/subject
+    fence. Only the exact acknowledgement-consuming CAS may advance the reload
+    anchor and release that fence.
+
+11. **Permanent provider ambiguity is quarantine, not retry authority.**
+    If the provider outcome cannot be proved applied or not-applied, V1 may mark
+    the attempt `QUARANTINED_UNRESOLVED`. That state remains fenced, does not
+    assert `NOT_APPLIED`, has no V1 operator-clear transition, and cannot authorize
+    a successor attempt.
+
 ## Proposed durable object: EffectAttemptReservation
 
 A reservation would bind at least:
@@ -110,12 +122,12 @@ The minimal conservative states are:
 `RESERVED`
 
 The exact directive/currentness tuple has acquired the durable effect fence. No
-provider call may have happened yet.
+provider call may have happened yet. The fence is active.
 
 `DISPATCH_UNCERTAIN`
 
 The ledger records this state **before** network I/O. From this point onward the
-provider call may or may not have occurred.
+provider call may or may not have occurred. The fence is active.
 
 A process crash immediately after this write is intentionally treated as uncertain
 rather than as safe-to-retry.
@@ -128,23 +140,49 @@ prove the provider outcome. The fence remains active.
 `VERIFIED_NOT_APPLIED`
 
 A provider-specific authenticated readback proves that this exact attempt did not
-apply. The fence may be released. A later retry requires a new currentness
-re-admission and a new reservation.
+apply. The transition into this state is the not-applied finalization CAS: it stores
+the exact provider-verification binding and releases the fence atomically.
+`VERIFIED_NOT_APPLIED` is terminal for this attempt. It does not itself authorize a
+retry; a later attempt requires fresh PR #31 currentness re-admission and a new
+reservation.
 
-`VERIFIED_APPLIED`
+`VERIFIED_APPLIED_AWAITING_ACK`
 
 A provider-specific authenticated readback proves application of this exact attempt.
-The generic layer still does not manufacture a reload acknowledgement. Native
-acknowledgement admission remains a separate ledger operation.
+This state is deliberately **not terminal** and remains fenced. It cannot be treated
+as `CLOSED`, cannot authorize a new reservation, and cannot release subject/session
+mutation. The generic layer still cannot manufacture a reload acknowledgement.
 
-`CLOSED`
+Only the exact acknowledgement-consuming transaction may move this state to
+`CLOSED_ACKNOWLEDGED_APPLIED`.
 
-The attempt is terminal and cannot be reused.
+`CLOSED_ACKNOWLEDGED_APPLIED`
+
+The provider-applied attempt has been consumed by one valid native acknowledgement
+transaction. The reload anchor/session generation advancement and fence release occur
+atomically in that same transaction. This state is terminal and cannot be reused.
+
+`QUARANTINED_UNRESOLVED`
+
+Provider outcome is permanently or operationally irreconcilable. This state does
+not assert application or non-application. The fence remains active indefinitely,
+the attempt is not successor-eligible, and V1 defines no operator/admin reason-string
+escape and no automatic retry path.
+
+Allowed outcome transitions are therefore intentionally asymmetric:
+
+- `RESERVED -> DISPATCH_UNCERTAIN`;
+- `DISPATCH_UNCERTAIN -> READBACK_REQUIRED`;
+- `DISPATCH_UNCERTAIN|READBACK_REQUIRED -> VERIFIED_NOT_APPLIED`;
+- `DISPATCH_UNCERTAIN|READBACK_REQUIRED -> VERIFIED_APPLIED_AWAITING_ACK`;
+- `DISPATCH_UNCERTAIN|READBACK_REQUIRED -> QUARANTINED_UNRESOLVED`;
+- `VERIFIED_APPLIED_AWAITING_ACK -> CLOSED_ACKNOWLEDGED_APPLIED`.
 
 There is deliberately no timeout transition from an uncertain state to
 `VERIFIED_NOT_APPLIED`.
 
-Wall-clock expiry must never manufacture retry authority.
+Wall-clock expiry, provider idempotency-window expiry, process restart, or operator
+choice must never manufacture retry authority.
 
 ## Reservation transaction
 
@@ -231,11 +269,25 @@ At minimum, the fence applies to:
 - replacement of the session's last evaluation;
 - any future effect attempt on the same directive/session-generation pair.
 
-A verified-applied finalization may combine the appropriate local state advancement
-with fence closure in one ledger transaction.
+Fence-active states are exactly:
 
-A verified-not-applied finalization may release the fence without advancing the
-reload acknowledgement state.
+- `RESERVED`;
+- `DISPATCH_UNCERTAIN`;
+- `READBACK_REQUIRED`;
+- `VERIFIED_APPLIED_AWAITING_ACK`;
+- `QUARANTINED_UNRESOLVED`.
+
+`VERIFIED_NOT_APPLIED` releases its fence only in the exact provider-verification
+finalization transaction that proves non-application.
+
+`VERIFIED_APPLIED_AWAITING_ACK` does **not** release its fence. Generic
+`acknowledge_reload()` remains blocked by ordinary fence coverage. The sole
+exception is the separately defined acknowledgement-consuming transaction below,
+which validates the exact applied attempt and performs native acknowledgement,
+reload-anchor/session-generation advancement, attempt closure, and fence release
+atomically.
+
+`QUARANTINED_UNRESOLVED` never releases its fence in V1.
 
 ## Fence coverage audit at the design base
 
@@ -286,11 +338,12 @@ The provider adapter must document the strongest claim its evidence supports.
 For a provider without trustworthy idempotency/readback, an uncertain attempt can
 remain permanently non-retriable without explicit external recovery.
 
-## Finalization CAS
+## Provider-verification finalization CAS
 
-Provider verification does not directly mutate session state.
+Provider verification does not directly manufacture native acknowledgement.
 
-A future finalizer should use one `BEGIN IMMEDIATE` transaction and compare:
+A future provider-verification finalizer should use one `BEGIN IMMEDIATE`
+transaction and compare:
 
 - reservation id/digest;
 - reservation expected state;
@@ -299,23 +352,84 @@ A future finalizer should use one `BEGIN IMMEDIATE` transaction and compare:
 - evaluation digest;
 - state digest;
 - subject digest/epoch;
-- provider-verification attempt binding.
+- current session generation and current subject epoch;
+- provider-verification attempt binding;
+- exact provider target/idempotency binding.
 
 The finalizer then performs exactly one allowed transition.
 
 For verified non-application:
 
-- mark the attempt `VERIFIED_NOT_APPLIED`;
-- release its durable fence;
+- store the exact provider verification;
+- atomically mark the attempt `VERIFIED_NOT_APPLIED`;
+- atomically release its durable fence;
 - do not create a reload acknowledgement;
-- do not retry automatically.
+- do not retry automatically;
+- require fresh PR #31 currentness re-admission plus a new reservation for any later
+  attempt.
 
 For verified application:
 
-- mark the attempt `VERIFIED_APPLIED`;
-- preserve the provider verification;
-- only a separately valid native acknowledgement path may advance the reload anchor;
-- behavioral recovery remains a later evidence class.
+- store the exact provider verification;
+- atomically mark the attempt `VERIFIED_APPLIED_AWAITING_ACK`;
+- **do not release the fence**;
+- do not advance the reload anchor/session generation;
+- do not create or infer a reload acknowledgement;
+- block evaluate/commit, recovery verification, subject transition, and new effect
+  reservation until the acknowledgement consumer succeeds.
+
+For an outcome that cannot be authoritatively resolved:
+
+- atomically mark the attempt `QUARANTINED_UNRESOLVED` only when the
+  provider-specific recovery contract concludes that V1 has no authoritative
+  applied/not-applied resolution path;
+- preserve all uncertainty evidence;
+- keep the fence active;
+- do not assert `NOT_APPLIED`;
+- do not mint/reissue a dispatch permit;
+- do not authorize retry or a successor;
+- provide no V1 reason-string/admin escape.
+
+## Acknowledgement-consuming CAS
+
+A verified applied effect is not closed merely because provider truth is known.
+
+The only V1 path that may consume `VERIFIED_APPLIED_AWAITING_ACK` is a dedicated
+effect-aware acknowledgement operation using one `BEGIN IMMEDIATE` transaction.
+
+That transaction must verify, inside the same snapshot:
+
+- exact reservation id and immutable reservation digest;
+- exact current attempt state = `VERIFIED_APPLIED_AWAITING_ACK`;
+- exact provider-verification digest and its applied outcome;
+- exact reload directive id/digest;
+- exact evaluation digest;
+- exact state digest;
+- exact monitored-subject digest/epoch;
+- exact session id and the still-current fenced session generation;
+- exact native acknowledgement identity/digest;
+- that the acknowledgement belongs to this directive/evaluation/state/subject/session
+  tuple and no other attempt;
+- that no prior acknowledgement consumption already closed this attempt.
+
+Only after every predicate matches may the transaction:
+
+1. apply the native reload acknowledgement semantics;
+2. advance the reload anchor/session generation exactly once;
+3. transition the attempt to `CLOSED_ACKNOWLEDGED_APPLIED`;
+4. release the effect fence;
+5. persist/read back the resulting acknowledgement + closed-attempt binding;
+6. commit.
+
+Any failed predicate, storage error, or transaction rollback leaves the attempt
+`VERIFIED_APPLIED_AWAITING_ACK` and the fence active.
+
+The ordinary generic `acknowledge_reload()` entry point must therefore reject while
+this fence exists. It cannot bypass the effect-attempt ledger. Only the exact
+effect-aware consumer may perform the acknowledgement mutation under the same
+transaction that closes the attempt and releases the fence.
+
+Behavioral recovery remains a later evidence class after acknowledgement.
 
 ## Recovery after crash
 
@@ -324,16 +438,22 @@ another attempt on the same fence domain.
 
 Recovery rules:
 
-- `RESERVED`: no provider call should have occurred, but the reservation still
-  requires an explicit cancellation/release transaction before replacement;
+- `RESERVED`: no provider call should have occurred, but the reservation remains
+  fenced until a separately specified pre-dispatch cancellation path proves no
+  dispatch claim was consumed;
 - `DISPATCH_UNCERTAIN`: reconcile against provider state before any retry;
 - `READBACK_REQUIRED`: reconcile against provider state before any retry;
-- ambiguous provider readback: remain fenced;
-- verified non-application: release fence, then require a fresh reservation;
-- verified application: proceed only through native acknowledgement/recovery
-  evidence.
+- `VERIFIED_APPLIED_AWAITING_ACK`: do not re-dispatch and do not release the
+  fence; resume only the exact acknowledgement-consuming CAS;
+- `VERIFIED_NOT_APPLIED`: attempt is terminal and fence is already released by
+  its exact verification CAS; any later attempt starts from fresh currentness;
+- `QUARANTINED_UNRESOLVED`: restore the fence from durable state and remain
+  non-retriable/non-successor-eligible indefinitely under V1;
+- `CLOSED_ACKNOWLEDGED_APPLIED`: attempt is terminal; later behavior/recovery
+  evidence is separate.
 
-No crash path silently converts uncertainty into non-application.
+No crash path silently converts uncertainty into non-application, application into
+acknowledgement, or quarantine into retry authority.
 
 ## Hostile tests required before implementation can qualify
 
@@ -364,7 +484,23 @@ A future implementation should include at least these adversarial cases:
     reissuance;
 19. provider idempotency-window expiry does not manufacture retry authority;
 20. a non-terminal "not currently observed" provider response cannot be promoted to
-    verified non-application.
+    verified non-application;
+21. verified application transitions to `VERIFIED_APPLIED_AWAITING_ACK` and the
+    fence still blocks evaluate/commit, recovery verification, subject transition,
+    and a new effect reservation;
+22. generic `acknowledge_reload()` cannot bypass an applied-awaiting-ack fence;
+23. the exact acknowledgement consumer atomically advances the reload anchor/session
+    generation, closes the attempt, and releases the fence exactly once;
+24. wrong-attempt, wrong-verification, stale-generation, stale-subject, or replayed
+    acknowledgement evidence fails with the fence still active;
+25. injected acknowledgement transaction failure/rollback leaves
+    `VERIFIED_APPLIED_AWAITING_ACK` intact and fenced;
+26. verified non-application releases the fence only in the exact
+    provider-verification CAS and still requires fresh currentness before a later
+    reservation;
+27. `QUARANTINED_UNRESOLVED` survives process restart, keeps the fence active,
+    rejects successor reservation, and has no V1 operator/admin reason-string
+    escape.
 
 ## Relationship to Discovery effect-envelope work
 
@@ -403,5 +539,7 @@ It does not:
 The key safety rule is:
 
 **reserve and fence locally, record uncertainty before I/O, reconcile provider truth,
-then finalize by exact CAS; never infer retry safety from silence or a generic
-receipt.**
+keep verified application fenced until native acknowledgement is atomically consumed,
+and quarantine permanently ambiguous outcomes without retry authority. Never infer
+retry safety from silence, generic receipts, timeout, restart, idempotency expiry, or
+operator choice.**

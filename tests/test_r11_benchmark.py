@@ -489,6 +489,60 @@ class R11BenchmarkTests(unittest.TestCase):
             ):
                 self.registry.seal_precommit(precommit=plan)
 
+    def test_only_sequential_runtime_source_change_rejects_reveal(self):
+        plan, _, holdout, _ = self.seal()
+        bound = plan.execution_binding
+        changed_sequential = raw_bytes_digest(
+            b"changed-sequential-code-after-seal"
+        )
+        with patch(
+            "driftguard.benchmark.runtime_source_digests",
+            return_value=(
+                bound.benchmark_source_digest,
+                bound.calibration_source_digest,
+                bound.comparison_source_digest,
+                changed_sequential,
+            ),
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                "runtime source digests do not match",
+            ):
+                self.reveal(plan, holdout)
+        durable = self.registry.attempt_receipt(
+            attempt_id=plan.attempt_id,
+        )
+        self.assertEqual(BenchmarkAttemptStatus.SEALED, durable.status)
+
+    def test_only_sequential_runtime_source_change_rejects_run(self):
+        plan, spec, holdout, _ = self.seal()
+        reveal = self.reveal(plan, holdout)
+        bound = plan.execution_binding
+        changed_sequential = raw_bytes_digest(
+            b"changed-sequential-code-after-reveal"
+        )
+        with patch(
+            "driftguard.benchmark.runtime_source_digests",
+            return_value=(
+                bound.benchmark_source_digest,
+                bound.calibration_source_digest,
+                bound.comparison_source_digest,
+                changed_sequential,
+            ),
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                "runtime source digests do not match",
+            ):
+                self.execute_holdout(plan, spec, holdout, reveal)
+        durable = self.registry.attempt_receipt(
+            attempt_id=plan.attempt_id,
+        )
+        self.assertEqual(
+            BenchmarkAttemptStatus.REVEALED,
+            durable.status,
+        )
+
     def test_second_active_attempt_for_same_study_is_rejected(self):
         self.seal()
         second, _, _ = make_precommit(

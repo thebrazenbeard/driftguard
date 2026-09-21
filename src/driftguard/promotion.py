@@ -1085,6 +1085,50 @@ class PromotionAttemptLedger:
             ).fetchone()
         return self._row_to_receipt(row) if row is not None else None
 
+    def attempt_history(
+        self,
+        *,
+        attempt_id: str,
+    ) -> tuple[dict[str, Any], ...]:
+        _nonempty(attempt_id, "promotion attempt id")
+        with closing(sqlite3.connect(self.path)) as db:
+            db.row_factory = sqlite3.Row
+            rows = db.execute(
+                """
+                SELECT event_id,attempt_id,study_id,plan_digest,status,
+                       reveal_digest,result_digest,reason
+                  FROM promotion_attempt_events
+                 WHERE attempt_id=?
+                 ORDER BY event_id
+                """,
+                (attempt_id,),
+            ).fetchall()
+        return tuple(
+            {
+                "event_id": int(row["event_id"]),
+                "attempt_id": str(row["attempt_id"]),
+                "study_id": str(row["study_id"]),
+                "plan_digest": str(row["plan_digest"]),
+                "status": str(row["status"]),
+                "reveal_digest": (
+                    str(row["reveal_digest"])
+                    if row["reveal_digest"] is not None
+                    else None
+                ),
+                "result_digest": (
+                    str(row["result_digest"])
+                    if row["result_digest"] is not None
+                    else None
+                ),
+                "reason": (
+                    str(row["reason"])
+                    if row["reason"] is not None
+                    else None
+                ),
+            }
+            for row in rows
+        )
+
     def study_attempts(
         self,
         *,

@@ -969,6 +969,36 @@ def _candidate_result(
     )
 
 
+def qualify_detector_candidate(
+    *,
+    candidate: DetectorCandidate,
+    calibration_plan: CalibrationPlan,
+    corpus: CalibrationCorpus,
+    cusum_spec: SequentialDetectorSpec,
+) -> DetectorCandidateResult:
+    """Evaluate exactly one frozen candidate under the R9/R10 metric contract."""
+    if type(candidate) is not DetectorCandidate:
+        raise ValueError("candidate must be exact DetectorCandidate")
+    if type(calibration_plan) is not CalibrationPlan:
+        raise ValueError("calibration_plan must be exact CalibrationPlan")
+    if type(corpus) is not CalibrationCorpus:
+        raise ValueError("corpus must be exact CalibrationCorpus")
+    if type(cusum_spec) is not SequentialDetectorSpec:
+        raise ValueError("cusum_spec must be exact SequentialDetectorSpec")
+    if calibration_plan.corpus_digest != corpus.digest:
+        raise ValueError("candidate qualification corpus digest mismatch")
+    if calibration_plan.detector_spec_digest != cusum_spec.digest:
+        raise ValueError(
+            "candidate qualification CUSUM reference spec digest mismatch"
+        )
+    return _candidate_result(
+        candidate=candidate,
+        calibration_plan=calibration_plan,
+        corpus=corpus,
+        cusum_spec=cusum_spec,
+    )
+
+
 def _metric_no_worse(
     a: CalibrationFamilyMetrics,
     b: CalibrationFamilyMetrics,
@@ -1123,4 +1153,5 @@ __all__ = [
     "EwmaDimensionPolicy",
     "PageHinkleyDimensionPolicy",
     "compare_detectors",
+    "qualify_detector_candidate",
 ]

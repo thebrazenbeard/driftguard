@@ -886,6 +886,587 @@ class BenchmarkRunResult:
             )
 
 
+class BenchmarkAttemptStatus(StrEnum):
+    SEALED = "SEALED"
+    REVEALED = "REVEALED"
+    EXECUTED = "EXECUTED"
+    INVALIDATED = "INVALIDATED"
+    ABORTED = "ABORTED"
+
+
+_TERMINAL_ATTEMPT_STATUSES = frozenset(
+    {
+        BenchmarkAttemptStatus.EXECUTED,
+        BenchmarkAttemptStatus.INVALIDATED,
+        BenchmarkAttemptStatus.ABORTED,
+    }
+)
+
+
+@dataclass(frozen=True, init=False)
+class BenchmarkAttemptReceipt:
+    study_id: str
+    attempt_id: str
+    precommit_id: str
+    precommit_digest: str
+    seal_digest: str
+    holdout_corpus_digest: str
+    execution_binding_digest: str
+    predecessor_attempt_digests: tuple[str, ...]
+    status: BenchmarkAttemptStatus
+    reveal_digest: str | None
+    run_digest: str | None
+    reason: str | None
+
+    def __init__(
+        self,
+        *,
+        study_id: str,
+        attempt_id: str,
+        precommit_id: str,
+        precommit_digest: str,
+        seal_digest: str,
+        holdout_corpus_digest: str,
+        execution_binding_digest: str,
+        predecessor_attempt_digests: tuple[str, ...],
+        status: BenchmarkAttemptStatus,
+        reveal_digest: str | None,
+        run_digest: str | None,
+        reason: str | None,
+        _attempt_token: object | None = None,
+    ) -> None:
+        if _attempt_token is not _ATTEMPT_RECEIPT_TOKEN:
+            raise ValueError(
+                "BenchmarkAttemptReceipt must come from BenchmarkAttemptLedger"
+            )
+        object.__setattr__(self, "study_id", study_id)
+        object.__setattr__(self, "attempt_id", attempt_id)
+        object.__setattr__(self, "precommit_id", precommit_id)
+        object.__setattr__(self, "precommit_digest", precommit_digest)
+        object.__setattr__(self, "seal_digest", seal_digest)
+        object.__setattr__(
+            self,
+            "holdout_corpus_digest",
+            holdout_corpus_digest,
+        )
+        object.__setattr__(
+            self,
+            "execution_binding_digest",
+            execution_binding_digest,
+        )
+        object.__setattr__(
+            self,
+            "predecessor_attempt_digests",
+            predecessor_attempt_digests,
+        )
+        object.__setattr__(self, "status", status)
+        object.__setattr__(self, "reveal_digest", reveal_digest)
+        object.__setattr__(self, "run_digest", run_digest)
+        object.__setattr__(self, "reason", reason)
+        self.__post_init__()
+
+    def __post_init__(self) -> None:
+        _nonempty(self.study_id, "attempt receipt study id")
+        _nonempty(self.attempt_id, "attempt receipt attempt id")
+        _nonempty(self.precommit_id, "attempt receipt precommit id")
+        for value, label in (
+            (self.precommit_digest, "attempt receipt precommit digest"),
+            (self.seal_digest, "attempt receipt seal digest"),
+            (
+                self.holdout_corpus_digest,
+                "attempt receipt holdout corpus digest",
+            ),
+            (
+                self.execution_binding_digest,
+                "attempt receipt execution binding digest",
+            ),
+        ):
+            require_sha256_digest(value, label)
+        if (
+            type(self.predecessor_attempt_digests) is not tuple
+            or self.predecessor_attempt_digests
+            != tuple(sorted(set(self.predecessor_attempt_digests)))
+        ):
+            raise ValueError(
+                "attempt receipt predecessor digests must be canonical/unique"
+            )
+        for item in self.predecessor_attempt_digests:
+            require_sha256_digest(item, "attempt receipt predecessor digest")
+        if type(self.status) is not BenchmarkAttemptStatus:
+            raise ValueError(
+                "attempt receipt status must be exact BenchmarkAttemptStatus"
+            )
+        if self.reveal_digest is not None:
+            require_sha256_digest(
+                self.reveal_digest,
+                "attempt receipt reveal digest",
+            )
+        if self.run_digest is not None:
+            require_sha256_digest(
+                self.run_digest,
+                "attempt receipt run digest",
+            )
+        if self.status is BenchmarkAttemptStatus.SEALED:
+            if self.reveal_digest is not None or self.run_digest is not None:
+                raise ValueError(
+                    "SEALED attempt cannot already contain reveal/run digest"
+                )
+            if self.reason is not None:
+                raise ValueError("SEALED attempt cannot contain terminal reason")
+        elif self.status is BenchmarkAttemptStatus.REVEALED:
+            if self.reveal_digest is None or self.run_digest is not None:
+                raise ValueError(
+                    "REVEALED attempt requires reveal digest and no run digest"
+                )
+            if self.reason is not None:
+                raise ValueError("REVEALED attempt cannot contain terminal reason")
+        elif self.status is BenchmarkAttemptStatus.EXECUTED:
+            if self.reveal_digest is None or self.run_digest is None:
+                raise ValueError(
+                    "EXECUTED attempt requires reveal and run digests"
+                )
+            if self.reason is not None:
+                raise ValueError("EXECUTED attempt cannot contain terminal reason")
+        else:
+            if type(self.reason) is not str or not self.reason.strip():
+                raise ValueError(
+                    "ABORTED/INVALIDATED attempt requires non-empty reason"
+                )
+
+    @property
+    def digest(self) -> str:
+        return canonical_digest(
+            {
+                "schema": "DRIFTGUARD_BENCHMARK_ATTEMPT_RECEIPT_V1",
+                "study_id": self.study_id,
+                "attempt_id": self.attempt_id,
+                "precommit_id": self.precommit_id,
+                "precommit_digest": self.precommit_digest,
+                "seal_digest": self.seal_digest,
+                "holdout_corpus_digest": self.holdout_corpus_digest,
+                "execution_binding_digest": self.execution_binding_digest,
+                "predecessor_attempt_digests": list(
+                    self.predecessor_attempt_digests
+                ),
+                "status": self.status.value,
+                "reveal_digest": self.reveal_digest,
+                "run_digest": self.run_digest,
+                "reason": self.reason,
+            }
+        )
+
+
+class BenchmarkAttemptLedger:
+    def __init__(self, path: str) -> None:
+        _nonempty(path, "benchmark attempt ledger path")
+        self.path = path
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS benchmark_attempts (
+                    attempt_id TEXT PRIMARY KEY,
+                    study_id TEXT NOT NULL,
+                    precommit_id TEXT NOT NULL UNIQUE,
+                    precommit_digest TEXT NOT NULL,
+                    seal_digest TEXT NOT NULL,
+                    holdout_corpus_digest TEXT NOT NULL,
+                    execution_binding_digest TEXT NOT NULL,
+                    predecessor_attempt_digests_json TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    reveal_digest TEXT NULL,
+                    run_digest TEXT NULL,
+                    reason TEXT NULL
+                )
+                """
+            )
+            db.execute(
+                """
+                CREATE INDEX IF NOT EXISTS benchmark_attempts_study_idx
+                    ON benchmark_attempts(study_id, rowid)
+                """
+            )
+
+    @staticmethod
+    def _row_to_receipt(row: sqlite3.Row) -> BenchmarkAttemptReceipt:
+        raw = json.loads(str(row["predecessor_attempt_digests_json"]))
+        if type(raw) is not list or any(type(item) is not str for item in raw):
+            raise ValueError(
+                "stored predecessor attempt digests are invalid"
+            )
+        return BenchmarkAttemptReceipt(
+            study_id=str(row["study_id"]),
+            attempt_id=str(row["attempt_id"]),
+            precommit_id=str(row["precommit_id"]),
+            precommit_digest=str(row["precommit_digest"]),
+            seal_digest=str(row["seal_digest"]),
+            holdout_corpus_digest=str(row["holdout_corpus_digest"]),
+            execution_binding_digest=str(row["execution_binding_digest"]),
+            predecessor_attempt_digests=tuple(raw),
+            status=BenchmarkAttemptStatus(str(row["status"])),
+            reveal_digest=(
+                str(row["reveal_digest"])
+                if row["reveal_digest"] is not None
+                else None
+            ),
+            run_digest=(
+                str(row["run_digest"])
+                if row["run_digest"] is not None
+                else None
+            ),
+            reason=(
+                str(row["reason"])
+                if row["reason"] is not None
+                else None
+            ),
+            _attempt_token=_ATTEMPT_RECEIPT_TOKEN,
+        )
+
+    def attempt_receipt(
+        self,
+        *,
+        attempt_id: str,
+    ) -> BenchmarkAttemptReceipt | None:
+        _nonempty(attempt_id, "benchmark attempt id")
+        with closing(sqlite3.connect(self.path)) as db:
+            db.row_factory = sqlite3.Row
+            row = db.execute(
+                "SELECT * FROM benchmark_attempts WHERE attempt_id=?",
+                (attempt_id,),
+            ).fetchone()
+        return self._row_to_receipt(row) if row is not None else None
+
+    def study_attempts(
+        self,
+        *,
+        study_id: str,
+    ) -> tuple[BenchmarkAttemptReceipt, ...]:
+        _nonempty(study_id, "benchmark study id")
+        with closing(sqlite3.connect(self.path)) as db:
+            db.row_factory = sqlite3.Row
+            rows = db.execute(
+                """
+                SELECT * FROM benchmark_attempts
+                 WHERE study_id=?
+                 ORDER BY rowid
+                """,
+                (study_id,),
+            ).fetchall()
+        return tuple(self._row_to_receipt(row) for row in rows)
+
+    def seal_precommit(
+        self,
+        *,
+        precommit: BenchmarkPrecommitPlan,
+    ) -> BenchmarkAttemptReceipt:
+        if type(precommit) is not BenchmarkPrecommitPlan:
+            raise ValueError(
+                "precommit must be exact BenchmarkPrecommitPlan"
+            )
+        precommit.execution_binding.assert_runtime_sources_match()
+        predecessor_json = json.dumps(
+            list(precommit.predecessor_attempt_digests),
+            separators=(",", ":"),
+        )
+        with closing(sqlite3.connect(self.path)) as db:
+            db.row_factory = sqlite3.Row
+            db.execute("BEGIN IMMEDIATE")
+            existing_attempt = db.execute(
+                "SELECT * FROM benchmark_attempts WHERE attempt_id=?",
+                (precommit.attempt_id,),
+            ).fetchone()
+            if existing_attempt is not None:
+                receipt = self._row_to_receipt(existing_attempt)
+                if receipt.precommit_digest != precommit.digest:
+                    raise ValueError(
+                        "same attempt_id cannot bind divergent precommit digest"
+                    )
+                return receipt
+
+            existing_precommit_id = db.execute(
+                "SELECT * FROM benchmark_attempts WHERE precommit_id=?",
+                (precommit.precommit_id,),
+            ).fetchone()
+            if existing_precommit_id is not None:
+                receipt = self._row_to_receipt(existing_precommit_id)
+                if receipt.precommit_digest != precommit.digest:
+                    raise ValueError(
+                        "same precommit_id cannot bind divergent precommit digest"
+                    )
+                raise ValueError(
+                    "precommit_id is already registered to another attempt"
+                )
+
+            rows = db.execute(
+                """
+                SELECT * FROM benchmark_attempts
+                 WHERE study_id=?
+                 ORDER BY rowid
+                """,
+                (precommit.study_id,),
+            ).fetchall()
+            receipts = tuple(self._row_to_receipt(row) for row in rows)
+            active = tuple(
+                item
+                for item in receipts
+                if item.status
+                in {
+                    BenchmarkAttemptStatus.SEALED,
+                    BenchmarkAttemptStatus.REVEALED,
+                }
+            )
+            if active:
+                raise ValueError(
+                    "study already has an active benchmark attempt"
+                )
+            if any(
+                item.status not in _TERMINAL_ATTEMPT_STATUSES
+                for item in receipts
+            ):
+                raise ValueError(
+                    "prior benchmark attempt is not terminal"
+                )
+            expected_predecessors = tuple(
+                sorted(item.digest for item in receipts)
+            )
+            if (
+                precommit.predecessor_attempt_digests
+                != expected_predecessors
+            ):
+                raise ValueError(
+                    "successor attempt must reference every prior terminal attempt digest"
+                )
+            prior_holdouts = {
+                item.holdout_corpus_digest for item in receipts
+            }
+            if not prior_holdouts.issubset(
+                set(precommit.predecessor_holdout_digests)
+            ):
+                raise ValueError(
+                    "successor attempt must disclose every prior attempt holdout digest"
+                )
+
+            db.execute(
+                """
+                INSERT INTO benchmark_attempts(
+                    attempt_id,study_id,precommit_id,precommit_digest,
+                    seal_digest,holdout_corpus_digest,
+                    execution_binding_digest,
+                    predecessor_attempt_digests_json,status,
+                    reveal_digest,run_digest,reason
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    precommit.attempt_id,
+                    precommit.study_id,
+                    precommit.precommit_id,
+                    precommit.digest,
+                    precommit.holdout_seal.digest,
+                    precommit.holdout_seal.manifest.corpus_digest,
+                    precommit.execution_binding.digest,
+                    predecessor_json,
+                    BenchmarkAttemptStatus.SEALED.value,
+                    None,
+                    None,
+                    None,
+                ),
+            )
+            row = db.execute(
+                "SELECT * FROM benchmark_attempts WHERE attempt_id=?",
+                (precommit.attempt_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError("sealed benchmark attempt readback missing")
+            return self._row_to_receipt(row)
+
+    def _assert_exact_precommit(
+        self,
+        *,
+        precommit: BenchmarkPrecommitPlan,
+        required_status: BenchmarkAttemptStatus,
+    ) -> BenchmarkAttemptReceipt:
+        receipt = self.attempt_receipt(attempt_id=precommit.attempt_id)
+        if receipt is None:
+            raise ValueError(
+                "benchmark attempt must be durably sealed before use"
+            )
+        if receipt.study_id != precommit.study_id:
+            raise ValueError("benchmark attempt study id mismatch")
+        if receipt.precommit_id != precommit.precommit_id:
+            raise ValueError("benchmark attempt precommit id mismatch")
+        if receipt.precommit_digest != precommit.digest:
+            raise ValueError("benchmark attempt precommit digest mismatch")
+        if receipt.seal_digest != precommit.holdout_seal.digest:
+            raise ValueError("benchmark attempt seal digest mismatch")
+        if (
+            receipt.execution_binding_digest
+            != precommit.execution_binding.digest
+        ):
+            raise ValueError(
+                "benchmark attempt execution binding mismatch"
+            )
+        if receipt.status is not required_status:
+            raise ValueError(
+                f"benchmark attempt must be {required_status.value}"
+            )
+        return receipt
+
+    def mark_revealed(
+        self,
+        *,
+        precommit: BenchmarkPrecommitPlan,
+        reveal: HoldoutRevealReceipt,
+    ) -> BenchmarkAttemptReceipt:
+        self._assert_exact_precommit(
+            precommit=precommit,
+            required_status=BenchmarkAttemptStatus.SEALED,
+        )
+        with closing(sqlite3.connect(self.path)) as db:
+            db.row_factory = sqlite3.Row
+            db.execute("BEGIN IMMEDIATE")
+            updated = db.execute(
+                """
+                UPDATE benchmark_attempts
+                   SET status=?, reveal_digest=?
+                 WHERE attempt_id=?
+                   AND precommit_digest=?
+                   AND status=?
+                   AND reveal_digest IS NULL
+                   AND run_digest IS NULL
+                """,
+                (
+                    BenchmarkAttemptStatus.REVEALED.value,
+                    reveal.digest,
+                    precommit.attempt_id,
+                    precommit.digest,
+                    BenchmarkAttemptStatus.SEALED.value,
+                ),
+            )
+            if updated.rowcount != 1:
+                raise ValueError(
+                    "benchmark reveal is single-use or attempt is stale"
+                )
+            row = db.execute(
+                "SELECT * FROM benchmark_attempts WHERE attempt_id=?",
+                (precommit.attempt_id,),
+            ).fetchone()
+            return self._row_to_receipt(row)
+
+    def mark_executed(
+        self,
+        *,
+        precommit: BenchmarkPrecommitPlan,
+        reveal: HoldoutRevealReceipt,
+        run: BenchmarkRunReceipt,
+    ) -> BenchmarkAttemptReceipt:
+        current = self._assert_exact_precommit(
+            precommit=precommit,
+            required_status=BenchmarkAttemptStatus.REVEALED,
+        )
+        if current.reveal_digest != reveal.digest:
+            raise ValueError(
+                "benchmark attempt reveal digest mismatch"
+            )
+        with closing(sqlite3.connect(self.path)) as db:
+            db.row_factory = sqlite3.Row
+            db.execute("BEGIN IMMEDIATE")
+            updated = db.execute(
+                """
+                UPDATE benchmark_attempts
+                   SET status=?, run_digest=?
+                 WHERE attempt_id=?
+                   AND precommit_digest=?
+                   AND status=?
+                   AND reveal_digest=?
+                   AND run_digest IS NULL
+                """,
+                (
+                    BenchmarkAttemptStatus.EXECUTED.value,
+                    run.digest,
+                    precommit.attempt_id,
+                    precommit.digest,
+                    BenchmarkAttemptStatus.REVEALED.value,
+                    reveal.digest,
+                ),
+            )
+            if updated.rowcount != 1:
+                raise ValueError(
+                    "benchmark run is single-use or attempt is stale"
+                )
+            row = db.execute(
+                "SELECT * FROM benchmark_attempts WHERE attempt_id=?",
+                (precommit.attempt_id,),
+            ).fetchone()
+            return self._row_to_receipt(row)
+
+    def _terminalize(
+        self,
+        *,
+        attempt_id: str,
+        status: BenchmarkAttemptStatus,
+        reason: str,
+    ) -> BenchmarkAttemptReceipt:
+        if status not in {
+            BenchmarkAttemptStatus.ABORTED,
+            BenchmarkAttemptStatus.INVALIDATED,
+        }:
+            raise ValueError("unsupported benchmark terminal status")
+        _nonempty(reason, "benchmark terminal reason")
+        with closing(sqlite3.connect(self.path)) as db:
+            db.row_factory = sqlite3.Row
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT * FROM benchmark_attempts WHERE attempt_id=?",
+                (attempt_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError("benchmark attempt not found")
+            current = self._row_to_receipt(row)
+            if current.status not in {
+                BenchmarkAttemptStatus.SEALED,
+                BenchmarkAttemptStatus.REVEALED,
+            }:
+                raise ValueError(
+                    "only active benchmark attempt can be aborted/invalidated"
+                )
+            db.execute(
+                """
+                UPDATE benchmark_attempts
+                   SET status=?, reason=?
+                 WHERE attempt_id=?
+                """,
+                (status.value, reason, attempt_id),
+            )
+            row = db.execute(
+                "SELECT * FROM benchmark_attempts WHERE attempt_id=?",
+                (attempt_id,),
+            ).fetchone()
+            return self._row_to_receipt(row)
+
+    def abort_attempt(
+        self,
+        *,
+        attempt_id: str,
+        reason: str,
+    ) -> BenchmarkAttemptReceipt:
+        return self._terminalize(
+            attempt_id=attempt_id,
+            status=BenchmarkAttemptStatus.ABORTED,
+            reason=reason,
+        )
+
+    def invalidate_attempt(
+        self,
+        *,
+        attempt_id: str,
+        reason: str,
+    ) -> BenchmarkAttemptReceipt:
+        return self._terminalize(
+            attempt_id=attempt_id,
+            status=BenchmarkAttemptStatus.INVALIDATED,
+            reason=reason,
+        )
+
+
 def reveal_holdout(
     *,
     precommit: BenchmarkPrecommitPlan,

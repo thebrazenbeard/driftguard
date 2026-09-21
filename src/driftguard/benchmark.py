@@ -667,7 +667,10 @@ class BenchmarkPrecommitPlan:
 
 @dataclass(frozen=True, init=False)
 class HoldoutRevealReceipt:
+    study_id: str
+    attempt_id: str
     precommit_digest: str
+    execution_binding_digest: str
     seal_digest: str
     manifest_digest: str
     corpus_digest: str
@@ -677,7 +680,10 @@ class HoldoutRevealReceipt:
     def __init__(
         self,
         *,
+        study_id: str,
+        attempt_id: str,
         precommit_digest: str,
+        execution_binding_digest: str,
         seal_digest: str,
         manifest_digest: str,
         corpus_digest: str,
@@ -689,7 +695,14 @@ class HoldoutRevealReceipt:
             raise ValueError(
                 "HoldoutRevealReceipt must come from reveal_holdout"
             )
+        object.__setattr__(self, "study_id", study_id)
+        object.__setattr__(self, "attempt_id", attempt_id)
         object.__setattr__(self, "precommit_digest", precommit_digest)
+        object.__setattr__(
+            self,
+            "execution_binding_digest",
+            execution_binding_digest,
+        )
         object.__setattr__(self, "seal_digest", seal_digest)
         object.__setattr__(self, "manifest_digest", manifest_digest)
         object.__setattr__(self, "corpus_digest", corpus_digest)
@@ -698,8 +711,14 @@ class HoldoutRevealReceipt:
         self.__post_init__()
 
     def __post_init__(self) -> None:
+        _nonempty(self.study_id, "reveal study id")
+        _nonempty(self.attempt_id, "reveal attempt id")
         for value, label in (
             (self.precommit_digest, "reveal precommit digest"),
+            (
+                self.execution_binding_digest,
+                "reveal execution binding digest",
+            ),
             (self.seal_digest, "reveal seal digest"),
             (self.manifest_digest, "reveal manifest digest"),
             (self.corpus_digest, "reveal corpus digest"),
@@ -713,8 +732,11 @@ class HoldoutRevealReceipt:
     def digest(self) -> str:
         return canonical_digest(
             {
-                "schema": "DRIFTGUARD_HOLDOUT_REVEAL_RECEIPT_V1",
+                "schema": "DRIFTGUARD_HOLDOUT_REVEAL_RECEIPT_V2",
+                "study_id": self.study_id,
+                "attempt_id": self.attempt_id,
                 "precommit_digest": self.precommit_digest,
+                "execution_binding_digest": self.execution_binding_digest,
                 "seal_digest": self.seal_digest,
                 "manifest_digest": self.manifest_digest,
                 "corpus_digest": self.corpus_digest,
@@ -726,7 +748,10 @@ class HoldoutRevealReceipt:
 
 @dataclass(frozen=True, init=False)
 class BenchmarkRunReceipt:
+    study_id: str
+    attempt_id: str
     precommit_digest: str
+    execution_binding_digest: str
     reveal_digest: str
     calibration_plan_digest: str
     comparison_plan_digest: str
@@ -737,7 +762,10 @@ class BenchmarkRunReceipt:
     def __init__(
         self,
         *,
+        study_id: str,
+        attempt_id: str,
         precommit_digest: str,
+        execution_binding_digest: str,
         reveal_digest: str,
         calibration_plan_digest: str,
         comparison_plan_digest: str,
@@ -750,7 +778,14 @@ class BenchmarkRunReceipt:
             raise ValueError(
                 "BenchmarkRunReceipt must come from run_precommitted_holdout"
             )
+        object.__setattr__(self, "study_id", study_id)
+        object.__setattr__(self, "attempt_id", attempt_id)
         object.__setattr__(self, "precommit_digest", precommit_digest)
+        object.__setattr__(
+            self,
+            "execution_binding_digest",
+            execution_binding_digest,
+        )
         object.__setattr__(self, "reveal_digest", reveal_digest)
         object.__setattr__(
             self,
@@ -776,8 +811,14 @@ class BenchmarkRunReceipt:
         self.__post_init__()
 
     def __post_init__(self) -> None:
+        _nonempty(self.study_id, "benchmark run study id")
+        _nonempty(self.attempt_id, "benchmark run attempt id")
         for value, label in (
             (self.precommit_digest, "benchmark run precommit digest"),
+            (
+                self.execution_binding_digest,
+                "benchmark run execution binding digest",
+            ),
             (self.reveal_digest, "benchmark run reveal digest"),
             (
                 self.calibration_plan_digest,
@@ -808,8 +849,11 @@ class BenchmarkRunReceipt:
     def digest(self) -> str:
         return canonical_digest(
             {
-                "schema": "DRIFTGUARD_BENCHMARK_RUN_RECEIPT_V1",
+                "schema": "DRIFTGUARD_BENCHMARK_RUN_RECEIPT_V2",
+                "study_id": self.study_id,
+                "attempt_id": self.attempt_id,
                 "precommit_digest": self.precommit_digest,
+                "execution_binding_digest": self.execution_binding_digest,
                 "reveal_digest": self.reveal_digest,
                 "calibration_plan_digest": self.calibration_plan_digest,
                 "comparison_plan_digest": self.comparison_plan_digest,

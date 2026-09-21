@@ -2,6 +2,7 @@ import os
 import sqlite3
 from contextlib import closing
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 from dataclasses import replace
@@ -547,7 +548,7 @@ class ExternalActuatorBoundaryTests(LedgerHarness):
             readback.session_last_evaluation_digest,
         )
         self.assertEqual(
-            "SINGLE_SQLITE_READ_TRANSACTION_SNAPSHOT_ONLY",
+            "SINGLE_SQLITE_BEGIN_IMMEDIATE_CURRENTNESS_SNAPSHOT_ONLY",
             readback.snapshot_claim,
         )
         self.assertEqual(64, len(readback.digest))
@@ -836,6 +837,100 @@ class SubjectEffectCompositionTests(unittest.TestCase):
         with self.assertRaisesRegex(
             ValueError,
             "current session subject epoch mismatch",
+        ):
+            validate_reload_directive(
+                directive=directive,
+                state=self.s,
+                ledger=self.ledger,
+                subject=self.subject,
+            )
+
+    def test_mid_validation_subject_transition_cannot_commit(self):
+        directive = self.directive()
+        successor = monitored_subject(epoch=1)
+        transition = SubjectEpochTransition(
+            transition_id="effect-mid-validation-transition",
+            subject_id=self.subject.subject_id,
+            predecessor_epoch=0,
+            predecessor_digest=self.subject.configuration_digest,
+            successor_epoch=1,
+            successor_digest=successor.configuration_digest,
+            reason="hostile concurrent currentness transition",
+        )
+
+        entered_snapshot = threading.Event()
+        release_snapshot = threading.Event()
+        validation_result = []
+        validation_errors = []
+        original_converter = self.ledger._evaluation_row_to_receipt
+
+        def paused_converter(row):
+            entered_snapshot.set()
+            if not release_snapshot.wait(timeout=3):
+                raise RuntimeError("test snapshot release timeout")
+            return original_converter(row)
+
+        def run_validation():
+            try:
+                with patch.object(
+                    self.ledger,
+                    "_evaluation_row_to_receipt",
+                    side_effect=paused_converter,
+                ):
+                    validation_result.append(
+                        validate_reload_directive(
+                            directive=directive,
+                            state=self.s,
+                            ledger=self.ledger,
+                            subject=self.subject,
+                        )
+                    )
+            except BaseException as exc:
+                validation_errors.append(exc)
+
+        worker = threading.Thread(target=run_validation)
+        worker.start()
+        self.assertTrue(
+            entered_snapshot.wait(timeout=3),
+            "validation never entered atomic currentness snapshot",
+        )
+
+        contender = DriftLedger(self.path)
+
+        def short_timeout_connect():
+            connection = sqlite3.connect(self.path, timeout=0.05)
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys = ON")
+            return connection
+
+        try:
+            with patch.object(
+                contender,
+                "_connect",
+                side_effect=short_timeout_connect,
+            ):
+                with self.assertRaises(sqlite3.OperationalError):
+                    contender.transition_subject_epoch(
+                        predecessor=self.subject,
+                        successor=successor,
+                        transition=transition,
+                    )
+        finally:
+            release_snapshot.set()
+            worker.join(timeout=3)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual([], validation_errors)
+        self.assertEqual([directive.digest], validation_result)
+
+        self.ledger.transition_subject_epoch(
+            predecessor=self.subject,
+            successor=successor,
+            transition=transition,
+        )
+        with self.assertRaisesRegex(
+            StaleGenerationError,
+            "epoch has been superseded",
         ):
             validate_reload_directive(
                 directive=directive,

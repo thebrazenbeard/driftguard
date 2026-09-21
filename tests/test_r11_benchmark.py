@@ -1,7 +1,30 @@
 from dataclasses import replace
 from hashlib import sha256
+import os
+import tempfile
 import unittest
 
+from driftguard.benchmark import (
+    BenchmarkAttemptLedger,
+    BenchmarkAttemptReceipt,
+    BenchmarkAttemptStatus,
+    BenchmarkCorpusManifest,
+    BenchmarkExecutionBinding,
+    BenchmarkFamilyManifest,
+    BenchmarkPhenomenon,
+    BenchmarkPrecommitPlan,
+    BenchmarkRunReceipt,
+    HoldoutCorpusSeal,
+    HoldoutRevealReceipt,
+    PRECOMMIT_CLAIM,
+    REVEAL_CLAIM,
+    RUN_CLAIM,
+    canonical_corpus_artifact_bytes,
+    current_execution_binding,
+    reveal_holdout,
+    run_precommitted_holdout,
+    trajectory_content_digest,
+)
 from driftguard.calibration import (
     CalibrationCorpus,
     CalibrationCorpusRole,
@@ -15,22 +38,6 @@ from driftguard.comparison import (
     EwmaDimensionPolicy,
     PageHinkleyDimensionPolicy,
 )
-from driftguard.benchmark import (
-    BenchmarkCorpusManifest,
-    BenchmarkFamilyManifest,
-    BenchmarkPhenomenon,
-    BenchmarkPrecommitPlan,
-    BenchmarkRunReceipt,
-    HoldoutCorpusSeal,
-    HoldoutRevealReceipt,
-    PRECOMMIT_CLAIM,
-    REVEAL_CLAIM,
-    RUN_CLAIM,
-    canonical_corpus_artifact_bytes,
-    trajectory_content_digest,
-    reveal_holdout,
-    run_precommitted_holdout,
-)
 from driftguard.model import SourceBinding, raw_bytes_digest
 from driftguard.sequential import CusumDimensionPolicy, SequentialDetectorSpec
 
@@ -41,7 +48,9 @@ PH_PARAMS = SourceBinding("comparison://r11-page-hinkley", "v1")
 PH_DIGEST = raw_bytes_digest(b"r11-page-hinkley")
 EWMA_PARAMS = SourceBinding("comparison://r11-ewma", "v1")
 EWMA_DIGEST = raw_bytes_digest(b"r11-ewma")
+PRIOR_R10_HOLDOUT = raw_bytes_digest(b"historical-r9-r10-holdout")
 DIMENSIONS = ("collateral", "target")
+TEST_COMMIT = "a" * 40
 
 FAMILY_ROWS = (
     ("01-low-noise", BenchmarkPhenomenon.STABLE_LOW_NOISE),
@@ -249,35 +258,105 @@ def family_policies():
     )
 
 
-def precommit():
+def execution_binding():
+    return current_execution_binding(
+        repository="thebrazenbeard/driftguard",
+        commit_sha=TEST_COMMIT,
+    )
+
+
+def make_precommit(
+    *,
+    study_id="study-r11",
+    attempt_id="attempt-1",
+    precommit_id="precommit-1",
+    predecessor_attempt_digests=(),
+    predecessor_holdout_digests=(PRIOR_R10_HOLDOUT,),
+    holdout_label="holdout-1",
+    holdout_offset=0.01,
+):
     spec = cusum_spec()
-    design = corpus(CalibrationCorpusRole.DESIGN, label="design", offset=0.0)
+    design = corpus(
+        CalibrationCorpusRole.DESIGN,
+        label=f"design-{attempt_id}",
+        offset=0.0,
+    )
     holdout = corpus(
         CalibrationCorpusRole.HOLDOUT_QUALIFICATION,
-        label="holdout",
-        offset=0.01,
+        label=holdout_label,
+        offset=holdout_offset,
     )
-    design_manifest = manifest(design, label="design")
-    holdout_manifest = manifest(holdout, label="holdout")
     plan = BenchmarkPrecommitPlan(
-        precommit_id="r11-precommit",
-        design_manifest=design_manifest,
+        study_id=study_id,
+        attempt_id=attempt_id,
+        precommit_id=precommit_id,
+        predecessor_attempt_digests=tuple(
+            sorted(predecessor_attempt_digests)
+        ),
+        predecessor_holdout_digests=tuple(
+            sorted(predecessor_holdout_digests)
+        ),
+        execution_binding=execution_binding(),
+        design_manifest=manifest(
+            design,
+            label=f"design-{attempt_id}",
+        ),
         holdout_seal=HoldoutCorpusSeal(
-            seal_id="r11-holdout-seal",
-            manifest=holdout_manifest,
+            seal_id=f"seal-{attempt_id}",
+            manifest=manifest(holdout, label=holdout_label),
         ),
         cusum_spec_digest=spec.digest,
         family_policies=family_policies(),
         candidates=candidates(spec),
-        calibration_plan_id="r11-holdout-calibration",
-        comparison_id="r11-holdout-comparison",
-        precommit_artifact=SourceBinding("precommit://r11", "v1"),
-        precommit_artifact_digest=raw_bytes_digest(b"r11-precommit-artifact"),
+        calibration_plan_id=f"calibration-{attempt_id}",
+        comparison_id=f"comparison-{attempt_id}",
+        precommit_artifact=SourceBinding(
+            f"precommit://{attempt_id}",
+            "v1",
+        ),
+        precommit_artifact_digest=raw_bytes_digest(
+            f"precommit:{attempt_id}".encode("utf-8")
+        ),
     )
-    return plan, spec, design, holdout
+    return plan, spec, holdout
 
 
 class R11BenchmarkTests(unittest.TestCase):
+    def setUp(self):
+        handle = tempfile.NamedTemporaryFile(delete=False)
+        handle.close()
+        self.path = handle.name
+        self.registry = BenchmarkAttemptLedger(self.path)
+
+    def tearDown(self):
+        os.unlink(self.path)
+
+    def seal(self, **kwargs):
+        plan, spec, holdout = make_precommit(**kwargs)
+        receipt = self.registry.seal_precommit(precommit=plan)
+        return plan, spec, holdout, receipt
+
+    def reveal(self, plan, holdout):
+        return reveal_holdout(
+            registry=self.registry,
+            precommit=plan,
+            execution_binding=plan.execution_binding,
+            manifest=plan.holdout_seal.manifest,
+            corpus=holdout,
+            artifact_bytes=canonical_corpus_artifact_bytes(holdout),
+        )
+
+    def run(self, plan, spec, holdout, reveal):
+        return run_precommitted_holdout(
+            registry=self.registry,
+            precommit=plan,
+            execution_binding=plan.execution_binding,
+            reveal=reveal,
+            manifest=plan.holdout_seal.manifest,
+            corpus=holdout,
+            cusum_spec=spec,
+        )
+
     def test_core_manifest_requires_every_phenomenon_exactly_once(self):
         c = corpus(CalibrationCorpusRole.DESIGN, label="design")
         good = manifest(c, label="design")
@@ -301,79 +380,60 @@ class R11BenchmarkTests(unittest.TestCase):
         ):
             replace(good, families=(changed, *good.families[1:]))
 
-    def test_manifest_validates_exact_corpus_and_shift_labels(self):
-        c = corpus(CalibrationCorpusRole.HOLDOUT_QUALIFICATION, label="holdout")
-        m = manifest(c, label="holdout")
-        m.validate_corpus(c)
-        shifted = next(
-            item
-            for item in c.trajectories
-            if item.regime is CalibrationTrajectoryRegime.SHIFTED
-        )
-        changed = replace(
-            shifted,
-            shift_dimensions=(
-                "collateral",
-                "target",
-            ),
-        )
-        changed_corpus = replace(
-            c,
-            trajectories=tuple(
-                changed if item.trajectory_id == shifted.trajectory_id else item
-                for item in c.trajectories
-            ),
-        )
-        with self.assertRaisesRegex(
-            ValueError,
-            "corpus digest mismatch",
-        ):
-            m.validate_corpus(changed_corpus)
-
-    def test_design_and_holdout_portfolio_contracts_match(self):
-        plan, _, _, _ = precommit()
-        self.assertEqual(
-            plan.design_manifest.portfolio_digest,
-            plan.holdout_seal.manifest.portfolio_digest,
-        )
-
-    def test_precommit_rejects_identical_design_holdout_trajectory_content(self):
+    def test_design_and_holdout_cannot_reuse_identical_trajectory_content(self):
         spec = cusum_spec()
         design = corpus(CalibrationCorpusRole.DESIGN, label="same")
         holdout = CalibrationCorpus(
-            corpus_id="r11-same-holdout",
+            corpus_id="same-holdout",
             version="1",
             role=CalibrationCorpusRole.HOLDOUT_QUALIFICATION,
             trajectories=design.trajectories,
-        )
-        design_manifest = manifest(design, label="same-design")
-        holdout_manifest = manifest(holdout, label="same-holdout")
-        self.assertEqual(
-            design_manifest.trajectory_content_digest,
-            holdout_manifest.trajectory_content_digest,
         )
         with self.assertRaisesRegex(
             ValueError,
             "cannot reuse identical trajectory content",
         ):
             BenchmarkPrecommitPlan(
-                precommit_id="reused-content",
-                design_manifest=design_manifest,
+                study_id="same-study",
+                attempt_id="same-attempt",
+                precommit_id="same-precommit",
+                predecessor_attempt_digests=(),
+                predecessor_holdout_digests=(PRIOR_R10_HOLDOUT,),
+                execution_binding=execution_binding(),
+                design_manifest=manifest(design, label="same-design"),
                 holdout_seal=HoldoutCorpusSeal(
-                    seal_id="reused-holdout",
-                    manifest=holdout_manifest,
+                    seal_id="same-seal",
+                    manifest=manifest(holdout, label="same-holdout"),
                 ),
                 cusum_spec_digest=spec.digest,
                 family_policies=family_policies(),
                 candidates=candidates(spec),
-                calibration_plan_id="reused-calibration",
-                comparison_id="reused-comparison",
-                precommit_artifact=SourceBinding("precommit://reuse", "v1"),
-                precommit_artifact_digest=raw_bytes_digest(b"reuse"),
+                calibration_plan_id="same-cal",
+                comparison_id="same-cmp",
+                precommit_artifact=SourceBinding("precommit://same", "v1"),
+                precommit_artifact_digest=raw_bytes_digest(b"same"),
             )
 
-    def test_precommit_binds_exact_future_r9_and_r10_plan_digests(self):
-        plan, spec, _, _ = precommit()
+    def test_r11_holdout_cannot_reuse_declared_r9_r10_holdout(self):
+        plan, _, holdout = make_precommit()
+        with self.assertRaisesRegex(
+            ValueError,
+            "cannot reuse a predecessor R9/R10",
+        ):
+            replace(
+                plan,
+                predecessor_holdout_digests=tuple(
+                    sorted(
+                        {
+                            PRIOR_R10_HOLDOUT,
+                            holdout.digest,
+                        }
+                    )
+                ),
+            )
+
+    def test_precommit_binds_exact_future_r9_r10_and_execution_subject(self):
+        plan, spec, _ = make_precommit()
         self.assertEqual(
             spec.digest,
             plan.holdout_calibration_plan.detector_spec_digest,
@@ -383,160 +443,218 @@ class R11BenchmarkTests(unittest.TestCase):
             plan.holdout_comparison_plan.calibration_plan_digest,
         )
         self.assertEqual(
-            plan.holdout_seal.manifest.corpus_digest,
-            plan.holdout_comparison_plan.corpus_digest,
+            execution_binding().digest,
+            plan.execution_binding.digest,
         )
+        self.assertEqual(PRECOMMIT_CLAIM, plan.precommit_claim)
 
-    def test_holdout_candidate_mutation_moves_precommit_identity(self):
-        plan, spec, _, _ = precommit()
-        changed = list(plan.candidates)
-        ewma = next(
-            item
-            for item in changed
-            if item.algorithm is DetectorAlgorithm.EWMA
+    def test_forged_execution_source_binding_is_rejected_before_seal(self):
+        plan, _, _ = make_precommit()
+        forged = replace(
+            plan.execution_binding,
+            benchmark_source_digest=raw_bytes_digest(b"changed-benchmark-code"),
         )
-        changed_ewma = replace(
-            ewma,
-            ewma=tuple(
-                replace(row, alarm_threshold=0.60)
-                for row in ewma.ewma
+        with self.assertRaisesRegex(
+            ValueError,
+            "runtime source digests do not match",
+        ):
+            self.registry.seal_precommit(
+                precommit=replace(plan, execution_binding=forged),
+            )
+
+    def test_second_active_attempt_for_same_study_is_rejected(self):
+        self.seal()
+        second, _, _ = make_precommit(
+            attempt_id="attempt-2",
+            precommit_id="precommit-2",
+            holdout_label="holdout-2",
+            holdout_offset=0.02,
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "already has an active benchmark attempt",
+        ):
+            self.registry.seal_precommit(precommit=second)
+
+    def test_same_precommit_id_cannot_bind_divergent_digest(self):
+        first, _, _, _ = self.seal()
+        changed, _, _ = make_precommit(
+            attempt_id="attempt-2",
+            precommit_id=first.precommit_id,
+            holdout_label="holdout-2",
+            holdout_offset=0.02,
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "same precommit_id cannot bind divergent",
+        ):
+            self.registry.seal_precommit(precommit=changed)
+
+    def test_reveal_requires_durable_seal(self):
+        plan, _, holdout = make_precommit()
+        with self.assertRaisesRegex(
+            ValueError,
+            "must be durably sealed",
+        ):
+            self.reveal(plan, holdout)
+
+    def test_reveal_replay_is_rejected_and_first_reveal_remains_durable(self):
+        plan, _, holdout, _ = self.seal()
+        reveal = self.reveal(plan, holdout)
+        durable = self.registry.attempt_receipt(
+            attempt_id=plan.attempt_id,
+        )
+        self.assertEqual(BenchmarkAttemptStatus.REVEALED, durable.status)
+        self.assertEqual(reveal.digest, durable.reveal_digest)
+        with self.assertRaisesRegex(
+            ValueError,
+            "must be SEALED",
+        ):
+            self.reveal(plan, holdout)
+
+    def test_run_replay_is_rejected(self):
+        plan, spec, holdout, _ = self.seal()
+        reveal = self.reveal(plan, holdout)
+        result = self.run(plan, spec, holdout, reveal)
+        durable = self.registry.attempt_receipt(
+            attempt_id=plan.attempt_id,
+        )
+        self.assertEqual(BenchmarkAttemptStatus.EXECUTED, durable.status)
+        self.assertEqual(result.receipt.digest, durable.run_digest)
+        with self.assertRaisesRegex(
+            ValueError,
+            "must be REVEALED",
+        ):
+            self.run(plan, spec, holdout, reveal)
+
+    def test_revealed_attempt_can_be_aborted_but_history_remains(self):
+        plan, _, holdout, _ = self.seal()
+        reveal = self.reveal(plan, holdout)
+        aborted = self.registry.abort_attempt(
+            attempt_id=plan.attempt_id,
+            reason="external custody anomaly",
+        )
+        self.assertEqual(BenchmarkAttemptStatus.ABORTED, aborted.status)
+        self.assertEqual(reveal.digest, aborted.reveal_digest)
+        reopened = BenchmarkAttemptLedger(self.path)
+        readback = reopened.attempt_receipt(attempt_id=plan.attempt_id)
+        self.assertEqual(aborted, readback)
+
+    def test_successor_attempt_without_predecessor_reference_is_rejected(self):
+        first, _, first_holdout, _ = self.seal()
+        self.registry.abort_attempt(
+            attempt_id=first.attempt_id,
+            reason="first attempt intentionally abandoned",
+        )
+        second, _, _ = make_precommit(
+            attempt_id="attempt-2",
+            precommit_id="precommit-2",
+            predecessor_attempt_digests=(),
+            predecessor_holdout_digests=(
+                PRIOR_R10_HOLDOUT,
+                first_holdout.digest,
             ),
+            holdout_label="holdout-2",
+            holdout_offset=0.02,
         )
-        changed = tuple(
-            changed_ewma if item.algorithm is DetectorAlgorithm.EWMA else item
-            for item in changed
-        )
-        changed = tuple(sorted(changed, key=lambda row: row.candidate_id))
-        other = replace(plan, candidates=changed)
-        self.assertNotEqual(plan.digest, other.digest)
-        self.assertNotEqual(
-            plan.holdout_comparison_plan.digest,
-            other.holdout_comparison_plan.digest,
-        )
-        self.assertEqual(spec.digest, other.cusum_spec_digest)
+        with self.assertRaisesRegex(
+            ValueError,
+            "reference every prior terminal attempt digest",
+        ):
+            self.registry.seal_precommit(precommit=second)
 
-    def test_holdout_policy_mutation_moves_precommit_identity(self):
-        plan, _, _, _ = precommit()
-        changed_policy = replace(
-            plan.family_policies[0],
-            minimum_detection_rate=0.50,
+    def test_successor_attempt_must_disclose_prior_holdout_and_can_chain_exactly(self):
+        first, _, first_holdout, _ = self.seal()
+        terminal = self.registry.abort_attempt(
+            attempt_id=first.attempt_id,
+            reason="documented abort",
         )
+        missing_holdout, _, _ = make_precommit(
+            attempt_id="attempt-2",
+            precommit_id="precommit-2",
+            predecessor_attempt_digests=(terminal.digest,),
+            predecessor_holdout_digests=(PRIOR_R10_HOLDOUT,),
+            holdout_label="holdout-2",
+            holdout_offset=0.02,
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "disclose every prior attempt holdout digest",
+        ):
+            self.registry.seal_precommit(precommit=missing_holdout)
+
+        valid, _, _ = make_precommit(
+            attempt_id="attempt-3",
+            precommit_id="precommit-3",
+            predecessor_attempt_digests=(terminal.digest,),
+            predecessor_holdout_digests=tuple(
+                sorted(
+                    {
+                        PRIOR_R10_HOLDOUT,
+                        first_holdout.digest,
+                    }
+                )
+            ),
+            holdout_label="holdout-3",
+            holdout_offset=0.03,
+        )
+        sealed = self.registry.seal_precommit(precommit=valid)
+        self.assertEqual(
+            (terminal.digest,),
+            sealed.predecessor_attempt_digests,
+        )
+
+    def test_execution_binding_change_after_seal_blocks_reveal(self):
+        plan, _, holdout, _ = self.seal()
         changed = replace(
-            plan,
-            family_policies=(
-                changed_policy,
-                *plan.family_policies[1:],
-            ),
+            plan.execution_binding,
+            commit_sha="b" * 40,
         )
-        self.assertNotEqual(plan.digest, changed.digest)
-        self.assertNotEqual(
-            plan.holdout_calibration_plan.digest,
-            changed.holdout_calibration_plan.digest,
-        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "does not match precommit",
+        ):
+            reveal_holdout(
+                registry=self.registry,
+                precommit=plan,
+                execution_binding=changed,
+                manifest=plan.holdout_seal.manifest,
+                corpus=holdout,
+                artifact_bytes=canonical_corpus_artifact_bytes(holdout),
+            )
 
-    def test_reveal_requires_canonical_artifact_bytes_for_exact_corpus(self):
-        plan, _, _, holdout = precommit()
-        m = plan.holdout_seal.manifest
-        receipt = reveal_holdout(
-            precommit=plan,
-            manifest=m,
-            corpus=holdout,
-            artifact_bytes=canonical_corpus_artifact_bytes(holdout),
-        )
-        self.assertEqual(REVEAL_CLAIM, receipt.reveal_claim)
+    def test_reveal_requires_exact_canonical_artifact_bytes(self):
+        plan, _, holdout, _ = self.seal()
         with self.assertRaisesRegex(
             ValueError,
             "do not canonically encode corpus",
         ):
             reveal_holdout(
+                registry=self.registry,
                 precommit=plan,
-                manifest=m,
+                execution_binding=plan.execution_binding,
+                manifest=plan.holdout_seal.manifest,
                 corpus=holdout,
                 artifact_bytes=b"not-the-corpus",
             )
 
-    def test_reveal_rejects_changed_holdout_corpus(self):
-        plan, _, _, holdout = precommit()
-        first = holdout.trajectories[0]
-        sample = list(first.samples)
-        sample[0] = (("collateral", 0.12), ("target", 0.11))
-        changed = replace(
-            holdout,
-            trajectories=(
-                replace(first, samples=tuple(sample)),
-                *holdout.trajectories[1:],
-            ),
-        )
-        with self.assertRaisesRegex(ValueError, "corpus digest mismatch"):
-            reveal_holdout(
-                precommit=plan,
-                manifest=plan.holdout_seal.manifest,
-                corpus=changed,
-                artifact_bytes=canonical_corpus_artifact_bytes(changed),
-            )
-
-    def test_reveal_receipt_cannot_be_directly_constructed(self):
-        plan, _, _, _ = precommit()
-        with self.assertRaisesRegex(
-            ValueError,
-            "must come from reveal_holdout",
-        ):
-            HoldoutRevealReceipt(
-                precommit_digest=plan.digest,
-                seal_digest=plan.holdout_seal.digest,
-                manifest_digest=plan.holdout_seal.manifest.digest,
-                corpus_digest=plan.holdout_seal.manifest.corpus_digest,
-                artifact_digest=plan.holdout_seal.manifest.artifact_digest,
-                reveal_claim=REVEAL_CLAIM,
-            )
-
-    def test_precommit_claim_does_not_pretend_nonaccess_or_trusted_time(self):
-        plan, _, _, _ = precommit()
-        self.assertEqual(PRECOMMIT_CLAIM, plan.precommit_claim)
-        self.assertIn("NOT_PROOF_OF_NONACCESS", plan.precommit_claim)
-        self.assertIn("TRUSTED_TIME", plan.precommit_claim)
-
     def test_exact_precommitted_holdout_executes_r10_without_promotion(self):
-        plan, spec, _, holdout = precommit()
-        m = plan.holdout_seal.manifest
-        reveal = reveal_holdout(
-            precommit=plan,
-            manifest=m,
-            corpus=holdout,
-            artifact_bytes=canonical_corpus_artifact_bytes(holdout),
-        )
-        result = run_precommitted_holdout(
-            precommit=plan,
-            reveal=reveal,
-            manifest=m,
-            corpus=holdout,
-            cusum_spec=spec,
-        )
+        plan, spec, holdout, _ = self.seal()
+        reveal = self.reveal(plan, holdout)
+        result = self.run(plan, spec, holdout, reveal)
         self.assertFalse(result.receipt.promotion_authorized)
         self.assertFalse(result.comparison.promotion_authorized)
         self.assertEqual(RUN_CLAIM, result.receipt.run_claim)
+        self.assertEqual(plan.study_id, result.receipt.study_id)
+        self.assertEqual(plan.attempt_id, result.receipt.attempt_id)
         self.assertEqual(
-            plan.holdout_calibration_plan.digest,
-            result.receipt.calibration_plan_digest,
-        )
-        self.assertEqual(
-            plan.holdout_comparison_plan.digest,
-            result.receipt.comparison_plan_digest,
-        )
-        self.assertEqual(
-            result.comparison.digest,
-            result.receipt.comparison_receipt_digest,
+            plan.execution_binding.digest,
+            result.receipt.execution_binding_digest,
         )
 
-    def test_run_rejects_changed_cusum_spec(self):
-        plan, spec, _, holdout = precommit()
-        m = plan.holdout_seal.manifest
-        reveal = reveal_holdout(
-            precommit=plan,
-            manifest=m,
-            corpus=holdout,
-            artifact_bytes=canonical_corpus_artifact_bytes(holdout),
-        )
+    def test_changed_cusum_spec_after_reveal_fails_and_attempt_remains_revealed(self):
+        plan, spec, holdout, _ = self.seal()
+        reveal = self.reveal(plan, holdout)
         changed_spec = replace(
             spec,
             dimensions=tuple(
@@ -550,22 +668,63 @@ class R11BenchmarkTests(unittest.TestCase):
             ValueError,
             "CUSUM spec digest mismatch",
         ):
-            run_precommitted_holdout(
-                precommit=plan,
-                reveal=reveal,
-                manifest=m,
-                corpus=holdout,
-                cusum_spec=changed_spec,
+            self.run(plan, changed_spec, holdout, reveal)
+        durable = self.registry.attempt_receipt(
+            attempt_id=plan.attempt_id,
+        )
+        self.assertEqual(BenchmarkAttemptStatus.REVEALED, durable.status)
+        self.assertEqual(reveal.digest, durable.reveal_digest)
+
+    def test_direct_attempt_receipt_construction_is_rejected(self):
+        plan, _, _, _ = self.seal()
+        with self.assertRaisesRegex(
+            ValueError,
+            "must come from BenchmarkAttemptLedger",
+        ):
+            BenchmarkAttemptReceipt(
+                study_id=plan.study_id,
+                attempt_id=plan.attempt_id,
+                precommit_id=plan.precommit_id,
+                precommit_digest=plan.digest,
+                seal_digest=plan.holdout_seal.digest,
+                holdout_corpus_digest=plan.holdout_seal.manifest.corpus_digest,
+                execution_binding_digest=plan.execution_binding.digest,
+                predecessor_attempt_digests=(),
+                status=BenchmarkAttemptStatus.SEALED,
+                reveal_digest=None,
+                run_digest=None,
+                reason=None,
             )
 
-    def test_run_receipt_cannot_be_directly_constructed(self):
-        plan, _, _, _ = precommit()
+    def test_direct_reveal_receipt_construction_is_rejected(self):
+        plan, _, _, _ = self.seal()
+        with self.assertRaisesRegex(
+            ValueError,
+            "must come from reveal_holdout",
+        ):
+            HoldoutRevealReceipt(
+                study_id=plan.study_id,
+                attempt_id=plan.attempt_id,
+                precommit_digest=plan.digest,
+                execution_binding_digest=plan.execution_binding.digest,
+                seal_digest=plan.holdout_seal.digest,
+                manifest_digest=plan.holdout_seal.manifest.digest,
+                corpus_digest=plan.holdout_seal.manifest.corpus_digest,
+                artifact_digest=plan.holdout_seal.manifest.artifact_digest,
+                reveal_claim=REVEAL_CLAIM,
+            )
+
+    def test_direct_run_receipt_construction_is_rejected(self):
+        plan, _, _, _ = self.seal()
         with self.assertRaisesRegex(
             ValueError,
             "must come from run_precommitted_holdout",
         ):
             BenchmarkRunReceipt(
+                study_id=plan.study_id,
+                attempt_id=plan.attempt_id,
                 precommit_digest=plan.digest,
+                execution_binding_digest=plan.execution_binding.digest,
                 reveal_digest=raw_bytes_digest(b"reveal"),
                 calibration_plan_digest=plan.holdout_calibration_plan.digest,
                 comparison_plan_digest=plan.holdout_comparison_plan.digest,
@@ -574,16 +733,11 @@ class R11BenchmarkTests(unittest.TestCase):
                 run_claim=RUN_CLAIM,
             )
 
-    def test_holdout_seal_rejects_design_manifest(self):
-        design = corpus(CalibrationCorpusRole.DESIGN, label="design")
-        with self.assertRaisesRegex(
-            ValueError,
-            "requires HOLDOUT_QUALIFICATION",
-        ):
-            HoldoutCorpusSeal(
-                seal_id="bad-seal",
-                manifest=manifest(design, label="design"),
-            )
+    def test_precommit_claim_explicitly_denies_nonaccess_and_trusted_time(self):
+        plan, _, _ = make_precommit()
+        self.assertEqual(PRECOMMIT_CLAIM, plan.precommit_claim)
+        self.assertIn("NOT_PROOF_OF_NONACCESS", plan.precommit_claim)
+        self.assertIn("TRUSTED_TIME", plan.precommit_claim)
 
 
 if __name__ == "__main__":

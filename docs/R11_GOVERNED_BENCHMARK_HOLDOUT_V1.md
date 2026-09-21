@@ -1,4 +1,4 @@
-# DriftGuard R11 Governed Benchmark + Holdout Precommit V2
+# DriftGuard R11 Governed Benchmark + Holdout Precommit V3
 
 Status: statistical/research candidate stacked on clean composed R10/attestation/effect head
 `9df4800d81ab2e937ffa97263b8095305a845661`.
@@ -31,7 +31,7 @@ A meaningful detector benchmark needs:
 - a reveal boundary that proves exact digest equality;
 - an explicit ceiling on what "untouched" can actually mean.
 
-R11 V2 implements that protocol.
+R11 V3 implements that protocol.
 
 ## Core benchmark portfolio
 
@@ -284,8 +284,12 @@ Immediately before detector comparison, the ledger atomically claims:
 A concurrent or replayed execution can no longer reach the comparison path after that claim is consumed.
 
 Any semantic exception after the execution claim and before durable completion—
-including detector comparison, non-promotion enforcement, or run-receipt
-construction—terminalizes the attempt as `INVALIDATED`.
+including detector comparison, non-promotion enforcement, run-receipt construction,
+or result-integrity validation—triggers a durable `INVALIDATED` transition.
+
+If that invalidation write itself fails ambiguously, R11 does not infer that
+invalidation succeeded and does not restore retry authority; the attempt remains
+non-retryable unless durable state is separately reconciled.
 
 Durable completion itself is a separate ambiguity boundary. If the final
 `EXECUTING -> EXECUTED` storage transition fails ambiguously, R11 deliberately
@@ -343,7 +347,7 @@ As elsewhere in DriftGuard, Python module-private/factory tokens and a writable 
 
 ## Hostile regressions
 
-R11 V2 tests freeze:
+R11 V3 tests freeze:
 
 - exact eight-phenomenon coverage;
 - one exact global dimension set;
@@ -376,7 +380,7 @@ The test corpora are protocol fixtures, not production benchmark evidence.
 
 ## Claim ceiling
 
-An R11 V2 PASS means:
+An R11 V3 PASS means:
 
 > these exact benchmark manifests, study/attempt commitments, disclosed prior-holdout set, benchmark/calibration/comparison/sequential/model execution-source hashes, HOLDOUT digest/bytes, R9 qualification plan, R10 comparison plan, and durable single-use state transitions compose deterministically under the governed protocol.
 
@@ -402,7 +406,7 @@ It does not prove:
 
 ## Composition base
 
-R11 V2 is stacked on the clean composed DriftGuard subject that carries:
+R11 V3 is stacked on the clean composed DriftGuard subject that carries:
 
 - R6 measurement validity;
 - repaired R7 subject identity/epoch authority;

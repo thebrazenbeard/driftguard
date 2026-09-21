@@ -194,6 +194,28 @@ with fence closure in one ledger transaction.
 A verified-not-applied finalization may release the fence without advancing the
 reload acknowledgement state.
 
+## Fence coverage audit at the design base
+
+At exact base `9df4800d81ab2e937ffa97263b8095305a845661`, runtime mutations that can invalidate a reservation are centralized in the ledger, but there is more than one path.
+
+A future fence implementation must cover **all** relevant mutation entry points, not only reload acknowledgement.
+
+Session-generation mutation paths observed at the design base include:
+
+- `DriftLedger.evaluate_and_commit()`;
+- `DriftLedger.acknowledge_reload()`;
+- `DriftLedger.verify_recovery()`.
+
+Monitored-subject currentness advances through:
+
+- `DriftLedger.transition_subject_epoch()`.
+
+The fence check must execute inside the same `BEGIN IMMEDIATE` transaction used by each mutation path, before the mutation can commit.
+
+A partial implementation is rejected. For example, blocking `acknowledge_reload()` while allowing `evaluate_and_commit()` to advance the same fenced session would defeat the reservation contract.
+
+Legacy schema migration updates are initialization/migration behavior, not a supported concurrent runtime mutation path. Running schema migration concurrently with active effect attempts is outside this V1 design and should remain prohibited.
+
 ## Provider adapter contract
 
 The neutral DriftGuard layer must not infer provider truth from an arbitrary JSON

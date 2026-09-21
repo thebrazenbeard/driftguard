@@ -1,8 +1,11 @@
 from dataclasses import replace
 from hashlib import sha256
 import os
+import sqlite3
 import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 from driftguard.benchmark import (
     BenchmarkAttemptLedger,
@@ -23,6 +26,7 @@ from driftguard.benchmark import (
     current_execution_binding,
     reveal_holdout,
     run_precommitted_holdout,
+    runtime_source_digests,
     trajectory_content_digest,
 )
 from driftguard.calibration import (
@@ -462,6 +466,29 @@ class R11BenchmarkTests(unittest.TestCase):
                 precommit=replace(plan, execution_binding=forged),
             )
 
+    def test_only_sequential_runtime_source_change_rejects_seal(self):
+        plan, _, _ = make_precommit()
+        bound = plan.execution_binding
+        changed_sequential = raw_bytes_digest(b"changed-sequential-code")
+        self.assertNotEqual(
+            bound.sequential_source_digest,
+            changed_sequential,
+        )
+        with patch(
+            "driftguard.benchmark.runtime_source_digests",
+            return_value=(
+                bound.benchmark_source_digest,
+                bound.calibration_source_digest,
+                bound.comparison_source_digest,
+                changed_sequential,
+            ),
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                "runtime source digests do not match",
+            ):
+                self.registry.seal_precommit(precommit=plan)
+
     def test_second_active_attempt_for_same_study_is_rejected(self):
         self.seal()
         second, _, _ = make_precommit(
@@ -696,6 +723,61 @@ class R11BenchmarkTests(unittest.TestCase):
             plan.execution_binding.digest,
             result.receipt.execution_binding_digest,
         )
+
+    def test_post_claim_semantic_failure_invalidates_attempt(self):
+        plan, spec, holdout, _ = self.seal()
+        reveal = self.reveal(plan, holdout)
+        with patch(
+            "driftguard.benchmark.compare_detectors",
+            return_value=SimpleNamespace(promotion_authorized=True),
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                "unexpectedly authorized promotion",
+            ):
+                self.execute_holdout(plan, spec, holdout, reveal)
+        durable = self.registry.attempt_receipt(
+            attempt_id=plan.attempt_id,
+        )
+        self.assertEqual(
+            BenchmarkAttemptStatus.INVALIDATED,
+            durable.status,
+        )
+        history = self.registry.attempt_history(
+            attempt_id=plan.attempt_id,
+        )
+        self.assertEqual(
+            (
+                BenchmarkAttemptStatus.SEALED.value,
+                BenchmarkAttemptStatus.REVEALED.value,
+                BenchmarkAttemptStatus.EXECUTING.value,
+                BenchmarkAttemptStatus.INVALIDATED.value,
+            ),
+            tuple(item["status"] for item in history),
+        )
+
+    def test_ambiguous_completion_failure_remains_executing_and_blocks_retry(self):
+        plan, spec, holdout, _ = self.seal()
+        reveal = self.reveal(plan, holdout)
+        with patch.object(
+            self.registry,
+            "mark_executed",
+            side_effect=sqlite3.OperationalError("simulated commit ambiguity"),
+        ):
+            with self.assertRaises(sqlite3.OperationalError):
+                self.execute_holdout(plan, spec, holdout, reveal)
+        durable = self.registry.attempt_receipt(
+            attempt_id=plan.attempt_id,
+        )
+        self.assertEqual(
+            BenchmarkAttemptStatus.EXECUTING,
+            durable.status,
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "must be REVEALED",
+        ):
+            self.execute_holdout(plan, spec, holdout, reveal)
 
     def test_changed_cusum_spec_after_reveal_fails_and_attempt_remains_revealed(self):
         plan, spec, holdout, _ = self.seal()

@@ -43,8 +43,10 @@ transaction.
 A future effect-authorizing consumer must preserve all of these invariants.
 
 1. **Separate authority from mechanics.**
-   A DriftGuard reservation is never human/project authority to perform a protected
-   effect. Separate live/current authority remains required.
+   A DriftGuard reservation, fence, dispatch CAS, or dispatch permit is never
+   human/project authority to perform a protected effect. Separate live/current
+   protected-effect authority remains required at the actual provider-dispatch
+   boundary. Neither side may substitute for the other.
 
 2. **One unresolved attempt per exact directive.**
    The same reload directive cannot acquire multiple concurrent provider attempts.
@@ -387,6 +389,62 @@ guess that the original request was never sent.
 This converts the post-CAS crash window into conservative uncertainty rather than a
 duplicate-dispatch opportunity.
 
+## Orthogonal protected-effect authority gate
+
+The single-use dispatch permit proves only one local mechanical fact:
+
+> this exact caller won the exact durable dispatch CAS for this exact effect attempt.
+
+It does **not** prove that the caller is currently authorized to perform the
+protected provider effect.
+
+A conforming provider adapter must therefore require two independent inputs before
+network I/O:
+
+1. the exact factory-gated single-use `DispatchPermit` (or equivalent mechanical
+   capability) for this reservation/target/idempotency binding; and
+2. a separate current protected-effect authority capability supplied by the
+   controlling runtime/user-authority layer.
+
+DriftGuard must not manufacture the second capability from:
+
+- reservation state;
+- `DISPATCH_UNCERTAIN`;
+- a provider idempotency key;
+- a generic or provider-specific receipt;
+- a prior authorization;
+- elapsed time;
+- successful review/CI/design qualification.
+
+The authority mechanism itself is outside this V1 DriftGuard design, but an
+implementation cannot qualify a real dispatch adapter until that mechanism has an
+explicit contract.
+
+At minimum, the authority presented to the adapter must be current for the effect
+class and exact provider target/configuration being dispatched. If the external
+authority system supports exact-attempt binding, the adapter should additionally
+bind the authority to the reservation/attempt digest.
+
+The authority check must occur before network I/O. If the authority is absent,
+expired, revoked, stale, or mismatched, the adapter must not send.
+
+A design may choose to require authority before consuming
+`RESERVED -> DISPATCH_UNCERTAIN` so missing authority does not strand a reservation.
+If authority can change between CAS and network send, the adapter must also re-check
+the authority at the send boundary. The exact external-authority lifecycle must be
+specified by the implementation subject; DriftGuard's durable state cannot fill that
+gap.
+
+Possessing current protected-effect authority without the exact single-use dispatch
+permit is also insufficient: it must not bypass the attempt ledger or produce a
+provider call.
+
+Thus V1 uses a two-key dispatch boundary:
+
+`CURRENT_PROTECTED_EFFECT_AUTHORITY AND EXACT_SINGLE_USE_DISPATCH_PERMIT`
+
+Both are required; neither is derivable from the other.
+
 ## Durable effect fence
 
 While a reservation is in any unresolved state, operations that would invalidate its
@@ -617,7 +675,7 @@ A future implementation should include at least these adversarial cases:
     state;
 15. process restart reconstructs unresolved fences solely from durable state;
 16. two dispatchers race after one CAS winner: only the winner receives a dispatch
-    permit and only one provider send path is valid;
+    permit and only one provider send path is mechanically eligible;
 17. direct construction or replay of a dispatch permit fails;
 18. crash after dispatch CAS but before network send does not permit permit
     reissuance;
@@ -660,7 +718,16 @@ A future implementation should include at least these adversarial cases:
     separate connection is rejected;
 36. connection-scoped validation plus reservation insertion are exercised under a
     concurrent session/subject writer and prove the writer cannot commit between
-    validation and fence acquisition.
+    validation and fence acquisition;
+37. a valid dispatch permit with no current protected-effect authority is rejected
+    before network I/O;
+38. current protected-effect authority with no exact dispatch permit is rejected
+    before network I/O;
+39. stale/revoked/mismatched authority cannot be replaced by reservation state,
+    DISPATCH_UNCERTAIN, prior review, prior authority, or provider receipts;
+40. when the external authority contract permits authority to change between dispatch
+    CAS and send, revocation in that window is detected by the send-boundary check
+    and no network call occurs.
 
 ## Relationship to Discovery effect-envelope work
 
@@ -694,6 +761,7 @@ It does not:
 - prove a provider supports idempotency;
 - prove an effect happened;
 - grant retry authority;
+- manufacture or persist protected-effect authority;
 - prove behavioral recovery;
 - authorize merge or deployment.
 

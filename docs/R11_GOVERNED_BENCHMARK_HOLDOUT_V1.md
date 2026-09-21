@@ -145,15 +145,21 @@ It does not prove that nobody saw the underlying data before the commitment, and
 - SHA-256 of the exact runtime `benchmark.py`;
 - SHA-256 of the exact runtime `calibration.py`;
 - SHA-256 of the exact runtime `comparison.py`;
-- SHA-256 of the exact runtime `sequential.py`.
+- SHA-256 of the exact runtime `sequential.py`;
+- SHA-256 of the exact runtime `model.py`.
 
-`assert_runtime_sources_match()` re-hashes those three local source files at seal, reveal, and run admission.
+`assert_runtime_sources_match()` re-hashes those five local source files at seal, reveal, and run admission.
 
-The four source-file hashes are locally rechecked evidence.
+The five source-file hashes are locally rechecked evidence.
 
 `sequential.py` is part of the execution subject because the calibrated CUSUM
 recurrence used by R9/R10 is implemented there; binding only the detector parameters
 would not bind the detector implementation.
+
+`model.py` is also part of the closure because the benchmark/calibration/comparison/
+sequential stack uses its canonical digest, source-binding, and detector-spec support
+semantics. `model.py` has no DriftGuard-local imports, so these five files close the
+current R11-local import graph.
 
 The repository and Git commit strings are declared provenance fields. R11 does not independently interrogate Git to prove that the running files came from the declared commit.
 
@@ -372,7 +378,7 @@ The test corpora are protocol fixtures, not production benchmark evidence.
 
 An R11 V2 PASS means:
 
-> these exact benchmark manifests, study/attempt commitments, disclosed prior-holdout set, benchmark/calibration/comparison/sequential execution-source hashes, HOLDOUT digest/bytes, R9 qualification plan, R10 comparison plan, and durable single-use state transitions compose deterministically under the governed protocol.
+> these exact benchmark manifests, study/attempt commitments, disclosed prior-holdout set, benchmark/calibration/comparison/sequential/model execution-source hashes, HOLDOUT digest/bytes, R9 qualification plan, R10 comparison plan, and durable single-use state transitions compose deterministically under the governed protocol.
 
 It does not prove:
 
@@ -381,6 +387,7 @@ It does not prove:
 - complete discovery of every historical holdout;
 - external custody;
 - repository/commit authenticity beyond declared metadata;
+- exact Python interpreter / standard-library implementation identity;
 - database tamper resistance against arbitrary local write access;
 - data independence;
 - production representativeness;

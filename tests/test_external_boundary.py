@@ -2,6 +2,7 @@ import os
 import sqlite3
 from contextlib import closing
 import tempfile
+import threading
 import unittest
 from dataclasses import replace
 from hashlib import sha256
@@ -709,14 +710,112 @@ class SubjectEffectCompositionTests(unittest.TestCase):
                 (9, directive.session_id),
             )
         with self.assertRaisesRegex(
-            ValueError,
-            "current session subject epoch mismatch",
+            StaleGenerationError,
+            "current monitored subject epoch does not match durable session",
         ):
             validate_reload_directive(
                 directive=directive,
                 state=self.s,
                 ledger=self.ledger,
                 subject=self.subject,
+            )
+
+    def test_subject_transition_cannot_commit_inside_atomic_admission(self):
+        directive = self.directive()
+        successor = monitored_subject(epoch=1)
+        transition = SubjectEpochTransition(
+            transition_id="atomic-admission-transition",
+            subject_id=self.subject.subject_id,
+            predecessor_epoch=0,
+            predecessor_digest=self.subject.configuration_digest,
+            successor_epoch=1,
+            successor_digest=successor.configuration_digest,
+            reason="attempt race during reload admission",
+        )
+
+        current_checked = threading.Event()
+        allow_admission_to_continue = threading.Event()
+        transition_started = threading.Event()
+        transition_finished = threading.Event()
+        validation_result = []
+        validation_error = []
+        transition_error = []
+
+        original = DriftLedger._assert_subject_epoch_current
+
+        def gated_currentness(db, subject):
+            original(db, subject)
+            current_checked.set()
+            if not allow_admission_to_continue.wait(timeout=3):
+                raise AssertionError("atomic admission test gate timed out")
+
+        DriftLedger._assert_subject_epoch_current = staticmethod(
+            gated_currentness
+        )
+        try:
+            def validate_worker():
+                try:
+                    validation_result.append(
+                        validate_reload_directive(
+                            directive=directive,
+                            state=self.s,
+                            ledger=self.ledger,
+                            subject=self.subject,
+                        )
+                    )
+                except Exception as exc:
+                    validation_error.append(exc)
+
+            def transition_worker():
+                transition_started.set()
+                try:
+                    self.ledger.transition_subject_epoch(
+                        predecessor=self.subject,
+                        successor=successor,
+                        transition=transition,
+                    )
+                except Exception as exc:
+                    transition_error.append(exc)
+                finally:
+                    transition_finished.set()
+
+            validation_thread = threading.Thread(target=validate_worker)
+            validation_thread.start()
+            self.assertTrue(current_checked.wait(timeout=2))
+
+            transition_thread = threading.Thread(target=transition_worker)
+            transition_thread.start()
+            self.assertTrue(transition_started.wait(timeout=2))
+
+            # BEGIN IMMEDIATE in admission must prevent the epoch transition
+            # from committing while later evaluation/session reads occur.
+            self.assertFalse(transition_finished.wait(timeout=0.2))
+
+            allow_admission_to_continue.set()
+            validation_thread.join(timeout=3)
+            transition_thread.join(timeout=3)
+
+            self.assertFalse(validation_thread.is_alive())
+            self.assertFalse(transition_thread.is_alive())
+            self.assertEqual([], validation_error)
+            self.assertEqual([], transition_error)
+            self.assertEqual([directive.digest], validation_result)
+            self.assertTrue(transition_finished.is_set())
+
+            with self.assertRaisesRegex(
+                StaleGenerationError,
+                "epoch has been superseded",
+            ):
+                validate_reload_directive(
+                    directive=directive,
+                    state=self.s,
+                    ledger=self.ledger,
+                    subject=self.subject,
+                )
+        finally:
+            allow_admission_to_continue.set()
+            DriftLedger._assert_subject_epoch_current = staticmethod(
+                original
             )
 
     def test_subject_bound_directive_requires_subject_readback(self):

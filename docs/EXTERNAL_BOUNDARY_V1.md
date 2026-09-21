@@ -130,16 +130,17 @@ This source does not:
 ## Atomic reload-currentness readback
 
 Directive construction and directive re-admission read subject currentness, the durable
-evaluation event, and the durable session row through one explicit SQLite read
-transaction.
+evaluation event, and the durable session row through one explicit SQLite
+`BEGIN IMMEDIATE` transaction.
 
 The ledger factory emits a digest-bearing `ReloadCurrentnessReadback`; direct construction is rejected. Its claim is exactly:
 
-`SINGLE_SQLITE_READ_TRANSACTION_SNAPSHOT_ONLY`
+`SINGLE_SQLITE_BEGIN_IMMEDIATE_CURRENTNESS_SNAPSHOT_ONLY`
 
 That receipt binds the evaluation generation/turn/state, session generation/latest
 evaluation, and the evaluation/session/current-subject bindings observed in that one
-snapshot.
+snapshot. The `BEGIN IMMEDIATE` writer reservation prevents a concurrent subject or
+session transition from committing inside the re-admission window.
 
 This closes an intra-validation inconsistency where separate database connections
 could observe different durable generations or subject epochs during one logical

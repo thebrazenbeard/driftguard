@@ -24,6 +24,7 @@ from driftguard.comparison import (
     EwmaDimensionPolicy,
     PageHinkleyDimensionPolicy,
     compare_detectors,
+    qualify_detector_candidate,
 )
 from driftguard.model import raw_bytes_digest
 
@@ -206,6 +207,46 @@ class DetectorComparisonTests(unittest.TestCase):
             receipt.descriptive_pareto_candidate_ids,
         )
         self.assertFalse(receipt.promotion_authorized)
+
+    def test_single_candidate_qualification_matches_comparison_for_every_algorithm(self):
+        spec = cusum_spec()
+        c = corpus()
+        cal = calibration_plan(c, spec)
+        rows = candidates(spec)
+        comparison = compare_detectors(
+            plan=comparison_plan(c, cal, rows),
+            calibration_plan=cal,
+            corpus=c,
+            cusum_spec=spec,
+        )
+        by_id = {
+            row.candidate_id: row
+            for row in comparison.candidate_results
+        }
+        for candidate in rows:
+            single = qualify_detector_candidate(
+                candidate=candidate,
+                calibration_plan=cal,
+                corpus=c,
+                cusum_spec=spec,
+            )
+            self.assertEqual(by_id[candidate.candidate_id], single)
+
+    def test_single_candidate_qualification_rejects_wrong_corpus(self):
+        spec = cusum_spec()
+        c = corpus()
+        cal = calibration_plan(c, spec)
+        changed = replace(c, version="2")
+        with self.assertRaisesRegex(
+            ValueError,
+            "candidate qualification corpus digest mismatch",
+        ):
+            qualify_detector_candidate(
+                candidate=candidates(spec)[0],
+                calibration_plan=cal,
+                corpus=changed,
+                cusum_spec=spec,
+            )
 
     def test_cusum_comparison_result_exactly_matches_r9_qualification(self):
         spec = cusum_spec()

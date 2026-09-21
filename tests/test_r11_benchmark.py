@@ -880,10 +880,48 @@ class R11BenchmarkTests(unittest.TestCase):
                 precommit=plan,
                 reveal=reveal,
             )
-        self.registry.invalidate_attempt(
-            attempt_id=plan.attempt_id,
-            reason="test cleanup after execution claim",
+
+        for operation in (
+            self.registry.abort_attempt,
+            self.registry.invalidate_attempt,
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                "EXECUTING attempt cannot be operator-aborted/invalidated",
+            ):
+                operation(
+                    attempt_id=plan.attempt_id,
+                    reason="operator-chosen retry escape",
+                )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "requires governed run capability",
+        ):
+            self.registry._invalidate_execution_failure(
+                precommit=plan,
+                reveal=reveal,
+                execution_binding=plan.execution_binding,
+                reason="forged semantic failure",
+            )
+
+        second, _, _ = make_precommit(
+            study_id=plan.study_id,
+            attempt_id="attempt-after-execution-claim",
+            precommit_id="precommit-after-execution-claim",
+            holdout_label="holdout-after-execution-claim",
+            holdout_offset=0.04,
         )
+        with self.assertRaisesRegex(
+            ValueError,
+            "already has an active benchmark attempt",
+        ):
+            self.registry.seal_precommit(precommit=second)
+
+        durable = self.registry.attempt_receipt(
+            attempt_id=plan.attempt_id,
+        )
+        self.assertEqual(BenchmarkAttemptStatus.EXECUTING, durable.status)
 
     def test_execution_binding_change_after_seal_blocks_reveal(self):
         plan, _, holdout, _ = self.seal()

@@ -133,7 +133,7 @@ Directive construction and directive re-admission read subject currentness, the 
 evaluation event, and the durable session row through one explicit SQLite read
 transaction.
 
-The ledger emits a digest-bearing `ReloadCurrentnessReadback` whose claim is exactly:
+The ledger factory emits a digest-bearing `ReloadCurrentnessReadback`; direct construction is rejected. Its claim is exactly:
 
 `SINGLE_SQLITE_READ_TRANSACTION_SNAPSHOT_ONLY`
 

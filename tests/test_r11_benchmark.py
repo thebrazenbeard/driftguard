@@ -862,6 +862,106 @@ class R11BenchmarkTests(unittest.TestCase):
             sealed.predecessor_attempt_digests,
         )
 
+    def test_prior_holdout_content_cannot_be_reused_by_relabeling(self):
+        first, _, first_holdout, _ = self.seal()
+        terminal = self.registry.abort_attempt(
+            attempt_id=first.attempt_id,
+            reason="terminalize first attempt for successor test",
+        )
+        repackaged = CalibrationCorpus(
+            corpus_id="repackaged-holdout",
+            version="99",
+            role=CalibrationCorpusRole.HOLDOUT_QUALIFICATION,
+            trajectories=first_holdout.trajectories,
+        )
+        self.assertNotEqual(first_holdout.digest, repackaged.digest)
+        self.assertEqual(
+            trajectory_content_digest(first_holdout),
+            trajectory_content_digest(repackaged),
+        )
+
+        successor, _, _ = make_precommit(
+            attempt_id="attempt-repackaged",
+            precommit_id="precommit-repackaged",
+            predecessor_attempt_digests=(terminal.digest,),
+            predecessor_holdout_digests=tuple(
+                sorted({PRIOR_R10_HOLDOUT, first_holdout.digest})
+            ),
+            holdout_label="fresh-label-before-replace",
+            holdout_offset=0.02,
+        )
+        successor = replace(
+            successor,
+            holdout_seal=HoldoutCorpusSeal(
+                seal_id="seal-repackaged",
+                manifest=manifest(
+                    repackaged,
+                    label="repackaged-metadata",
+                ),
+            ),
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "holdout trajectory content was already consumed",
+        ):
+            self.registry.seal_precommit(precommit=successor)
+
+    def test_study_id_relabel_cannot_reset_same_subject_lineage(self):
+        first, _, _, _ = self.seal()
+        self.registry.abort_attempt(
+            attempt_id=first.attempt_id,
+            reason="terminalize first study id",
+        )
+        relabeled, _, _ = make_precommit(
+            study_id="renamed-study-r11",
+            attempt_id="attempt-relabeled-study",
+            precommit_id="precommit-relabeled-study",
+            holdout_label="fresh-holdout-relabeled-study",
+            holdout_offset=0.02,
+        )
+        self.assertEqual(
+            first.study_subject_digest,
+            relabeled.study_subject_digest,
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "already governed under a different study_id",
+        ):
+            self.registry.seal_precommit(precommit=relabeled)
+
+    def test_same_study_id_cannot_silently_redesign_subject(self):
+        first, _, first_holdout, _ = self.seal()
+        terminal = self.registry.abort_attempt(
+            attempt_id=first.attempt_id,
+            reason="terminalize first subject",
+        )
+        successor, _, _ = make_precommit(
+            attempt_id="attempt-redesigned",
+            precommit_id="precommit-redesigned",
+            predecessor_attempt_digests=(terminal.digest,),
+            predecessor_holdout_digests=tuple(
+                sorted({PRIOR_R10_HOLDOUT, first_holdout.digest})
+            ),
+            holdout_label="fresh-redesigned-holdout",
+            holdout_offset=0.03,
+        )
+        policies = tuple(
+            replace(row, maximum_mean_detection_delay=7.0)
+            if index == 0
+            else row
+            for index, row in enumerate(successor.family_policies)
+        )
+        redesigned = replace(successor, family_policies=policies)
+        self.assertNotEqual(
+            first.study_subject_digest,
+            redesigned.study_subject_digest,
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "study_id is already bound to a different governed",
+        ):
+            self.registry.seal_precommit(precommit=redesigned)
+
     def test_execution_claim_is_single_use_before_comparison(self):
         plan, _, holdout, _ = self.seal()
         reveal = self.reveal(plan, holdout)
@@ -1023,6 +1123,67 @@ class R11BenchmarkTests(unittest.TestCase):
             BenchmarkAttemptStatus.EXECUTING,
             durable.status,
         )
+
+    def test_runtime_failures_after_claim_remain_executing(self):
+        for exc_type in (RuntimeError, OSError, MemoryError):
+            with self.subTest(exc_type=exc_type.__name__):
+                handle = tempfile.NamedTemporaryFile(delete=False)
+                handle.close()
+                registry = BenchmarkAttemptLedger(handle.name)
+                try:
+                    plan, spec, holdout = make_precommit(
+                        study_id=f"runtime-{exc_type.__name__}",
+                        attempt_id=f"attempt-{exc_type.__name__}",
+                        precommit_id=f"precommit-{exc_type.__name__}",
+                        holdout_label=f"holdout-{exc_type.__name__}",
+                        holdout_offset=0.02,
+                    )
+                    registry.seal_precommit(precommit=plan)
+                    reveal = reveal_holdout(
+                        registry=registry,
+                        precommit=plan,
+                        execution_binding=plan.execution_binding,
+                        manifest=plan.holdout_seal.manifest,
+                        corpus=holdout,
+                        artifact_bytes=canonical_corpus_artifact_bytes(
+                            holdout
+                        ),
+                    )
+                    with patch(
+                        "driftguard.benchmark.compare_detectors",
+                        side_effect=exc_type("simulated runtime ambiguity"),
+                    ):
+                        with self.assertRaises(exc_type):
+                            run_precommitted_holdout(
+                                registry=registry,
+                                precommit=plan,
+                                execution_binding=plan.execution_binding,
+                                reveal=reveal,
+                                manifest=plan.holdout_seal.manifest,
+                                corpus=holdout,
+                                cusum_spec=spec,
+                            )
+                    durable = registry.attempt_receipt(
+                        attempt_id=plan.attempt_id,
+                    )
+                    self.assertEqual(
+                        BenchmarkAttemptStatus.EXECUTING,
+                        durable.status,
+                    )
+                    successor, _, _ = make_precommit(
+                        study_id=plan.study_id,
+                        attempt_id=f"successor-{exc_type.__name__}",
+                        precommit_id=f"successor-precommit-{exc_type.__name__}",
+                        holdout_label=f"successor-holdout-{exc_type.__name__}",
+                        holdout_offset=0.04,
+                    )
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        "already has an active benchmark attempt",
+                    ):
+                        registry.seal_precommit(precommit=successor)
+                finally:
+                    os.unlink(handle.name)
 
     def test_ambiguous_completion_failure_remains_executing_and_blocks_retry(self):
         plan, spec, holdout, _ = self.seal()

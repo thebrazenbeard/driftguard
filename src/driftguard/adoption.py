@@ -185,9 +185,18 @@ def promote_baseline_file(
         raise AdoptionError(
             f"proposed baseline output already exists: {output}"
         )
-    if receipt_path is not None and Path(receipt_path).resolve().exists():
+    receipt_target = (
+        Path(receipt_path).resolve()
+        if receipt_path is not None
+        else None
+    )
+    if receipt_target == output:
         raise AdoptionError(
-            f"promotion receipt already exists: {Path(receipt_path).resolve()}"
+            "promotion receipt path must differ from proposed baseline output"
+        )
+    if receipt_target is not None and receipt_target.exists():
+        raise AdoptionError(
+            f"promotion receipt already exists: {receipt_target}"
         )
 
     write_json_atomic(output, candidate.payload())

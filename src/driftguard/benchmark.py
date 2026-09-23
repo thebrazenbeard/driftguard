@@ -762,6 +762,7 @@ class HoldoutRevealReceipt:
         self,
         *,
         study_id: str,
+        study_subject_digest: str,
         attempt_id: str,
         precommit_digest: str,
         execution_binding_digest: str,
@@ -777,6 +778,11 @@ class HoldoutRevealReceipt:
                 "HoldoutRevealReceipt must come from reveal_holdout"
             )
         object.__setattr__(self, "study_id", study_id)
+        object.__setattr__(
+            self,
+            "study_subject_digest",
+            study_subject_digest,
+        )
         object.__setattr__(self, "attempt_id", attempt_id)
         object.__setattr__(self, "precommit_digest", precommit_digest)
         object.__setattr__(
@@ -988,11 +994,13 @@ _TERMINAL_ATTEMPT_STATUSES = frozenset(
 @dataclass(frozen=True, init=False)
 class BenchmarkAttemptReceipt:
     study_id: str
+    study_subject_digest: str
     attempt_id: str
     precommit_id: str
     precommit_digest: str
     seal_digest: str
     holdout_corpus_digest: str
+    holdout_content_digest: str
     execution_binding_digest: str
     predecessor_attempt_digests: tuple[str, ...]
     status: BenchmarkAttemptStatus
@@ -1009,6 +1017,7 @@ class BenchmarkAttemptReceipt:
         precommit_digest: str,
         seal_digest: str,
         holdout_corpus_digest: str,
+        holdout_content_digest: str,
         execution_binding_digest: str,
         predecessor_attempt_digests: tuple[str, ...],
         status: BenchmarkAttemptStatus,
@@ -1033,6 +1042,11 @@ class BenchmarkAttemptReceipt:
         )
         object.__setattr__(
             self,
+            "holdout_content_digest",
+            holdout_content_digest,
+        )
+        object.__setattr__(
+            self,
             "execution_binding_digest",
             execution_binding_digest,
         )
@@ -1049,6 +1063,10 @@ class BenchmarkAttemptReceipt:
 
     def __post_init__(self) -> None:
         _nonempty(self.study_id, "attempt receipt study id")
+        require_sha256_digest(
+            self.study_subject_digest,
+            "attempt receipt study subject digest",
+        )
         _nonempty(self.attempt_id, "attempt receipt attempt id")
         _nonempty(self.precommit_id, "attempt receipt precommit id")
         for value, label in (
@@ -1057,6 +1075,10 @@ class BenchmarkAttemptReceipt:
             (
                 self.holdout_corpus_digest,
                 "attempt receipt holdout corpus digest",
+            ),
+            (
+                self.holdout_content_digest,
+                "attempt receipt holdout content digest",
             ),
             (
                 self.execution_binding_digest,
@@ -1126,13 +1148,15 @@ class BenchmarkAttemptReceipt:
     def digest(self) -> str:
         return canonical_digest(
             {
-                "schema": "DRIFTGUARD_BENCHMARK_ATTEMPT_RECEIPT_V1",
+                "schema": "DRIFTGUARD_BENCHMARK_ATTEMPT_RECEIPT_V2",
                 "study_id": self.study_id,
+                "study_subject_digest": self.study_subject_digest,
                 "attempt_id": self.attempt_id,
                 "precommit_id": self.precommit_id,
                 "precommit_digest": self.precommit_digest,
                 "seal_digest": self.seal_digest,
                 "holdout_corpus_digest": self.holdout_corpus_digest,
+                "holdout_content_digest": self.holdout_content_digest,
                 "execution_binding_digest": self.execution_binding_digest,
                 "predecessor_attempt_digests": list(
                     self.predecessor_attempt_digests

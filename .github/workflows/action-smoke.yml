@@ -12,15 +12,58 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: ./
+
+      - name: Ordinary local action smoke
+        uses: ./
         id: driftguard
         with:
           policy: examples/ci/driftguard.toml
           baseline: examples/ci/baseline.json
           candidate: examples/ci/candidate-pass.json
           trusted-ref: workspace
-      - name: Assert action output
+
+      - name: Assert ordinary action output
         shell: bash
         run: |
           test "${{ steps.driftguard.outputs.decision }}" = "PASS"
           test -n "${{ steps.driftguard.outputs.result-digest }}"
+
+      - name: Resolve trusted pre-change ref
+        id: trust
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          if [ "${EVENT_NAME}" = "pull_request" ]; then
+            trust="${PR_BASE_SHA}"
+          else
+            trust="${PUSH_BEFORE_SHA}"
+          fi
+          if [ -z "${trust}" ] || printf '%s' "${trust}" | grep -Eq '^0+$'; then
+            echo "No pre-change ref available for hostile trusted-ref smoke" >&2
+            exit 1
+          fi
+          echo "ref=${trust}" >> "${GITHUB_OUTPUT}"
+
+      - name: Tamper workspace baseline
+        shell: bash
+        run: cp examples/ci/candidate-block.json examples/ci/baseline.json
+
+      - name: Trusted baseline rejects self-laundered candidate
+        uses: ./
+        id: hostile
+        continue-on-error: true
+        with:
+          policy: examples/ci/driftguard.toml
+          baseline: examples/ci/baseline.json
+          candidate: examples/ci/candidate-block.json
+          trusted-ref: ${{ steps.trust.outputs.ref }}
+
+      - name: Assert hostile gate remained closed
+        shell: bash
+        run: |
+          test "${{ steps.hostile.outcome }}" = "failure"
+          test "${{ steps.hostile.outputs.decision }}" = "BLOCK"
+          test "${{ steps.hostile.outputs.trusted-ref }}" = "${{ steps.trust.outputs.ref }}"

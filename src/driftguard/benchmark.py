@@ -870,6 +870,11 @@ class BenchmarkRunReceipt:
                 "BenchmarkRunReceipt must come from run_precommitted_holdout"
             )
         object.__setattr__(self, "study_id", study_id)
+        object.__setattr__(
+            self,
+            "study_subject_digest",
+            study_subject_digest,
+        )
         object.__setattr__(self, "attempt_id", attempt_id)
         object.__setattr__(self, "precommit_digest", precommit_digest)
         object.__setattr__(
@@ -1016,6 +1021,7 @@ class BenchmarkAttemptReceipt:
         self,
         *,
         study_id: str,
+        study_subject_digest: str,
         attempt_id: str,
         precommit_id: str,
         precommit_digest: str,

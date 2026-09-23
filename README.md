@@ -156,6 +156,7 @@ The integrated research stack includes:
 - sequential CUSUM diagnostics;
 - calibration qualification;
 - detector comparison;
+- governed benchmark/HOLDOUT attempt lineage with exact-content nonreuse;
 - atomic current-subject readback for reload admission;
 - strict separation among detection, requested effect, observed effect, acknowledgement, and later behavioral recovery.
 
@@ -211,11 +212,12 @@ Start here:
 - [Sequential CUSUM](docs/R8_SEQUENTIAL_CUSUM_V1.md)
 - [Calibration qualification](docs/R9_CALIBRATION_QUALIFICATION_V1.md)
 - [Detector comparison](docs/R10_DETECTOR_COMPARISON_V1.md)
+- [Governed benchmark + HOLDOUT](docs/R11_GOVERNED_BENCHMARK_HOLDOUT_V1.md)
 - [External boundary](docs/EXTERNAL_BOUNDARY_V1.md)
 - [Evaluator attestation](docs/EVALUATOR_ATTESTATION_V1.md)
 - [Hostile review](docs/HOSTILE_REVIEW_V1.md)
 
-R11 governed-benchmark work remains a separate research line until its outstanding study/holdout-governance questions are resolved. It is not required for Agent CI.
+R11 remains a research/governance layer and is not required for Agent CI. Its claim is deliberately bounded to the governed ledger and exact canonical study/content identities; it does not prove hidden historical non-access, statistical independence, or production superiority.
 
 ## Claim ceiling
 

@@ -2,6 +2,7 @@
 
 from .adoption import (
     AdoptionError,
+    BaselinePromotionQualification,
     BaselinePromotionReceipt,
     build_report,
     parse_metric_assignments,
@@ -54,6 +55,7 @@ from .model import (
 
 __all__ = [
     "AdoptionError",
+    "BaselinePromotionQualification",
     "BaselinePromotionReceipt",
     "build_report",
     "parse_metric_assignments",

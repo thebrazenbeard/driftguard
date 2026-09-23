@@ -17,6 +17,7 @@ from driftguard.benchmark import (
     BenchmarkPhenomenon,
     BenchmarkPrecommitPlan,
     BenchmarkRunReceipt,
+    BenchmarkSemanticFailure,
     HoldoutCorpusSeal,
     HoldoutRevealReceipt,
     PRECOMMIT_CLAIM,
@@ -979,7 +980,7 @@ class R11BenchmarkTests(unittest.TestCase):
             return_value=SimpleNamespace(promotion_authorized=True),
         ):
             with self.assertRaisesRegex(
-                ValueError,
+                BenchmarkSemanticFailure,
                 "unexpectedly authorized promotion",
             ):
                 self.execute_holdout(plan, spec, holdout, reveal)
@@ -1003,23 +1004,23 @@ class R11BenchmarkTests(unittest.TestCase):
             tuple(item["status"] for item in history),
         )
 
-    def test_run_result_semantic_failure_invalidates_before_completion(self):
+    def test_run_result_construction_failure_remains_executing(self):
         plan, spec, holdout, _ = self.seal()
         reveal = self.reveal(plan, holdout)
         with patch(
             "driftguard.benchmark.BenchmarkRunResult",
-            side_effect=ValueError("simulated result semantic failure"),
+            side_effect=RuntimeError("simulated result construction failure"),
         ):
             with self.assertRaisesRegex(
-                ValueError,
-                "simulated result semantic failure",
+                RuntimeError,
+                "simulated result construction failure",
             ):
                 self.execute_holdout(plan, spec, holdout, reveal)
         durable = self.registry.attempt_receipt(
             attempt_id=plan.attempt_id,
         )
         self.assertEqual(
-            BenchmarkAttemptStatus.INVALIDATED,
+            BenchmarkAttemptStatus.EXECUTING,
             durable.status,
         )
 
@@ -1103,11 +1104,15 @@ class R11BenchmarkTests(unittest.TestCase):
         ):
             BenchmarkAttemptReceipt(
                 study_id=plan.study_id,
+                study_subject_digest=plan.study_subject_digest,
                 attempt_id=plan.attempt_id,
                 precommit_id=plan.precommit_id,
                 precommit_digest=plan.digest,
                 seal_digest=plan.holdout_seal.digest,
                 holdout_corpus_digest=plan.holdout_seal.manifest.corpus_digest,
+                holdout_content_digest=(
+                    plan.holdout_seal.manifest.trajectory_content_digest
+                ),
                 execution_binding_digest=plan.execution_binding.digest,
                 predecessor_attempt_digests=(),
                 status=BenchmarkAttemptStatus.SEALED,

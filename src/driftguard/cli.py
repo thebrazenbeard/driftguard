@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
+from .ci_gate import CiPolicy, CiReport, evaluate_ci, render_markdown
 from .core import DriftGuardEngine
 from .ledger import DriftLedger
 from .model import (
@@ -78,6 +79,16 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="driftguard")
     sub = parser.add_subparsers(dest="command", required=True)
 
+    ci = sub.add_parser(
+        "ci",
+        help="deterministically gate candidate evaluation metrics against a baseline",
+    )
+    ci.add_argument("--policy", required=True)
+    ci.add_argument("--baseline", required=True)
+    ci.add_argument("--candidate", required=True)
+    ci.add_argument("--output")
+    ci.add_argument("--summary")
+
     digest = sub.add_parser("state-digest")
     digest.add_argument("--state", required=True)
 
@@ -128,6 +139,25 @@ def main(argv: list[str] | None = None) -> int:
     verify.add_argument("--subject")
 
     args = parser.parse_args(argv)
+
+    if args.command == "ci":
+        result = evaluate_ci(
+            policy=CiPolicy.load(args.policy),
+            baseline=CiReport.load(args.baseline),
+            candidate=CiReport.load(args.candidate),
+        )
+        payload = result.payload()
+        payload["result_digest"] = result.digest
+        rendered = json.dumps(payload, sort_keys=True, indent=2)
+        print(rendered)
+        if args.output:
+            Path(args.output).write_text(rendered + "\n", encoding="utf-8")
+        if args.summary:
+            Path(args.summary).write_text(
+                render_markdown(result),
+                encoding="utf-8",
+            )
+        return result.exit_code
 
     if args.command == "file-digest":
         print(raw_bytes_digest(Path(args.file).read_bytes()))

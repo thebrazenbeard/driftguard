@@ -3,8 +3,10 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import sys
 
 from .adoption import (
+    AdoptionError,
     build_report,
     parse_metric_assignments,
     promote_baseline_file,
@@ -172,12 +174,16 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "report":
-        report_value = build_report(
-            run_id=args.run_id,
-            subject=args.subject,
-            metrics=parse_metric_assignments(args.metric),
-        )
-        write_json_atomic(args.output, report_value.payload())
+        try:
+            report_value = build_report(
+                run_id=args.run_id,
+                subject=args.subject,
+                metrics=parse_metric_assignments(args.metric),
+            )
+            write_json_atomic(args.output, report_value.payload())
+        except (AdoptionError, ValueError, OSError) as exc:
+            print(f"driftguard report: {exc}", file=sys.stderr)
+            return 2
         print(
             json.dumps(
                 {
@@ -199,13 +205,17 @@ def main(argv: list[str] | None = None) -> int:
             if args.receipt
             else str(Path(args.output)) + ".promotion.json"
         )
-        receipt = promote_baseline_file(
-            policy_path=args.policy,
-            baseline_path=args.baseline,
-            candidate_path=args.candidate,
-            output_path=args.output,
-            receipt_path=receipt_path,
-        )
+        try:
+            receipt = promote_baseline_file(
+                policy_path=args.policy,
+                baseline_path=args.baseline,
+                candidate_path=args.candidate,
+                output_path=args.output,
+                receipt_path=receipt_path,
+            )
+        except (AdoptionError, ValueError, OSError) as exc:
+            print(f"driftguard prepare-baseline: {exc}", file=sys.stderr)
+            return 2
         payload = receipt.payload()
         payload["promotion_digest"] = receipt.digest
         payload["prepared_baseline"] = str(Path(args.output))
@@ -214,11 +224,15 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "ci":
-        result = evaluate_ci(
-            policy=CiPolicy.load(args.policy),
-            baseline=CiReport.load(args.baseline),
-            candidate=CiReport.load(args.candidate),
-        )
+        try:
+            result = evaluate_ci(
+                policy=CiPolicy.load(args.policy),
+                baseline=CiReport.load(args.baseline),
+                candidate=CiReport.load(args.candidate),
+            )
+        except (ValueError, OSError) as exc:
+            print(f"driftguard ci: {exc}", file=sys.stderr)
+            return 2
         payload = result.payload()
         payload["result_digest"] = result.digest
         rendered = json.dumps(payload, sort_keys=True, indent=2)

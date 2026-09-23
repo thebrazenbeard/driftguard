@@ -87,7 +87,9 @@ Once your evaluator has produced `driftguard-candidate.json`:
     candidate: driftguard-candidate.json
 ```
 
-DriftGuard writes a Markdown metric table to the Actions job summary and exposes `decision` and `result-digest` outputs.
+DriftGuard writes a Markdown metric table to the Actions job summary and exposes `decision`, `result-digest`, and `trusted-ref` outputs.
+
+By default, pull requests read the policy and accepted baseline from the **base commit**, not from the proposed checkout. A PR therefore cannot weaken its own policy or rewrite its own baseline to make itself pass.
 
 For production use, pin an immutable release tag or commit instead of `main`.
 

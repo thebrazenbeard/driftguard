@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 import io
 import json
 import tempfile
@@ -165,8 +165,9 @@ severity = "block"
                 encoding="utf-8",
             )
 
-            with self.assertRaisesRegex(RuntimeError, "requires an exact PASS"):
-                main(
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                code = main(
                     [
                         "prepare-baseline",
                         "--policy",
@@ -179,6 +180,8 @@ severity = "block"
                         str(proposed),
                     ]
                 )
+            self.assertEqual(code, 2)
+            self.assertIn("requires an exact PASS", stderr.getvalue())
             self.assertFalse(proposed.exists())
 
 

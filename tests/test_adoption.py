@@ -124,6 +124,51 @@ severity = "block"
                     output_path=baseline,
                 )
 
+    def test_promotion_rejects_output_receipt_alias(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            policy = root / "driftguard.toml"
+            baseline = root / "baseline.json"
+            candidate = root / "candidate.json"
+            collision = root / "proposal.json"
+            policy.write_text(
+                """schema = "DRIFTGUARD_CI_POLICY_V1"
+policy_id = "quality-v1"
+unknown = "block"
+
+[[metric]]
+name = "quality"
+direction = "higher"
+max_regression = 0.02
+severity = "block"
+""",
+                encoding="utf-8",
+            )
+            for path, run_id, value in (
+                (baseline, "base", 0.95),
+                (candidate, "candidate", 0.94),
+            ):
+                path.write_text(
+                    json.dumps(
+                        {
+                            "schema": "DRIFTGUARD_CI_REPORT_V1",
+                            "run_id": run_id,
+                            "subject": "agent",
+                            "metrics": {"quality": value},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+            with self.assertRaisesRegex(AdoptionError, "must differ"):
+                promote_baseline_file(
+                    policy_path=policy,
+                    baseline_path=baseline,
+                    candidate_path=candidate,
+                    output_path=collision,
+                    receipt_path=collision,
+                )
+            self.assertFalse(collision.exists())
+
     def test_promote_writes_candidate_and_receipt(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -1,0 +1,24 @@
+schema = "DRIFTGUARD_CI_POLICY_V1"
+policy_id = "agent-quality-v1"
+unknown = "block"
+
+[[metric]]
+name = "task_success"
+direction = "higher"
+max_regression = 0.03
+min_candidate = 0.90
+severity = "block"
+
+[[metric]]
+name = "tool_success"
+direction = "higher"
+max_regression = 0.02
+min_candidate = 0.95
+severity = "block"
+
+[[metric]]
+name = "latency_ms"
+direction = "lower"
+max_regression = 250
+max_candidate = 2500
+severity = "warn"

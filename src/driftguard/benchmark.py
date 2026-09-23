@@ -110,6 +110,10 @@ RUN_CLAIM = "PRECOMMITTED_COMPARISON_EXECUTED_NO_SELECTION_OR_PROMOTION_AUTHORIT
 SELECTION_RULE = "COMPARE_ONLY_NO_PROMOTION"
 
 
+class BenchmarkSemanticFailure(ValueError):
+    """A deterministic governed semantic violation after execution claim."""
+
+
 @dataclass(frozen=True)
 class BenchmarkExecutionBinding:
     repository: str
@@ -2198,46 +2202,47 @@ def run_precommitted_holdout(
         precommit=precommit,
         reveal=reveal,
     )
-    try:
-        comparison = compare_detectors(
-            plan=comparison_plan,
-            calibration_plan=calibration_plan,
-            corpus=corpus,
-            cusum_spec=cusum_spec,
-        )
-        if comparison.promotion_authorized:
-            raise ValueError(
-                "R10 comparison unexpectedly authorized promotion"
-            )
 
-        receipt = BenchmarkRunReceipt(
-            study_id=precommit.study_id,
-            attempt_id=precommit.attempt_id,
-            precommit_digest=precommit.digest,
-            execution_binding_digest=execution_binding.digest,
-            reveal_digest=reveal.digest,
-            calibration_plan_digest=calibration_plan.digest,
-            comparison_plan_digest=comparison_plan.digest,
-            comparison_receipt_digest=comparison.digest,
-            promotion_authorized=False,
-            run_claim=RUN_CLAIM,
-            _run_token=_RUN_RECEIPT_TOKEN,
-        )
-        result = BenchmarkRunResult(
-            receipt=receipt,
-            comparison=comparison,
-        )
-    except Exception as exc:
+    # Once EXECUTING is claimed, unexpected runtime/resource/implementation
+    # failures are ambiguous. They must propagate while the durable attempt
+    # remains EXECUTING so operator choice cannot manufacture retry authority.
+    comparison = compare_detectors(
+        plan=comparison_plan,
+        calibration_plan=calibration_plan,
+        corpus=corpus,
+        cusum_spec=cusum_spec,
+    )
+    if comparison.promotion_authorized:
         registry._invalidate_execution_failure(
             precommit=precommit,
             reveal=reveal,
             execution_binding=execution_binding,
-            reason=f"semantic_execution_failed:{type(exc).__name__}",
+            reason="semantic_execution_failed:promotion_authorized",
             _semantic_failure_token=_SEMANTIC_FAILURE_INVALIDATION_TOKEN,
         )
-        raise
+        raise BenchmarkSemanticFailure(
+            "R10 comparison unexpectedly authorized promotion"
+        )
 
-    # Durable completion is deliberately outside the semantic-failure catch.
+    receipt = BenchmarkRunReceipt(
+        study_id=precommit.study_id,
+        attempt_id=precommit.attempt_id,
+        precommit_digest=precommit.digest,
+        execution_binding_digest=execution_binding.digest,
+        reveal_digest=reveal.digest,
+        calibration_plan_digest=calibration_plan.digest,
+        comparison_plan_digest=comparison_plan.digest,
+        comparison_receipt_digest=comparison.digest,
+        promotion_authorized=False,
+        run_claim=RUN_CLAIM,
+        _run_token=_RUN_RECEIPT_TOKEN,
+    )
+    result = BenchmarkRunResult(
+        receipt=receipt,
+        comparison=comparison,
+    )
+
+    # Durable completion is deliberately outside semantic invalidation.
     # If finalization/storage itself fails ambiguously, the attempt remains
     # EXECUTING and therefore cannot be retried as a fresh governed run.
     registry.mark_executed(
@@ -2259,6 +2264,7 @@ __all__ = [
     "BenchmarkPrecommitPlan",
     "BenchmarkRunReceipt",
     "BenchmarkRunResult",
+    "BenchmarkSemanticFailure",
     "CORE_R11_COVERAGE_PROFILE",
     "CORE_R11_PHENOMENA",
     "HoldoutCorpusSeal",

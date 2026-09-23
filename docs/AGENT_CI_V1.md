@@ -86,11 +86,26 @@ Both baseline and candidate use the same minimal schema:
 }
 ```
 
-If both reports specify `subject`, the subjects must match exactly.
+Baseline and candidate `subject` values must match exactly. A candidate cannot omit the subject when the accepted baseline binds one.
 
 The evaluator that produced the metrics remains responsible for their semantic meaning. DriftGuard does not upgrade evaluator output into independent truth.
 
-## CLI
+## Build a report from shell metrics
+
+You do not have to hand-author the candidate JSON:
+
+```bash
+driftguard report \
+  --run-id "$GITHUB_SHA" \
+  --subject checkout-agent \
+  --metric task_success=0.94 \
+  --metric latency_ms=1120 \
+  --output driftguard-candidate.json
+```
+
+Repeated or non-finite metric assignments are rejected.
+
+## Gate the candidate
 
 ```bash
 driftguard ci \
@@ -149,11 +164,31 @@ For production use, pin the action to a release tag or immutable commit rather t
 
 ## Baseline governance
 
-V1 intentionally does not auto-update the baseline.
+DriftGuard intentionally does not auto-update the accepted baseline.
 
-A passing candidate does not automatically become the next baseline. Baseline promotion is a separate effect and should be reviewable.
+A passing candidate does not automatically become the next baseline. That prevents a sequence of individually tolerated regressions from silently ratcheting the accepted baseline downward.
 
-That prevents a sequence of individually tolerated regressions from silently ratcheting the accepted baseline downward.
+When a candidate has an exact `PASS`, you can prepare a proposed next baseline:
+
+```bash
+driftguard prepare-baseline \
+  --policy driftguard.toml \
+  --baseline driftguard-baseline.json \
+  --candidate driftguard-candidate.json \
+  --output driftguard-baseline.next.json
+```
+
+The command:
+- recomputes an explicit promotion qualification from the exact inputs;
+- refuses BLOCK, WARN, and UNKNOWN;
+- refuses to overwrite the accepted baseline in place;
+- writes the proposed baseline atomically;
+- reads it back and verifies the candidate digest;
+- only then emits a `.promotion.json` receipt by default.
+
+Qualification and receipt are intentionally different states: qualification proves the candidate passed the old baseline; the receipt additionally proves the proposed baseline bytes were written and read back with the candidate digest.
+
+The repository change that replaces the accepted baseline remains a separate reviewable effect.
 
 ## Claim ceiling
 

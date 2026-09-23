@@ -1,5 +1,15 @@
 """DriftGuard V1."""
 
+from .adoption import (
+    AdoptionError,
+    BaselinePromotionQualification,
+    BaselinePromotionReceipt,
+    build_report,
+    parse_metric_assignments,
+    promote_baseline_file,
+    qualify_baseline_promotion,
+    write_json_atomic,
+)
 from .ci_gate import (
     CiGateResult,
     CiPolicy,
@@ -44,6 +54,14 @@ from .model import (
 )
 
 __all__ = [
+    "AdoptionError",
+    "BaselinePromotionQualification",
+    "BaselinePromotionReceipt",
+    "build_report",
+    "parse_metric_assignments",
+    "promote_baseline_file",
+    "qualify_baseline_promotion",
+    "write_json_atomic",
     "CiGateResult",
     "CiPolicy",
     "CiReport",

@@ -52,10 +52,18 @@ Check in an accepted baseline:
 }
 ```
 
-Have your existing eval harness write the candidate report in the same schema, then:
+Have your existing eval harness produce the metrics. DriftGuard can wrap shell-visible values into the report schema:
 
 ```bash
 python -m pip install .
+
+driftguard report \
+  --run-id "$GITHUB_SHA" \
+  --subject checkout-agent \
+  --metric task_success=0.94 \
+  --metric latency_ms=1120 \
+  --output driftguard-candidate.json
+
 driftguard ci \
   --policy driftguard.toml \
   --baseline driftguard-baseline.json \
@@ -130,6 +138,8 @@ V1 does not auto-promote a passing candidate into the next baseline.
 Suppose a policy tolerates a 2% regression. Automatically replacing the baseline after every passing run could allow repeated 2% degradations to accumulate while every individual pull request still passes.
 
 Baseline promotion is therefore a separate reviewable effect.
+
+`driftguard prepare-baseline` can qualify an exact PASS and write a proposed next baseline plus a digest-bound receipt. It deliberately refuses to overwrite the accepted baseline in place.
 
 ## Behavioral-drift engine
 

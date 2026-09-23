@@ -1,10 +1,10 @@
 {
   "schema": "DRIFTGUARD_CI_REPORT_V1",
-  "run_id": "pull-request-bad",
+  "run_id": "pull-request-regression",
   "subject": "checkout-agent",
   "metrics": {
-    "task_success": 0.80,
-    "tool_success": 0.80,
+    "task_success": 0.91,
+    "tool_success": 0.955,
     "latency_ms": 1120
   }
 }

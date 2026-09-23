@@ -1,6 +1,11 @@
 import os
+import sqlite3
+from contextlib import closing
 import tempfile
+import threading
 import unittest
+from unittest.mock import patch
+from dataclasses import replace
 from hashlib import sha256
 
 from driftguard import (
@@ -9,16 +14,21 @@ from driftguard import (
     DriftEvidence,
     DriftPolicy,
     EvidenceIndependence,
+    MonitoredSubject,
     ProbeSource,
     ReloadAcknowledgement,
     SaveState,
     SourceBinding,
+    StaleGenerationError,
+    SubjectComponent,
+    SubjectEpochTransition,
 )
 from driftguard.external_boundary import (
     ActuatorDeliveryStatus,
     ActuatorDisposition,
     ActuatorReceipt,
     ExternalEvaluatorResponse,
+    ReloadDirective,
     append_external_receipt,
     build_evaluator_request,
     commit_evaluator_response,
@@ -26,13 +36,48 @@ from driftguard.external_boundary import (
     qualify_post_reload_behavior,
     reconcile_actuator_receipt,
     validate_evaluator_response,
+    validate_reload_directive,
 )
-from driftguard.ledger import CommitResult, DriftLedger
+from driftguard.ledger import CommitResult, DriftLedger, ReloadCurrentnessReadback
 from driftguard.model import raw_bytes_digest
 
 
 SOURCE = SourceBinding("probe://external", "v1")
 OBS = raw_bytes_digest(b"external observation")
+REQUIRED_SUBJECT_COMPONENTS = (
+    "provider",
+    "model",
+    "instructions",
+    "tools",
+    "retrieval",
+    "memory",
+    "inference",
+    "harness",
+)
+
+
+def monitored_subject(*, epoch: int = 0, model_payload: str = "model-v1"):
+    return MonitoredSubject(
+        subject_id="external-runtime",
+        epoch=epoch,
+        components=tuple(
+            SubjectComponent(
+                component_id=component_id,
+                binding=SourceBinding(
+                    f"subject://external/{component_id}",
+                    "v1",
+                ),
+                digest=raw_bytes_digest(
+                    (
+                        model_payload
+                        if component_id == "model"
+                        else f"{component_id}:v1"
+                    ).encode("utf-8")
+                ),
+            )
+            for component_id in REQUIRED_SUBJECT_COMPONENTS
+        ),
+    )
 
 
 def state(*, max_turns: int = 5) -> SaveState:
@@ -312,7 +357,7 @@ class ExternalActuatorBoundaryTests(LedgerHarness):
                 ledger=self.ledger,
             )
 
-    def test_applied_receipt_yields_acknowledgement(self):
+    def test_applied_receipt_requires_readback_without_verified_effect_proof(self):
         directive = build_reload_directive(
             session_id="session",
             commit=self.reload_commit(),
@@ -321,13 +366,39 @@ class ExternalActuatorBoundaryTests(LedgerHarness):
         result = reconcile_actuator_receipt(
             directive=directive,
             receipt=self.receipt(directive, ActuatorDeliveryStatus.APPLIED),
+            state=self.s,
+            ledger=self.ledger,
         )
-        self.assertEqual(ActuatorDisposition.ACKNOWLEDGE, result.disposition)
-        self.assertIsInstance(result.acknowledgement, ReloadAcknowledgement)
         self.assertEqual(
-            directive.evaluation_digest,
-            result.acknowledgement.evaluation_digest,
+            ActuatorDisposition.READBACK_REQUIRED,
+            result.disposition,
         )
+        self.assertIsNone(result.acknowledgement)
+
+    def test_forged_applied_receipt_cannot_manufacture_acknowledgement(self):
+        directive = build_reload_directive(
+            session_id="session",
+            commit=self.reload_commit(),
+            ledger=self.ledger,
+        )
+        forged = ActuatorReceipt(
+            directive.directive_id,
+            directive.digest,
+            ActuatorDeliveryStatus.APPLIED,
+            "fabricated-provider-operation",
+            sha256(b"fabricated provider receipt").hexdigest(),
+        )
+        result = reconcile_actuator_receipt(
+            directive=directive,
+            receipt=forged,
+            state=self.s,
+            ledger=self.ledger,
+        )
+        self.assertEqual(
+            ActuatorDisposition.READBACK_REQUIRED,
+            result.disposition,
+        )
+        self.assertIsNone(result.acknowledgement)
 
     def test_ambiguous_delivery_requires_readback_and_forbids_blind_retry(self):
         directive = build_reload_directive(
@@ -338,6 +409,8 @@ class ExternalActuatorBoundaryTests(LedgerHarness):
         result = reconcile_actuator_receipt(
             directive=directive,
             receipt=self.receipt(directive, ActuatorDeliveryStatus.UNKNOWN),
+            state=self.s,
+            ledger=self.ledger,
         )
         self.assertEqual(ActuatorDisposition.READBACK_REQUIRED, result.disposition)
         self.assertIsNone(result.acknowledgement)
@@ -351,9 +424,224 @@ class ExternalActuatorBoundaryTests(LedgerHarness):
         result = reconcile_actuator_receipt(
             directive=directive,
             receipt=self.receipt(directive, ActuatorDeliveryStatus.NOT_APPLIED),
+            state=self.s,
+            ledger=self.ledger,
         )
         self.assertEqual(ActuatorDisposition.READBACK_REQUIRED, result.disposition)
         self.assertIsNone(result.acknowledgement)
+
+    def test_direct_constructor_cannot_bypass_durable_reload_provenance(self):
+        commit = self.reload_commit()
+        forged = ReloadDirective(
+            session_id="session",
+            evaluation_digest="0" * 64,
+            state_digest=self.s.digest,
+            turn_index=commit.evaluation.turn_index,
+            expected_generation=commit.successor_generation,
+            restore_packet=commit.evaluation.restore_packet,
+            restore_packet_sha256=sha256(
+                commit.evaluation.restore_packet.encode("utf-8")
+            ).hexdigest(),
+        )
+        forged_receipt = self.receipt(forged, ActuatorDeliveryStatus.APPLIED)
+        with self.assertRaisesRegex(ValueError, "durable ledger evaluation receipt"):
+            reconcile_actuator_receipt(
+                directive=forged,
+                receipt=forged_receipt,
+                state=self.s,
+                ledger=self.ledger,
+            )
+
+    def test_direct_constructor_cannot_substitute_restore_packet(self):
+        commit = self.reload_commit()
+        malicious_packet = "DRIFTGUARD_RESTORE\nmalicious"
+        forged = ReloadDirective(
+            session_id="session",
+            evaluation_digest=commit.evaluation.digest,
+            state_digest=self.s.digest,
+            turn_index=commit.evaluation.turn_index,
+            expected_generation=commit.successor_generation,
+            restore_packet=malicious_packet,
+            restore_packet_sha256=sha256(
+                malicious_packet.encode("utf-8")
+            ).hexdigest(),
+        )
+        forged_receipt = self.receipt(forged, ActuatorDeliveryStatus.APPLIED)
+        with self.assertRaisesRegex(ValueError, "does not match pinned state"):
+            reconcile_actuator_receipt(
+                directive=forged,
+                receipt=forged_receipt,
+                state=self.s,
+                ledger=self.ledger,
+            )
+
+    def test_once_valid_directive_cannot_reconcile_after_generation_moves(self):
+        commit = self.reload_commit()
+        directive = build_reload_directive(
+            session_id="session",
+            commit=commit,
+            ledger=self.ledger,
+        )
+        self.ledger.acknowledge_reload(
+            session_id="session",
+            state=self.s,
+            acknowledgement=ReloadAcknowledgement(
+                "ack-move",
+                commit.evaluation.digest,
+                self.s.digest,
+                commit.evaluation.turn_index,
+            ),
+            expected_generation=commit.successor_generation,
+        )
+        with self.assertRaisesRegex(ValueError, "current durable generation"):
+            reconcile_actuator_receipt(
+                directive=directive,
+                receipt=self.receipt(
+                    directive,
+                    ActuatorDeliveryStatus.APPLIED,
+                ),
+                state=self.s,
+                ledger=self.ledger,
+            )
+
+    def test_reload_currentness_readback_cannot_be_directly_constructed(self):
+        with self.assertRaisesRegex(
+            ValueError,
+            "must come from DriftLedger.reload_currentness_readback",
+        ):
+            ReloadCurrentnessReadback(
+                session_id="session",
+                evaluation_digest="a" * 64,
+                state_digest="b" * 64,
+                evaluation_generation_before=0,
+                evaluation_generation_after=1,
+                evaluation_turn_index=1,
+                evaluation_reload_required=True,
+                session_generation=1,
+                session_last_evaluation_digest="a" * 64,
+                evaluation_subject_digest=None,
+                evaluation_subject_epoch=None,
+                session_subject_digest=None,
+                session_subject_epoch=None,
+                current_subject_id=None,
+                current_subject_digest=None,
+                current_subject_epoch=None,
+            )
+
+    def test_reload_currentness_readback_binds_one_snapshot(self):
+        commit = self.reload_commit()
+        evaluation, session, readback = self.ledger.reload_currentness_readback(
+            session_id="session",
+            evaluation_digest=commit.evaluation.digest,
+        )
+        self.assertIsNotNone(evaluation)
+        self.assertIsNotNone(session)
+        self.assertIsNotNone(readback)
+        self.assertEqual(commit.evaluation.digest, readback.evaluation_digest)
+        self.assertEqual(self.s.digest, readback.state_digest)
+        self.assertEqual(
+            commit.successor_generation,
+            readback.session_generation,
+        )
+        self.assertEqual(
+            commit.evaluation.digest,
+            readback.session_last_evaluation_digest,
+        )
+        self.assertEqual(
+            "SINGLE_SQLITE_BEGIN_IMMEDIATE_CURRENTNESS_SNAPSHOT_ONLY",
+            readback.snapshot_claim,
+        )
+        self.assertEqual(64, len(readback.digest))
+
+        before = readback.digest
+        self.ledger.acknowledge_reload(
+            session_id="session",
+            state=self.s,
+            acknowledgement=ReloadAcknowledgement(
+                "ack-currentness-snapshot",
+                commit.evaluation.digest,
+                self.s.digest,
+                commit.evaluation.turn_index,
+            ),
+            expected_generation=commit.successor_generation,
+        )
+        _, _, moved = self.ledger.reload_currentness_readback(
+            session_id="session",
+            evaluation_digest=commit.evaluation.digest,
+        )
+        self.assertIsNotNone(moved)
+        self.assertNotEqual(before, moved.digest)
+        self.assertEqual(
+            commit.successor_generation + 1,
+            moved.session_generation,
+        )
+
+    def test_build_reload_directive_uses_one_currentness_connection(self):
+        commit = self.reload_commit()
+        original_connect = self.ledger._connect
+        calls = 0
+
+        def counted_connect():
+            nonlocal calls
+            calls += 1
+            return original_connect()
+
+        with patch.object(
+            self.ledger,
+            "_connect",
+            side_effect=counted_connect,
+        ):
+            directive = build_reload_directive(
+                session_id="session",
+                commit=commit,
+                ledger=self.ledger,
+            )
+        self.assertEqual(1, calls)
+        self.assertEqual(commit.evaluation.digest, directive.evaluation_digest)
+
+    def test_validate_reload_directive_uses_one_currentness_connection(self):
+        directive = build_reload_directive(
+            session_id="session",
+            commit=self.reload_commit(),
+            ledger=self.ledger,
+        )
+        original_connect = self.ledger._connect
+        calls = 0
+
+        def counted_connect():
+            nonlocal calls
+            calls += 1
+            return original_connect()
+
+        with patch.object(
+            self.ledger,
+            "_connect",
+            side_effect=counted_connect,
+        ):
+            self.assertEqual(
+                directive.digest,
+                validate_reload_directive(
+                    directive=directive,
+                    state=self.s,
+                    ledger=self.ledger,
+                ),
+            )
+        self.assertEqual(1, calls)
+
+    def test_validate_reload_directive_accepts_factory_directive(self):
+        directive = build_reload_directive(
+            session_id="session",
+            commit=self.reload_commit(),
+            ledger=self.ledger,
+        )
+        self.assertEqual(
+            directive.digest,
+            validate_reload_directive(
+                directive=directive,
+                state=self.s,
+                ledger=self.ledger,
+            ),
+        )
 
     def test_receipt_cannot_rebind_to_another_directive(self):
         directive = build_reload_directive(
@@ -369,7 +657,345 @@ class ExternalActuatorBoundaryTests(LedgerHarness):
             sha256(b"provider receipt").hexdigest(),
         )
         with self.assertRaisesRegex(ValueError, "directive id mismatch"):
-            reconcile_actuator_receipt(directive=directive, receipt=receipt)
+            reconcile_actuator_receipt(
+                directive=directive,
+                receipt=receipt,
+                state=self.s,
+                ledger=self.ledger,
+            )
+
+
+class SubjectEffectCompositionTests(unittest.TestCase):
+    def setUp(self):
+        handle = tempfile.NamedTemporaryFile(delete=False)
+        handle.close()
+        self.path = handle.name
+        self.ledger = DriftLedger(self.path)
+        self.s = state()
+        self.subject = monitored_subject()
+        self.ledger.register_subject_epoch(self.subject)
+
+    def tearDown(self):
+        os.unlink(self.path)
+
+    def bound_evidence(self, turn, score):
+        return (
+            DriftEvidence(
+                f"subject-e-{turn}",
+                "d",
+                score,
+                EvidenceIndependence.EXTERNAL,
+                (SOURCE,),
+                f"subject-run-{turn}",
+                self.s.digest,
+                OBS,
+                turn,
+                self.subject.configuration_digest,
+                self.subject.epoch,
+            ),
+        )
+
+    def reload_commit(self):
+        first = self.ledger.evaluate_and_commit(
+            session_id="subject-session",
+            state=self.s,
+            evidence=self.bound_evidence(0, 0.0),
+            observation_digest=OBS,
+            turn_index=0,
+            expected_generation=0,
+            subject=self.subject,
+        )
+        self.assertEqual(Decision.STABLE, first.evaluation.decision)
+        result = self.ledger.evaluate_and_commit(
+            session_id="subject-session",
+            state=self.s,
+            evidence=self.bound_evidence(5, 1.0),
+            observation_digest=OBS,
+            turn_index=5,
+            expected_generation=1,
+            subject=self.subject,
+        )
+        self.assertTrue(result.evaluation.reload_required)
+        return result
+
+    def directive(self):
+        return build_reload_directive(
+            session_id="subject-session",
+            commit=self.reload_commit(),
+            ledger=self.ledger,
+            subject=self.subject,
+        )
+
+    @staticmethod
+    def applied_receipt(directive):
+        return ActuatorReceipt(
+            directive.directive_id,
+            directive.digest,
+            ActuatorDeliveryStatus.APPLIED,
+            "subject-provider-op",
+            sha256(b"subject provider receipt").hexdigest(),
+        )
+
+    def test_current_subject_generic_applied_still_requires_readback(self):
+        directive = self.directive()
+        result = reconcile_actuator_receipt(
+            directive=directive,
+            receipt=self.applied_receipt(directive),
+            state=self.s,
+            ledger=self.ledger,
+            subject=self.subject,
+        )
+        self.assertEqual(
+            ActuatorDisposition.READBACK_REQUIRED,
+            result.disposition,
+        )
+        self.assertIsNone(result.acknowledgement)
+
+    def test_superseded_subject_invalidates_existing_directive(self):
+        directive = self.directive()
+        successor = monitored_subject(epoch=1)
+        transition = SubjectEpochTransition(
+            transition_id="effect-subject-transition",
+            subject_id=self.subject.subject_id,
+            predecessor_epoch=0,
+            predecessor_digest=self.subject.configuration_digest,
+            successor_epoch=1,
+            successor_digest=successor.configuration_digest,
+            reason="supersede old reload directive",
+        )
+        self.ledger.transition_subject_epoch(
+            predecessor=self.subject,
+            successor=successor,
+            transition=transition,
+        )
+        with self.assertRaisesRegex(
+            StaleGenerationError,
+            "epoch has been superseded",
+        ):
+            validate_reload_directive(
+                directive=directive,
+                state=self.s,
+                ledger=self.ledger,
+                subject=self.subject,
+            )
+
+    def test_directive_subject_digest_tamper_fails(self):
+        directive = self.directive()
+        forged = replace(
+            directive,
+            subject_digest=raw_bytes_digest(b"other-subject"),
+        )
+        with self.assertRaisesRegex(ValueError, "subject digest mismatch"):
+            validate_reload_directive(
+                directive=forged,
+                state=self.s,
+                ledger=self.ledger,
+                subject=self.subject,
+            )
+
+    def test_directive_subject_epoch_tamper_fails(self):
+        directive = self.directive()
+        forged = replace(directive, subject_epoch=1)
+        with self.assertRaisesRegex(ValueError, "subject epoch mismatch"):
+            validate_reload_directive(
+                directive=forged,
+                state=self.s,
+                ledger=self.ledger,
+                subject=self.subject,
+            )
+
+    def test_durable_evaluation_subject_mismatch_fails(self):
+        directive = self.directive()
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute(
+                "UPDATE evaluation_events SET subject_digest=? "
+                "WHERE session_id=? AND evaluation_digest=?",
+                (
+                    raw_bytes_digest(b"tampered-event-subject"),
+                    directive.session_id,
+                    directive.evaluation_digest,
+                ),
+            )
+        with self.assertRaisesRegex(
+            ValueError,
+            "durable reload-required evaluation",
+        ):
+            validate_reload_directive(
+                directive=directive,
+                state=self.s,
+                ledger=self.ledger,
+                subject=self.subject,
+            )
+
+    def test_durable_session_subject_mismatch_fails(self):
+        directive = self.directive()
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute(
+                "UPDATE sessions SET subject_epoch=? WHERE session_id=?",
+                (9, directive.session_id),
+            )
+        with self.assertRaisesRegex(
+            ValueError,
+            "current session subject epoch mismatch",
+        ):
+            validate_reload_directive(
+                directive=directive,
+                state=self.s,
+                ledger=self.ledger,
+                subject=self.subject,
+            )
+
+    def test_mid_validation_subject_transition_cannot_commit(self):
+        directive = self.directive()
+        successor = monitored_subject(epoch=1)
+        transition = SubjectEpochTransition(
+            transition_id="effect-mid-validation-transition",
+            subject_id=self.subject.subject_id,
+            predecessor_epoch=0,
+            predecessor_digest=self.subject.configuration_digest,
+            successor_epoch=1,
+            successor_digest=successor.configuration_digest,
+            reason="hostile concurrent currentness transition",
+        )
+
+        entered_snapshot = threading.Event()
+        release_snapshot = threading.Event()
+        validation_result = []
+        validation_errors = []
+        original_converter = self.ledger._evaluation_row_to_receipt
+
+        def paused_converter(row):
+            entered_snapshot.set()
+            if not release_snapshot.wait(timeout=3):
+                raise RuntimeError("test snapshot release timeout")
+            return original_converter(row)
+
+        def run_validation():
+            try:
+                with patch.object(
+                    self.ledger,
+                    "_evaluation_row_to_receipt",
+                    side_effect=paused_converter,
+                ):
+                    validation_result.append(
+                        validate_reload_directive(
+                            directive=directive,
+                            state=self.s,
+                            ledger=self.ledger,
+                            subject=self.subject,
+                        )
+                    )
+            except BaseException as exc:
+                validation_errors.append(exc)
+
+        worker = threading.Thread(target=run_validation)
+        worker.start()
+        self.assertTrue(
+            entered_snapshot.wait(timeout=3),
+            "validation never entered atomic currentness snapshot",
+        )
+
+        contender = DriftLedger(self.path)
+
+        def short_timeout_connect():
+            connection = sqlite3.connect(self.path, timeout=0.05)
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys = ON")
+            return connection
+
+        try:
+            with patch.object(
+                contender,
+                "_connect",
+                side_effect=short_timeout_connect,
+            ):
+                with self.assertRaises(sqlite3.OperationalError):
+                    contender.transition_subject_epoch(
+                        predecessor=self.subject,
+                        successor=successor,
+                        transition=transition,
+                    )
+        finally:
+            release_snapshot.set()
+            worker.join(timeout=3)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual([], validation_errors)
+        self.assertEqual([directive.digest], validation_result)
+
+        self.ledger.transition_subject_epoch(
+            predecessor=self.subject,
+            successor=successor,
+            transition=transition,
+        )
+        with self.assertRaisesRegex(
+            StaleGenerationError,
+            "epoch has been superseded",
+        ):
+            validate_reload_directive(
+                directive=directive,
+                state=self.s,
+                ledger=self.ledger,
+                subject=self.subject,
+            )
+
+    def test_subject_bound_directive_requires_subject_readback(self):
+        directive = self.directive()
+        with self.assertRaisesRegex(ValueError, "subject digest mismatch"):
+            validate_reload_directive(
+                directive=directive,
+                state=self.s,
+                ledger=self.ledger,
+            )
+
+    def test_legacy_v1_directive_rejects_nonnull_subject(self):
+        handle = tempfile.NamedTemporaryFile(delete=False)
+        handle.close()
+        try:
+            ledger = DriftLedger(handle.name)
+            first = ledger.evaluate_and_commit(
+                session_id="legacy",
+                state=self.s,
+                evidence=evidence(self.s, 0, 0.0),
+                observation_digest=OBS,
+                turn_index=0,
+                expected_generation=0,
+            )
+            self.assertEqual(Decision.STABLE, first.evaluation.decision)
+            reload_commit = ledger.evaluate_and_commit(
+                session_id="legacy",
+                state=self.s,
+                evidence=evidence(self.s, 5, 1.0),
+                observation_digest=OBS,
+                turn_index=5,
+                expected_generation=1,
+            )
+            directive = build_reload_directive(
+                session_id="legacy",
+                commit=reload_commit,
+                ledger=ledger,
+            )
+            self.assertIsNone(directive.subject_digest)
+            self.assertEqual(
+                directive.digest,
+                validate_reload_directive(
+                    directive=directive,
+                    state=self.s,
+                    ledger=ledger,
+                ),
+            )
+            with self.assertRaisesRegex(
+                ValueError,
+                "subject digest mismatch",
+            ):
+                validate_reload_directive(
+                    directive=directive,
+                    state=self.s,
+                    ledger=ledger,
+                    subject=self.subject,
+                )
+        finally:
+            os.unlink(handle.name)
 
 
 class BehavioralRecoveryBoundaryTests(LedgerHarness):
@@ -389,9 +1015,24 @@ class BehavioralRecoveryBoundaryTests(LedgerHarness):
                 "provider-op-1",
                 sha256(b"provider receipt").hexdigest(),
             ),
+            state=self.s,
+            ledger=self.ledger,
         )
-        ack = external.acknowledgement
-        self.assertIsNotNone(ack)
+        self.assertEqual(
+            ActuatorDisposition.READBACK_REQUIRED,
+            external.disposition,
+        )
+        self.assertIsNone(external.acknowledgement)
+
+        # Recovery tests begin after independently established effect proof.
+        # The ledger validates durable evaluation/currentness provenance but does
+        # not itself prove provider application.
+        ack = ReloadAcknowledgement(
+            "externally-verified-effect:provider-op-1",
+            directive.evaluation_digest,
+            directive.state_digest,
+            directive.turn_index,
+        )
         result = self.ledger.acknowledge_reload(
             session_id="session",
             state=self.s,

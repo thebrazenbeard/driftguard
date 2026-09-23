@@ -664,10 +664,49 @@ class BenchmarkPrecommitPlan:
             candidates=self.candidates,
         )
 
+    def study_subject_payload(self) -> dict[str, Any]:
+        execution = self.execution_binding
+        return {
+            "schema": "DRIFTGUARD_BENCHMARK_STUDY_SUBJECT_V1",
+            "portfolio_digest": self.design_manifest.portfolio_digest,
+            "design_trajectory_content_digest": (
+                self.design_manifest.trajectory_content_digest
+            ),
+            "execution_schema_version": execution.schema_version,
+            "execution_source_digests": {
+                "benchmark": execution.benchmark_source_digest,
+                "calibration": execution.calibration_source_digest,
+                "comparison": execution.comparison_source_digest,
+                "sequential": execution.sequential_source_digest,
+                "model": execution.model_source_digest,
+            },
+            "cusum_spec_digest": self.cusum_spec_digest,
+            "family_policies": [
+                item.payload()
+                for item in sorted(
+                    self.family_policies,
+                    key=lambda row: row.family_id,
+                )
+            ],
+            "candidates": [
+                _candidate_study_subject_payload(item)
+                for item in sorted(
+                    self.candidates,
+                    key=lambda row: row.algorithm.value,
+                )
+            ],
+            "selection_rule": self.selection_rule,
+        }
+
+    @property
+    def study_subject_digest(self) -> str:
+        return canonical_digest(self.study_subject_payload())
+
     def payload(self) -> dict[str, Any]:
         return {
-            "schema": "DRIFTGUARD_BENCHMARK_PRECOMMIT_PLAN_V2",
+            "schema": "DRIFTGUARD_BENCHMARK_PRECOMMIT_PLAN_V3",
             "study_id": self.study_id,
+            "study_subject_digest": self.study_subject_digest,
             "attempt_id": self.attempt_id,
             "precommit_id": self.precommit_id,
             "predecessor_attempt_digests": list(

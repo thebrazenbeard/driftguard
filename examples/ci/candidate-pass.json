@@ -1,0 +1,10 @@
+{
+  "schema": "DRIFTGUARD_CI_REPORT_V1",
+  "run_id": "pull-request-123",
+  "subject": "checkout-agent",
+  "metrics": {
+    "task_success": 0.94,
+    "tool_success": 0.97,
+    "latency_ms": 1120
+  }
+}

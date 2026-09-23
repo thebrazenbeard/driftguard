@@ -11,7 +11,21 @@ jobs:
   local-action:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Zero-before resolver recovers exact first parent
+        shell: bash
+        env:
+          DG_TRUST_INPUT: auto
+          DG_EVENT_NAME: push
+          DG_PR_BASE_SHA: ""
+          DG_PUSH_BEFORE_SHA: "0000000000000000000000000000000000000000"
+          DG_CURRENT_SHA: ${{ github.sha }}
+        run: |
+          resolved="$(bash scripts/resolve_trusted_ref.sh)"
+          expected="$(git rev-parse "${DG_CURRENT_SHA}^")"
+          test "${resolved}" = "${expected}"
+          test "${resolved}" != "workspace"
 
       - name: Ordinary local action smoke
         uses: ./
@@ -28,30 +42,11 @@ jobs:
           test "${{ steps.driftguard.outputs.decision }}" = "PASS"
           test -n "${{ steps.driftguard.outputs.result-digest }}"
 
-      - name: Resolve trusted pre-change ref
-        id: trust
-        shell: bash
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          PUSH_BEFORE_SHA: ${{ github.event.before }}
-        run: |
-          if [ "${EVENT_NAME}" = "pull_request" ]; then
-            trust="${PR_BASE_SHA}"
-          else
-            trust="${PUSH_BEFORE_SHA}"
-          fi
-          if [ -z "${trust}" ] || printf '%s' "${trust}" | grep -Eq '^0+$'; then
-            echo "No pre-change ref available for hostile trusted-ref smoke" >&2
-            exit 1
-          fi
-          echo "ref=${trust}" >> "${GITHUB_OUTPUT}"
-
       - name: Tamper workspace baseline
         shell: bash
         run: cp examples/ci/candidate-block.json examples/ci/baseline.json
 
-      - name: Trusted baseline rejects self-laundered candidate
+      - name: Auto trust rejects self-laundered candidate
         uses: ./
         id: hostile
         continue-on-error: true
@@ -59,11 +54,12 @@ jobs:
           policy: examples/ci/driftguard.toml
           baseline: examples/ci/baseline.json
           candidate: examples/ci/candidate-block.json
-          trusted-ref: ${{ steps.trust.outputs.ref }}
+          trusted-ref: auto
 
-      - name: Assert hostile gate remained closed
+      - name: Assert hostile auto gate remained closed
         shell: bash
         run: |
           test "${{ steps.hostile.outcome }}" = "failure"
           test "${{ steps.hostile.outputs.decision }}" = "BLOCK"
-          test "${{ steps.hostile.outputs.trusted-ref }}" = "${{ steps.trust.outputs.ref }}"
+          test -n "${{ steps.hostile.outputs.trusted-ref }}"
+          test "${{ steps.hostile.outputs.trusted-ref }}" != "workspace"

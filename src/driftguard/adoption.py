@@ -69,7 +69,7 @@ def build_report(
 
 
 @dataclass(frozen=True)
-class BaselinePromotionReceipt:
+class BaselinePromotionQualification:
     policy_id: str
     policy_digest: str
     previous_baseline_digest: str
@@ -80,7 +80,7 @@ class BaselinePromotionReceipt:
 
     def payload(self) -> dict:
         return {
-            "schema": "DRIFTGUARD_BASELINE_PROMOTION_V1",
+            "schema": "DRIFTGUARD_BASELINE_PROMOTION_QUALIFICATION_V1",
             "policy_id": self.policy_id,
             "policy_digest": self.policy_digest,
             "previous_baseline_digest": self.previous_baseline_digest,
@@ -90,8 +90,45 @@ class BaselinePromotionReceipt:
             "subject": self.subject,
             "claim_ceiling": [
                 "Candidate passed the exact supplied policy against the exact previous baseline.",
-                "Receipt does not prove evaluator correctness or authorize repository/deployment effects.",
-                "Promotion output records the candidate report; repository review remains external.",
+                "Qualification does not prove a proposed baseline was written.",
+                "Qualification does not authorize repository or deployment effects.",
+            ],
+        }
+
+    @property
+    def digest(self) -> str:
+        return _canonical_digest(self.payload())
+
+
+@dataclass(frozen=True)
+class BaselinePromotionReceipt:
+    qualification_digest: str
+    policy_id: str
+    policy_digest: str
+    previous_baseline_digest: str
+    promoted_candidate_digest: str
+    gate_result_digest: str
+    candidate_run_id: str
+    subject: str | None
+    prepared_baseline_digest: str
+
+    def payload(self) -> dict:
+        return {
+            "schema": "DRIFTGUARD_BASELINE_PROMOTION_RECEIPT_V1",
+            "effect_state": "PREPARED_FOR_REVIEW",
+            "qualification_digest": self.qualification_digest,
+            "policy_id": self.policy_id,
+            "policy_digest": self.policy_digest,
+            "previous_baseline_digest": self.previous_baseline_digest,
+            "promoted_candidate_digest": self.promoted_candidate_digest,
+            "gate_result_digest": self.gate_result_digest,
+            "candidate_run_id": self.candidate_run_id,
+            "subject": self.subject,
+            "prepared_baseline_digest": self.prepared_baseline_digest,
+            "claim_ceiling": [
+                "A proposed baseline was written and read back with the exact candidate digest.",
+                "The accepted baseline was not replaced by this operation.",
+                "Receipt does not authorize repository or deployment effects.",
             ],
         }
 
@@ -105,7 +142,7 @@ def qualify_baseline_promotion(
     policy: CiPolicy,
     baseline: CiReport,
     candidate: CiReport,
-) -> BaselinePromotionReceipt:
+) -> BaselinePromotionQualification:
     result = evaluate_ci(
         policy=policy,
         baseline=baseline,
@@ -116,7 +153,7 @@ def qualify_baseline_promotion(
             "baseline promotion requires an exact PASS; "
             f"gate returned {result.decision.value}"
         )
-    return BaselinePromotionReceipt(
+    return BaselinePromotionQualification(
         policy_id=policy.policy_id,
         policy_digest=policy.digest,
         previous_baseline_digest=baseline.digest,
@@ -167,7 +204,7 @@ def promote_baseline_file(
     policy = CiPolicy.load(policy_path)
     baseline = CiReport.load(baseline_path)
     candidate = CiReport.load(candidate_path)
-    receipt = qualify_baseline_promotion(
+    qualification = qualify_baseline_promotion(
         policy=policy,
         baseline=baseline,
         candidate=candidate,
@@ -206,10 +243,20 @@ def promote_baseline_file(
             "proposed baseline readback digest mismatch"
         )
 
+    receipt = BaselinePromotionReceipt(
+        qualification_digest=qualification.digest,
+        policy_id=qualification.policy_id,
+        policy_digest=qualification.policy_digest,
+        previous_baseline_digest=qualification.previous_baseline_digest,
+        promoted_candidate_digest=qualification.promoted_candidate_digest,
+        gate_result_digest=qualification.gate_result_digest,
+        candidate_run_id=qualification.candidate_run_id,
+        subject=qualification.subject,
+        prepared_baseline_digest=written.digest,
+    )
+
     if receipt_path is not None:
         payload = receipt.payload()
         payload["promotion_digest"] = receipt.digest
-        payload["prepared_baseline_digest"] = written.digest
-        payload["effect_state"] = "PREPARED_FOR_REVIEW"
         write_json_atomic(receipt_path, payload)
     return receipt

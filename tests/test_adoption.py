@@ -81,12 +81,56 @@ class AdoptionTests(unittest.TestCase):
                 candidate=bad,
             )
 
+    def test_promotion_refuses_in_place_overwrite(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            policy = root / "driftguard.toml"
+            baseline = root / "baseline.json"
+            candidate = root / "candidate.json"
+            policy.write_text(
+                """schema = "DRIFTGUARD_CI_POLICY_V1"
+policy_id = "quality-v1"
+unknown = "block"
+
+[[metric]]
+name = "quality"
+direction = "higher"
+max_regression = 0.02
+min_candidate = 0.90
+severity = "block"
+""",
+                encoding="utf-8",
+            )
+            for path, run_id, value in (
+                (baseline, "base", 0.95),
+                (candidate, "candidate", 0.94),
+            ):
+                path.write_text(
+                    json.dumps(
+                        {
+                            "schema": "DRIFTGUARD_CI_REPORT_V1",
+                            "run_id": run_id,
+                            "subject": "agent",
+                            "metrics": {"quality": value},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+            with self.assertRaisesRegex(AdoptionError, "overwrite"):
+                promote_baseline_file(
+                    policy_path=policy,
+                    baseline_path=baseline,
+                    candidate_path=candidate,
+                    output_path=baseline,
+                )
+
     def test_promote_writes_candidate_and_receipt(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             policy = root / "driftguard.toml"
             baseline = root / "baseline.json"
             candidate = root / "candidate.json"
+            proposed = root / "baseline.next.json"
             receipt = root / "receipt.json"
 
             policy.write_text(
@@ -130,12 +174,14 @@ severity = "block"
                 policy_path=policy,
                 baseline_path=baseline,
                 candidate_path=candidate,
-                output_path=baseline,
+                output_path=proposed,
                 receipt_path=receipt,
             )
 
-            promoted = CiReport.load(baseline)
+            promoted = CiReport.load(proposed)
             self.assertEqual(promoted.run_id, "candidate")
+            original = CiReport.load(baseline)
+            self.assertEqual(original.run_id, "base")
             receipt_value = json.loads(receipt.read_text(encoding="utf-8"))
             self.assertEqual(
                 receipt_value["previous_baseline_digest"],

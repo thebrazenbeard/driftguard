@@ -24,3 +24,12 @@ git diff --check
 ```
 
 For security-sensitive findings, follow [SECURITY.md](SECURITY.md) instead of filing a public issue.
+
+
+## Contribution licensing
+
+Before submitting a pull request, read [CLA.md](CLA.md). In the pull-request description, include:
+
+> I have read and agree to the repository CLA.
+
+Do not submit material you lack the right to license. Identify third-party code and preserve all license/attribution obligations.

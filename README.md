@@ -1,3 +1,5 @@
+> **License:** Mixed/prospective licensing. Material present at commit `c82162bb306e…` remains Apache-2.0; original post-cutoff material is source-visible proprietary unless separately licensed. See [LICENSE](LICENSE), [LICENSE-APACHE-2.0](LICENSE-APACHE-2.0), and [LEGACY_LICENSE_NOTICE.md](LEGACY_LICENSE_NOTICE.md).
+
 # DriftGuard
 
 **Deterministic regression admission for AI agents.**

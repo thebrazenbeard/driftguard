@@ -1179,10 +1179,12 @@ class BenchmarkAttemptLedger:
                 CREATE TABLE IF NOT EXISTS benchmark_attempts (
                     attempt_id TEXT PRIMARY KEY,
                     study_id TEXT NOT NULL,
+                    study_subject_digest TEXT NOT NULL,
                     precommit_id TEXT NOT NULL UNIQUE,
                     precommit_digest TEXT NOT NULL,
                     seal_digest TEXT NOT NULL,
                     holdout_corpus_digest TEXT NOT NULL,
+                    holdout_content_digest TEXT NOT NULL,
                     execution_binding_digest TEXT NOT NULL,
                     predecessor_attempt_digests_json TEXT NOT NULL,
                     status TEXT NOT NULL,
@@ -1198,6 +1200,27 @@ class BenchmarkAttemptLedger:
                     ON benchmark_attempts(study_id)
                 """
             )
+            db.execute(
+                """
+                CREATE INDEX IF NOT EXISTS benchmark_attempts_subject_idx
+                    ON benchmark_attempts(study_subject_digest)
+                """
+            )
+            columns = {
+                str(row[1])
+                for row in db.execute(
+                    "PRAGMA table_info(benchmark_attempts)"
+                ).fetchall()
+            }
+            required_columns = {
+                "study_subject_digest",
+                "holdout_content_digest",
+            }
+            if not required_columns.issubset(columns):
+                raise ValueError(
+                    "legacy R11 benchmark ledger schema is not compatible with "
+                    "study-subject/content governance; start a new governed ledger"
+                )
             db.execute(
                 """
                 CREATE TABLE IF NOT EXISTS benchmark_attempt_events (
@@ -1230,11 +1253,13 @@ class BenchmarkAttemptLedger:
             )
         return BenchmarkAttemptReceipt(
             study_id=str(row["study_id"]),
+            study_subject_digest=str(row["study_subject_digest"]),
             attempt_id=str(row["attempt_id"]),
             precommit_id=str(row["precommit_id"]),
             precommit_digest=str(row["precommit_digest"]),
             seal_digest=str(row["seal_digest"]),
             holdout_corpus_digest=str(row["holdout_corpus_digest"]),
+            holdout_content_digest=str(row["holdout_content_digest"]),
             execution_binding_digest=str(row["execution_binding_digest"]),
             predecessor_attempt_digests=tuple(raw),
             status=BenchmarkAttemptStatus(str(row["status"])),

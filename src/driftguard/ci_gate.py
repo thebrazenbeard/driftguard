@@ -315,7 +315,7 @@ def evaluate_ci(
     baseline: CiReport,
     candidate: CiReport,
 ) -> CiGateResult:
-    if baseline.subject and candidate.subject and baseline.subject != candidate.subject:
+    if baseline.subject != candidate.subject:
         return CiGateResult(
             decision=GateDecision.UNKNOWN,
             policy_id=policy.policy_id,
@@ -361,6 +361,7 @@ def evaluate_ci(
             regression = base - cand
         else:
             regression = cand - base
+        regression = round(regression, 12)
 
         reasons = []
         if regression > metric.max_regression:

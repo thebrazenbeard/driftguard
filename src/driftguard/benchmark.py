@@ -1397,6 +1397,10 @@ class BenchmarkAttemptLedger:
                 "precommit must be exact BenchmarkPrecommitPlan"
             )
         precommit.execution_binding.assert_runtime_sources_match()
+        study_subject_digest = precommit.study_subject_digest
+        holdout_content_digest = (
+            precommit.holdout_seal.manifest.trajectory_content_digest
+        )
         predecessor_json = json.dumps(
             list(precommit.predecessor_attempt_digests),
             separators=(",", ":"),
@@ -1430,6 +1434,41 @@ class BenchmarkAttemptLedger:
                     "precommit_id is already registered to another attempt"
                 )
 
+            reused_subject = db.execute(
+                """
+                SELECT study_id,attempt_id
+                  FROM benchmark_attempts
+                 WHERE study_subject_digest=?
+                 ORDER BY rowid
+                 LIMIT 1
+                """,
+                (study_subject_digest,),
+            ).fetchone()
+            if (
+                reused_subject is not None
+                and str(reused_subject["study_id"]) != precommit.study_id
+            ):
+                raise ValueError(
+                    "benchmark study subject is already governed under a "
+                    "different study_id; study relabeling cannot reset lineage"
+                )
+
+            reused_holdout = db.execute(
+                """
+                SELECT study_id,attempt_id
+                  FROM benchmark_attempts
+                 WHERE holdout_content_digest=?
+                 ORDER BY rowid
+                 LIMIT 1
+                """,
+                (holdout_content_digest,),
+            ).fetchone()
+            if reused_holdout is not None:
+                raise ValueError(
+                    "holdout trajectory content was already consumed by a "
+                    "prior benchmark attempt"
+                )
+
             rows = db.execute(
                 """
                 SELECT * FROM benchmark_attempts
@@ -1439,6 +1478,14 @@ class BenchmarkAttemptLedger:
                 (precommit.study_id,),
             ).fetchall()
             receipts = tuple(self._row_to_receipt(row) for row in rows)
+            if any(
+                item.study_subject_digest != study_subject_digest
+                for item in receipts
+            ):
+                raise ValueError(
+                    "study_id is already bound to a different governed "
+                    "benchmark study subject; redesign requires a new study"
+                )
             active = tuple(
                 item
                 for item in receipts
@@ -1483,20 +1530,23 @@ class BenchmarkAttemptLedger:
             db.execute(
                 """
                 INSERT INTO benchmark_attempts(
-                    attempt_id,study_id,precommit_id,precommit_digest,
+                    attempt_id,study_id,study_subject_digest,
+                    precommit_id,precommit_digest,
                     seal_digest,holdout_corpus_digest,
-                    execution_binding_digest,
+                    holdout_content_digest,execution_binding_digest,
                     predecessor_attempt_digests_json,status,
                     reveal_digest,run_digest,reason
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     precommit.attempt_id,
                     precommit.study_id,
+                    study_subject_digest,
                     precommit.precommit_id,
                     precommit.digest,
                     precommit.holdout_seal.digest,
                     precommit.holdout_seal.manifest.corpus_digest,
+                    holdout_content_digest,
                     precommit.execution_binding.digest,
                     predecessor_json,
                     BenchmarkAttemptStatus.SEALED.value,
@@ -1536,6 +1586,13 @@ class BenchmarkAttemptLedger:
             )
         if receipt.study_id != precommit.study_id:
             raise ValueError("benchmark attempt study id mismatch")
+        if receipt.study_subject_digest != precommit.study_subject_digest:
+            raise ValueError("benchmark attempt study subject mismatch")
+        if (
+            receipt.holdout_content_digest
+            != precommit.holdout_seal.manifest.trajectory_content_digest
+        ):
+            raise ValueError("benchmark attempt holdout content mismatch")
         if receipt.precommit_id != precommit.precommit_id:
             raise ValueError("benchmark attempt precommit id mismatch")
         if receipt.precommit_digest != precommit.digest:

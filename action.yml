@@ -1,0 +1,70 @@
+name: DriftGuard
+description: Deterministic regression admission for AI/agent evaluation metrics
+author: thebrazenbeard
+
+branding:
+  icon: shield
+  color: purple
+
+inputs:
+  policy:
+    description: Path to driftguard.toml
+    required: false
+    default: driftguard.toml
+  baseline:
+    description: Path to the accepted baseline metric report
+    required: false
+    default: driftguard-baseline.json
+  candidate:
+    description: Path to the candidate metric report produced by your evaluator
+    required: false
+    default: driftguard-candidate.json
+  python-version:
+    description: Python version used to execute DriftGuard
+    required: false
+    default: "3.12"
+
+outputs:
+  decision:
+    description: PASS, WARN, BLOCK, or UNKNOWN
+    value: ${{ steps.gate.outputs.decision }}
+  result-digest:
+    description: SHA-256 digest of the canonical DriftGuard gate result
+    value: ${{ steps.gate.outputs.result_digest }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install DriftGuard
+      shell: bash
+      run: python -m pip install "${GITHUB_ACTION_PATH}"
+
+    - name: Evaluate DriftGuard gate
+      id: gate
+      shell: bash
+      run: |
+        set +e
+        result="${RUNNER_TEMP}/driftguard-result.json"
+        summary="${RUNNER_TEMP}/driftguard-summary.md"
+
+        driftguard ci           --policy "${{ inputs.policy }}"           --baseline "${{ inputs.baseline }}"           --candidate "${{ inputs.candidate }}"           --output "${result}"           --summary "${summary}"
+        code=$?
+
+        cat "${summary}" >> "${GITHUB_STEP_SUMMARY}"
+
+        python - "${result}" "${GITHUB_OUTPUT}" <<'PY'
+        import json
+        import pathlib
+        import sys
+
+        result = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+        with pathlib.Path(sys.argv[2]).open("a", encoding="utf-8") as handle:
+            handle.write(f"decision={result['decision']}\n")
+            handle.write(f"result_digest={result['result_digest']}\n")
+        PY
+
+        exit "${code}"

@@ -18,6 +18,7 @@ jobs:
           policy: examples/ci/driftguard.toml
           baseline: examples/ci/baseline.json
           candidate: examples/ci/candidate-pass.json
+          trusted-ref: workspace
       - name: Assert action output
         shell: bash
         run: |

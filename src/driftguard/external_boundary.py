@@ -5,11 +5,14 @@ from enum import StrEnum
 from hashlib import sha256
 from typing import Any, Iterable
 
+from .core import DriftGuardEngine
 from .ledger import AcknowledgementResult, CommitResult, DriftLedger
 from .model import (
     Decision,
     DriftEvidence,
     Evaluation,
+    MeasurementMode,
+    MonitoredSubject,
     ReloadAcknowledgement,
     SaveState,
     SourceBinding,
@@ -31,6 +34,11 @@ class EvaluatorProbeContract:
     source_version: str
     max_independence: str
     dimensions: tuple[str, ...]
+    calibration_ref: str | None = None
+    calibration_version: str | None = None
+    calibration_digest: str | None = None
+    correlation_group: str | None = None
+    score_scale: str | None = None
 
     def __post_init__(self) -> None:
         _nonempty(self.source_ref, "source_ref")
@@ -42,18 +50,46 @@ class EvaluatorProbeContract:
             raise ValueError("dimensions must contain non-empty exact strings")
         if len(self.dimensions) != len(set(self.dimensions)):
             raise ValueError("dimensions must be unique")
+        if (self.calibration_ref is None) != (self.calibration_version is None):
+            raise ValueError(
+                "calibration_ref and calibration_version must be supplied together"
+            )
+        if self.calibration_ref is not None:
+            _nonempty(self.calibration_ref, "calibration_ref")
+            _nonempty(self.calibration_version, "calibration_version")
+        if self.calibration_digest is not None:
+            require_sha256_digest(
+                self.calibration_digest,
+                "calibration_digest",
+            )
+        if self.correlation_group is not None:
+            _nonempty(self.correlation_group, "correlation_group")
+        if self.score_scale is not None:
+            _nonempty(self.score_scale, "score_scale")
 
     @property
     def binding(self) -> SourceBinding:
         return SourceBinding(self.source_ref, self.source_version)
 
     def payload(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "source_ref": self.source_ref,
             "source_version": self.source_version,
             "max_independence": self.max_independence,
             "dimensions": list(self.dimensions),
         }
+        if self.calibration_ref is not None:
+            payload["calibration"] = {
+                "ref": self.calibration_ref,
+                "version": self.calibration_version,
+            }
+        if self.calibration_digest is not None:
+            payload["calibration_digest"] = self.calibration_digest
+        if self.correlation_group is not None:
+            payload["correlation_group"] = self.correlation_group
+        if self.score_scale is not None:
+            payload["score_scale"] = self.score_scale
+        return payload
 
 
 @dataclass(frozen=True)
@@ -64,6 +100,11 @@ class ExternalEvaluatorRequest:
     turn_index: int
     expected_generation: int
     probe_contract: tuple[EvaluatorProbeContract, ...]
+    behavior_digest: str | None = None
+    measurement_digest: str | None = None
+    detection_policy_digest: str | None = None
+    subject_digest: str | None = None
+    subject_epoch: int | None = None
 
     def __post_init__(self) -> None:
         _nonempty(self.session_id, "session_id")
@@ -80,10 +121,49 @@ class ExternalEvaluatorRequest:
         bindings = [item.binding for item in self.probe_contract]
         if len(bindings) != len(set(bindings)):
             raise ValueError("probe contract bindings must be unique")
+        digest_fields = (
+            self.behavior_digest,
+            self.measurement_digest,
+            self.detection_policy_digest,
+        )
+        if any(value is not None for value in digest_fields):
+            if any(value is None for value in digest_fields):
+                raise ValueError(
+                    "behavior, measurement, and detection-policy digests "
+                    "must be supplied together"
+                )
+            require_sha256_digest(self.behavior_digest, "behavior_digest")
+            require_sha256_digest(self.measurement_digest, "measurement_digest")
+            require_sha256_digest(
+                self.detection_policy_digest,
+                "detection_policy_digest",
+            )
+        if (self.subject_digest is None) != (self.subject_epoch is None):
+            raise ValueError(
+                "subject_digest and subject_epoch must be supplied together"
+            )
+        if self.subject_digest is not None:
+            require_sha256_digest(self.subject_digest, "subject_digest")
+            if (
+                type(self.subject_epoch) is not int
+                or isinstance(self.subject_epoch, bool)
+                or self.subject_epoch < 0
+            ):
+                raise ValueError(
+                    "subject_epoch must be a non-negative integer"
+                )
 
     def payload(self) -> dict[str, Any]:
-        return {
-            "schema": "DRIFTGUARD_EXTERNAL_EVALUATOR_REQUEST_V1",
+        payload: dict[str, Any] = {
+            "schema": (
+                "DRIFTGUARD_EXTERNAL_EVALUATOR_REQUEST_V3"
+                if self.subject_digest is not None
+                else (
+                    "DRIFTGUARD_EXTERNAL_EVALUATOR_REQUEST_V2"
+                    if self.behavior_digest is not None
+                    else "DRIFTGUARD_EXTERNAL_EVALUATOR_REQUEST_V1"
+                )
+            ),
             "session_id": self.session_id,
             "state_digest": self.state_digest,
             "observation_digest": self.observation_digest,
@@ -91,6 +171,14 @@ class ExternalEvaluatorRequest:
             "expected_generation": self.expected_generation,
             "probe_contract": [item.payload() for item in self.probe_contract],
         }
+        if self.behavior_digest is not None:
+            payload["behavior_digest"] = self.behavior_digest
+            payload["measurement_digest"] = self.measurement_digest
+            payload["detection_policy_digest"] = self.detection_policy_digest
+        if self.subject_digest is not None:
+            payload["subject_digest"] = self.subject_digest
+            payload["subject_epoch"] = self.subject_epoch
+        return payload
 
     @property
     def digest(self) -> str:
@@ -136,9 +224,12 @@ def build_evaluator_request(
     observation_digest: str,
     turn_index: int,
     expected_generation: int,
+    subject: MonitoredSubject | None = None,
 ) -> ExternalEvaluatorRequest:
     if type(state) is not SaveState:
         raise ValueError("state must be exact SaveState")
+    if subject is not None and type(subject) is not MonitoredSubject:
+        raise ValueError("subject must be exact MonitoredSubject or None")
     contracts = tuple(
         sorted(
             (
@@ -147,12 +238,26 @@ def build_evaluator_request(
                     source.binding.version,
                     source.max_independence.name,
                     source.dimensions,
+                    (
+                        source.calibration.ref
+                        if source.calibration is not None
+                        else None
+                    ),
+                    (
+                        source.calibration.version
+                        if source.calibration is not None
+                        else None
+                    ),
+                    source.calibration_digest,
+                    source.correlation_group,
+                    source.score_scale,
                 )
                 for source in state.probe_sources
             ),
             key=lambda item: (item.source_ref, item.source_version),
         )
     )
+    strict = state.measurement_mode is MeasurementMode.CALIBRATED_QUORUM
     return ExternalEvaluatorRequest(
         session_id=session_id,
         state_digest=state.digest,
@@ -160,6 +265,13 @@ def build_evaluator_request(
         turn_index=turn_index,
         expected_generation=expected_generation,
         probe_contract=contracts,
+        behavior_digest=state.behavior_digest if strict else None,
+        measurement_digest=state.measurement_digest if strict else None,
+        detection_policy_digest=state.detection_policy_digest if strict else None,
+        subject_digest=(
+            subject.configuration_digest if subject is not None else None
+        ),
+        subject_epoch=subject.epoch if subject is not None else None,
     )
 
 
@@ -182,6 +294,10 @@ def validate_evaluator_response(
             raise ValueError("external evidence observation digest mismatch")
         if item.turn_index != request.turn_index:
             raise ValueError("external evidence turn mismatch")
+        if item.subject_digest != request.subject_digest:
+            raise ValueError("external evidence subject digest mismatch")
+        if item.subject_epoch != request.subject_epoch:
+            raise ValueError("external evidence subject epoch mismatch")
         if not set(item.source_bindings).issubset(allowed_bindings):
             raise ValueError("external evidence contains unrequested source binding")
     return response.evidence_digest
@@ -193,6 +309,7 @@ def commit_evaluator_response(
     state: SaveState,
     response: ExternalEvaluatorResponse,
     ledger: DriftLedger,
+    subject: MonitoredSubject | None = None,
 ) -> CommitResult:
     if type(request) is not ExternalEvaluatorRequest:
         raise ValueError("request must be exact ExternalEvaluatorRequest")
@@ -202,6 +319,16 @@ def commit_evaluator_response(
         raise ValueError("response must be exact ExternalEvaluatorResponse")
     if type(ledger) is not DriftLedger:
         raise ValueError("ledger must be exact DriftLedger")
+    if subject is not None and type(subject) is not MonitoredSubject:
+        raise ValueError("subject must be exact MonitoredSubject or None")
+    expected_subject_digest = (
+        subject.configuration_digest if subject is not None else None
+    )
+    expected_subject_epoch = subject.epoch if subject is not None else None
+    if request.subject_digest != expected_subject_digest:
+        raise ValueError("evaluator request subject digest no longer matches subject")
+    if request.subject_epoch != expected_subject_epoch:
+        raise ValueError("evaluator request subject epoch no longer matches subject")
     if state.digest != request.state_digest:
         raise ValueError("evaluator request state digest no longer matches state")
     validate_evaluator_response(request, response)
@@ -212,6 +339,7 @@ def commit_evaluator_response(
         observation_digest=request.observation_digest,
         turn_index=request.turn_index,
         expected_generation=request.expected_generation,
+        subject=subject,
     )
 
 
@@ -224,6 +352,8 @@ class ReloadDirective:
     expected_generation: int
     restore_packet: str
     restore_packet_sha256: str
+    subject_digest: str | None = None
+    subject_epoch: int | None = None
 
     def __post_init__(self) -> None:
         _nonempty(self.session_id, "session_id")
@@ -238,10 +368,31 @@ class ReloadDirective:
         actual = sha256(self.restore_packet.encode("utf-8")).hexdigest()
         if actual != self.restore_packet_sha256:
             raise ValueError("restore packet digest mismatch")
+        if (self.subject_digest is None) != (self.subject_epoch is None):
+            raise ValueError(
+                "directive subject_digest and subject_epoch must be supplied together"
+            )
+        if self.subject_digest is not None:
+            require_sha256_digest(
+                self.subject_digest,
+                "directive subject digest",
+            )
+            if (
+                type(self.subject_epoch) is not int
+                or isinstance(self.subject_epoch, bool)
+                or self.subject_epoch < 0
+            ):
+                raise ValueError(
+                    "directive subject_epoch must be a non-negative integer"
+                )
 
     def payload(self) -> dict[str, Any]:
-        return {
-            "schema": "DRIFTGUARD_RELOAD_DIRECTIVE_V1",
+        payload = {
+            "schema": (
+                "DRIFTGUARD_RELOAD_DIRECTIVE_V2"
+                if self.subject_digest is not None
+                else "DRIFTGUARD_RELOAD_DIRECTIVE_V1"
+            ),
             "session_id": self.session_id,
             "evaluation_digest": self.evaluation_digest,
             "state_digest": self.state_digest,
@@ -250,6 +401,10 @@ class ReloadDirective:
             "restore_packet": self.restore_packet,
             "restore_packet_sha256": self.restore_packet_sha256,
         }
+        if self.subject_digest is not None:
+            payload["subject_digest"] = self.subject_digest
+            payload["subject_epoch"] = self.subject_epoch
+        return payload
 
     @property
     def digest(self) -> str:
@@ -265,24 +420,42 @@ def build_reload_directive(
     session_id: str,
     commit: CommitResult,
     ledger: DriftLedger,
+    subject: MonitoredSubject | None = None,
 ) -> ReloadDirective:
     if type(commit) is not CommitResult:
         raise ValueError("commit must be exact CommitResult")
     if type(ledger) is not DriftLedger:
         raise ValueError("ledger must be exact DriftLedger")
+    if subject is not None and type(subject) is not MonitoredSubject:
+        raise ValueError("subject must be exact MonitoredSubject or None")
     evaluation = commit.evaluation
+    expected_subject_digest = (
+        subject.configuration_digest if subject is not None else None
+    )
+    expected_subject_epoch = subject.epoch if subject is not None else None
+    if evaluation.subject_digest != expected_subject_digest:
+        raise ValueError(
+            "reload directive requires current monitored subject readback"
+        )
+    if evaluation.subject_epoch != expected_subject_epoch:
+        raise ValueError(
+            "reload directive monitored subject epoch mismatch"
+        )
     if evaluation.reload_required is not True:
         raise ValueError("reload directive requires reload-required evaluation")
     if type(evaluation.restore_packet) is not str or not evaluation.restore_packet:
         raise ValueError("reload-required evaluation is missing restore packet")
     if commit.successor_generation != evaluation.generation + 1:
         raise ValueError("commit generation does not bind evaluation generation")
-    receipt = ledger.evaluation_receipt(
+    receipt, session, currentness = ledger.reload_currentness_readback(
         session_id=session_id,
         evaluation_digest=evaluation.digest,
+        subject=subject,
     )
     if receipt is None:
         raise ValueError("reload directive requires durable ledger evaluation receipt")
+    if session is None or currentness is None:
+        raise ValueError("reload directive requires current durable session")
     if (
         receipt.generation_before != evaluation.generation
         or receipt.generation_after != commit.successor_generation
@@ -293,17 +466,30 @@ def build_reload_directive(
         or receipt.evaluation_digest != evaluation.digest
         or receipt.decision is not evaluation.decision
         or receipt.reload_required is not True
+        or receipt.subject_digest != evaluation.subject_digest
+        or receipt.subject_epoch != evaluation.subject_epoch
     ):
         raise ValueError("reload directive commit does not match durable ledger receipt")
-    session = ledger.session_row(session_id)
-    if session is None:
-        raise ValueError("reload directive requires current durable session")
     if int(session["generation"]) != commit.successor_generation:
         raise ValueError("reload directive commit is not current durable generation")
     if session["last_evaluation_digest"] != evaluation.digest:
         raise ValueError("reload directive commit is not current durable evaluation")
     if session["state_digest"] != evaluation.state_digest:
         raise ValueError("reload directive current session state mismatch")
+    session_subject_digest = (
+        str(session["subject_digest"])
+        if session.get("subject_digest") is not None
+        else None
+    )
+    session_subject_epoch = (
+        int(session["subject_epoch"])
+        if session.get("subject_epoch") is not None
+        else None
+    )
+    if session_subject_digest != evaluation.subject_digest:
+        raise ValueError("reload directive current session subject mismatch")
+    if session_subject_epoch != evaluation.subject_epoch:
+        raise ValueError("reload directive current session subject epoch mismatch")
     return ReloadDirective(
         session_id=session_id,
         evaluation_digest=evaluation.digest,
@@ -314,6 +500,8 @@ def build_reload_directive(
         restore_packet_sha256=sha256(
             evaluation.restore_packet.encode("utf-8")
         ).hexdigest(),
+        subject_digest=evaluation.subject_digest,
+        subject_epoch=evaluation.subject_epoch,
     )
 
 
@@ -374,17 +562,31 @@ def classify_behavioral_fields(
     decision: Decision,
     aggregate_drift: float | None,
     reasons: tuple[str, ...],
+    behavioral_decision: Decision | None = None,
 ) -> BehavioralReplayDisposition:
     """Classify observed behavior independently of reload scheduling."""
     if type(state) is not SaveState:
         raise ValueError("state must be exact SaveState")
     if type(decision) is not Decision:
         raise ValueError("decision must be exact Decision")
+    if behavioral_decision is not None and type(behavioral_decision) is not Decision:
+        raise ValueError("behavioral_decision must be exact Decision or None")
     if type(reasons) is not tuple or any(
         type(item) is not str or not item for item in reasons
     ):
         raise ValueError("reasons must be a tuple of non-empty strings")
 
+    if behavioral_decision is not None:
+        if behavioral_decision is Decision.UNKNOWN:
+            return BehavioralReplayDisposition.INDETERMINATE
+        if behavioral_decision is Decision.RELOAD:
+            return BehavioralReplayDisposition.RELAPSE
+        if behavioral_decision is Decision.WARN:
+            return BehavioralReplayDisposition.DEGRADED
+        return BehavioralReplayDisposition.STABLE
+
+    # Legacy V1 compatibility: historical receipts did not carry a typed
+    # behavioral disposition, so bounded replay remains reason/aggregate based.
     if "critical_dimension_breach" in reasons:
         return BehavioralReplayDisposition.RELAPSE
     if decision is Decision.UNKNOWN or aggregate_drift is None:
@@ -412,6 +614,7 @@ def classify_behavioral_evaluation(
         decision=evaluation.decision,
         aggregate_drift=evaluation.aggregate_drift,
         reasons=evaluation.reasons,
+        behavioral_decision=evaluation.behavioral_decision,
     )
 
 
@@ -421,13 +624,109 @@ class ActuatorReconciliation:
     acknowledgement: ReloadAcknowledgement | None
 
 
+def validate_reload_directive(
+    *,
+    directive: ReloadDirective,
+    state: SaveState,
+    ledger: DriftLedger,
+    subject: MonitoredSubject | None = None,
+) -> str:
+    """Re-admit a transportable reload directive against durable current state.
+
+    A well-shaped ReloadDirective is not effect authority.  This check binds the
+    directive back to the exact pinned SaveState and current reload-required
+    evaluation receipt before any actuator receipt may be interpreted.
+    """
+    if type(directive) is not ReloadDirective:
+        raise ValueError("directive must be exact ReloadDirective")
+    if type(state) is not SaveState:
+        raise ValueError("state must be exact SaveState")
+    if type(ledger) is not DriftLedger:
+        raise ValueError("ledger must be exact DriftLedger")
+    if subject is not None and type(subject) is not MonitoredSubject:
+        raise ValueError("subject must be exact MonitoredSubject or None")
+
+    expected_subject_digest = (
+        subject.configuration_digest if subject is not None else None
+    )
+    expected_subject_epoch = subject.epoch if subject is not None else None
+    if directive.subject_digest != expected_subject_digest:
+        raise ValueError("reload directive subject digest mismatch")
+    if directive.subject_epoch != expected_subject_epoch:
+        raise ValueError("reload directive subject epoch mismatch")
+    if directive.state_digest != state.digest:
+        raise ValueError("reload directive state digest mismatch")
+
+    expected_packet = DriftGuardEngine.restore_packet(state)
+    if directive.restore_packet != expected_packet:
+        raise ValueError("reload directive restore packet does not match pinned state")
+    expected_packet_digest = sha256(expected_packet.encode("utf-8")).hexdigest()
+    if directive.restore_packet_sha256 != expected_packet_digest:
+        raise ValueError("reload directive restore packet digest mismatch")
+
+    durable, session, currentness = ledger.reload_currentness_readback(
+        session_id=directive.session_id,
+        evaluation_digest=directive.evaluation_digest,
+        subject=subject,
+    )
+    if durable is None:
+        raise ValueError(
+            "reload directive requires durable ledger evaluation receipt"
+        )
+    if session is None or currentness is None:
+        raise ValueError("reload directive requires current durable session")
+    if (
+        durable.evaluation_digest != directive.evaluation_digest
+        or durable.state_digest != directive.state_digest
+        or durable.turn_index != directive.turn_index
+        or durable.generation_after != directive.expected_generation
+        or durable.generation_before + 1 != directive.expected_generation
+        or durable.reload_required is not True
+        or durable.subject_digest != directive.subject_digest
+        or durable.subject_epoch != directive.subject_epoch
+    ):
+        raise ValueError(
+            "reload directive does not match durable reload-required evaluation"
+        )
+
+    if int(session["generation"]) != directive.expected_generation:
+        raise ValueError("reload directive is not current durable generation")
+    if session["last_evaluation_digest"] != directive.evaluation_digest:
+        raise ValueError("reload directive is not current durable evaluation")
+    if session["state_digest"] != directive.state_digest:
+        raise ValueError("reload directive current session state mismatch")
+    stored_subject_digest = (
+        str(session["subject_digest"])
+        if session["subject_digest"] is not None
+        else None
+    )
+    stored_subject_epoch = (
+        int(session["subject_epoch"])
+        if session["subject_epoch"] is not None
+        else None
+    )
+    if stored_subject_digest != directive.subject_digest:
+        raise ValueError("reload directive current session subject digest mismatch")
+    if stored_subject_epoch != directive.subject_epoch:
+        raise ValueError("reload directive current session subject epoch mismatch")
+
+    return directive.digest
+
+
 def reconcile_actuator_receipt(
     *,
     directive: ReloadDirective,
     receipt: ActuatorReceipt,
+    state: SaveState,
+    ledger: DriftLedger,
+    subject: MonitoredSubject | None = None,
 ) -> ActuatorReconciliation:
-    if type(directive) is not ReloadDirective:
-        raise ValueError("directive must be exact ReloadDirective")
+    validate_reload_directive(
+        directive=directive,
+        state=state,
+        ledger=ledger,
+        subject=subject,
+    )
     if type(receipt) is not ActuatorReceipt:
         raise ValueError("receipt must be exact ActuatorReceipt")
     if receipt.directive_id != directive.directive_id:
@@ -435,32 +734,12 @@ def reconcile_actuator_receipt(
     if receipt.directive_digest != directive.digest:
         raise ValueError("actuator receipt directive digest mismatch")
 
-    if receipt.status is ActuatorDeliveryStatus.UNKNOWN:
-        return ActuatorReconciliation(
-            ActuatorDisposition.READBACK_REQUIRED,
-            None,
-        )
-    if receipt.status is ActuatorDeliveryStatus.NOT_APPLIED:
-        return ActuatorReconciliation(
-            ActuatorDisposition.READBACK_REQUIRED,
-            None,
-        )
-
-    ack_id = "actuator:" + canonical_digest(
-        {
-            "directive_digest": directive.digest,
-            "provider_operation_id": receipt.provider_operation_id,
-            "provider_receipt_sha256": receipt.provider_receipt_sha256,
-        }
-    )
+    # A generic provider receipt is transport/readback evidence only.
+    # Even APPLIED is not independently authenticated provider-effect proof, so
+    # this boundary never manufactures a ReloadAcknowledgement.
     return ActuatorReconciliation(
-        ActuatorDisposition.ACKNOWLEDGE,
-        ReloadAcknowledgement(
-            ack_id=ack_id,
-            evaluation_digest=directive.evaluation_digest,
-            state_digest=directive.state_digest,
-            turn_index=directive.turn_index,
-        ),
+        ActuatorDisposition.READBACK_REQUIRED,
+        None,
     )
 
 
@@ -685,4 +964,5 @@ __all__ = [
     "qualify_post_reload_behavior",
     "reconcile_actuator_receipt",
     "validate_evaluator_response",
+    "validate_reload_directive",
 ]

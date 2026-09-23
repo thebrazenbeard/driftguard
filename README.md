@@ -84,9 +84,13 @@ See [Agent CI V1](docs/AGENT_CI_V1.md) and the runnable files under [examples/ci
 
 ## GitHub Action
 
-Once your evaluator has produced `driftguard-candidate.json`:
+Once your evaluator has produced `driftguard-candidate.json` (after checking out the repository):
 
 ```yaml
+- uses: actions/checkout@v7
+
+# run your evaluator here
+
 - uses: thebrazenbeard/driftguard@main
   id: driftguard
   with:
@@ -97,9 +101,9 @@ Once your evaluator has produced `driftguard-candidate.json`:
 
 DriftGuard writes a Markdown metric table to the Actions job summary and exposes `decision`, `result-digest`, and `trusted-ref` outputs.
 
-By default, pull requests read the policy and accepted baseline from the **base commit**, not from the proposed checkout. A PR therefore cannot weaken its own policy or rewrite its own baseline to make itself pass.
+By default, pull requests read policy/baseline from the **base commit** and pushes read them from pre-change Git state. Push reruns with an all-zero `event.before` recover the current commit's first parent instead of silently trusting the workspace. If pre-change state cannot be established, auto mode fails closed.
 
-For production use, pin an immutable release tag or commit instead of `main`.
+For production use, pin checkout and DriftGuard to immutable commits instead of floating refs.
 
 ## What makes this different
 

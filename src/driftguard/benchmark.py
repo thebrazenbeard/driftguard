@@ -42,18 +42,41 @@ def _nonempty(value: Any, label: str) -> str:
 def trajectory_content_digest(corpus: CalibrationCorpus) -> str:
     if type(corpus) is not CalibrationCorpus:
         raise ValueError("corpus must be exact CalibrationCorpus")
+    trajectories = []
+    for item in corpus.trajectories:
+        payload = dict(item.payload())
+        # trajectory_id is provenance/identity metadata, not observation content.
+        # Excluding it makes exact observation reuse survive trajectory relabeling.
+        payload.pop("trajectory_id", None)
+        trajectories.append(payload)
+    trajectories.sort(
+        key=lambda payload: json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+    )
     return canonical_digest(
         {
-            "schema": "DRIFTGUARD_BENCHMARK_TRAJECTORY_CONTENT_V1",
-            "trajectories": [
-                item.payload()
-                for item in sorted(
-                    corpus.trajectories,
-                    key=lambda row: row.trajectory_id,
-                )
-            ],
+            "schema": "DRIFTGUARD_BENCHMARK_TRAJECTORY_CONTENT_V2",
+            "trajectories": trajectories,
         }
     )
+
+
+def _candidate_study_subject_payload(
+    candidate: DetectorCandidate,
+) -> dict[str, Any]:
+    if type(candidate) is not DetectorCandidate:
+        raise ValueError("candidate must be exact DetectorCandidate")
+    payload = dict(candidate.payload())
+    # Candidate ids and SourceBinding refs are labels/provenance. The governed
+    # study subject binds detector semantics and parameterization bytes instead.
+    payload.pop("candidate_id", None)
+    payload.pop("parameterization", None)
+    return payload
 
 
 def canonical_corpus_artifact_bytes(corpus: CalibrationCorpus) -> bytes:
@@ -171,7 +194,7 @@ def current_execution_binding(
     *,
     repository: str,
     commit_sha: str,
-    schema_version: str = "DRIFTGUARD_R11_ATTEMPT_GOVERNANCE_V3",
+    schema_version: str = "DRIFTGUARD_R11_ATTEMPT_GOVERNANCE_V4",
 ) -> BenchmarkExecutionBinding:
     (
         benchmark_digest,

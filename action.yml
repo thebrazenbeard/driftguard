@@ -61,6 +61,7 @@ runs:
         DG_EVENT_NAME: ${{ github.event_name }}
         DG_PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         DG_PUSH_BEFORE_SHA: ${{ github.event.before }}
+        DG_CURRENT_SHA: ${{ github.sha }}
       run: |
         set -u
 
@@ -73,8 +74,58 @@ runs:
         if [ "${trust}" = "auto" ]; then
           if [ "${DG_EVENT_NAME}" = "pull_request" ] && [ -n "${DG_PR_BASE_SHA}" ]; then
             trust="${DG_PR_BASE_SHA}"
-          elif [ "${DG_EVENT_NAME}" = "push" ] && [ -n "${DG_PUSH_BEFORE_SHA}" ] && ! printf '%s' "${DG_PUSH_BEFORE_SHA}" | grep -Eq '^0+$'; then
-            trust="${DG_PUSH_BEFORE_SHA}"
+          elif [ "${DG_EVENT_NAME}" = "push" ]; then
+            if [ -n "${DG_PUSH_BEFORE_SHA}" ] && ! printf '%s' "${DG_PUSH_BEFORE_SHA}" | grep -Eq '^0+
+        if [ "${trust}" = "workspace" ]; then
+          cp -- "${DG_POLICY_PATH}" "${trusted_policy}"
+          cp -- "${DG_BASELINE_PATH}" "${trusted_baseline}"
+        else
+          if ! git cat-file -e "${trust}^{commit}" 2>/dev/null; then
+            git fetch --no-tags --depth=1 origin "${trust}"
+          fi
+          git show "${trust}:${DG_POLICY_PATH}" > "${trusted_policy}"
+          git show "${trust}:${DG_BASELINE_PATH}" > "${trusted_baseline}"
+        fi
+
+        set +e
+        driftguard ci \
+          --policy "${trusted_policy}" \
+          --baseline "${trusted_baseline}" \
+          --candidate "${DG_CANDIDATE_PATH}" \
+          --output "${result}" \
+          --summary "${summary}"
+        code=$?
+        set -e
+
+        cat "${summary}" >> "${GITHUB_STEP_SUMMARY}"
+
+        python - "${result}" "${GITHUB_OUTPUT}" "${trust}" <<'PY'
+        import json
+        import pathlib
+        import sys
+
+        result = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+        with pathlib.Path(sys.argv[2]).open("a", encoding="utf-8") as handle:
+            handle.write(f"decision={result['decision']}\n")
+            handle.write(f"result_digest={result['result_digest']}\n")
+            handle.write(f"trusted_ref={sys.argv[3]}\n")
+        PY
+
+        exit "${code}"
+; then
+              trust="${DG_PUSH_BEFORE_SHA}"
+            else
+              # GitHub push reruns can expose an all-zero event.before. Recover
+              # the real pre-change subject from the current commit instead of
+              # silently trusting the candidate workspace.
+              if ! git cat-file -e "${DG_CURRENT_SHA}^" 2>/dev/null; then
+                git fetch --no-tags --deepen=1 origin
+              fi
+              if ! trust="$(git rev-parse "${DG_CURRENT_SHA}^" 2>/dev/null)"; then
+                echo "DriftGuard auto trust cannot establish pre-change Git state; use trusted-ref: workspace only for an explicit bootstrap" >&2
+                exit 2
+              fi
+            fi
           else
             trust="workspace"
           fi

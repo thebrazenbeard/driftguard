@@ -137,6 +137,25 @@ class CiGateTests(unittest.TestCase):
         self.assertEqual(result.decision, GateDecision.UNKNOWN)
         self.assertIn("baseline_candidate_subject_mismatch", result.reasons)
 
+    def test_candidate_cannot_omit_trusted_baseline_subject(self):
+        candidate = CiReport.from_mapping(
+            {
+                "schema": "DRIFTGUARD_CI_REPORT_V1",
+                "run_id": "candidate",
+                "metrics": {
+                    "task_success": 0.95,
+                    "latency_ms": 1000,
+                },
+            }
+        )
+        result = evaluate_ci(
+            policy=self.policy,
+            baseline=self.baseline,
+            candidate=candidate,
+        )
+        self.assertEqual(result.decision, GateDecision.UNKNOWN)
+        self.assertIn("baseline_candidate_subject_mismatch", result.reasons)
+
     def test_policy_digest_is_order_stable(self):
         first = self.policy.digest
         raw = {

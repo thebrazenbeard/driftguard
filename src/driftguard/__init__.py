@@ -1,5 +1,17 @@
 """DriftGuard V1."""
 
+from .ci_gate import (
+    CiGateResult,
+    CiPolicy,
+    CiReport,
+    GateDecision,
+    MetricDirection,
+    MetricEvaluation,
+    MetricPolicy,
+    MetricSeverity,
+    evaluate_ci,
+    render_markdown,
+)
 from .core import DriftGuardEngine, StaleGenerationError
 from .evaluator_attestation import (
     AttestedEvaluatorCommit,
@@ -32,6 +44,16 @@ from .model import (
 )
 
 __all__ = [
+    "CiGateResult",
+    "CiPolicy",
+    "CiReport",
+    "GateDecision",
+    "MetricDirection",
+    "MetricEvaluation",
+    "MetricPolicy",
+    "MetricSeverity",
+    "evaluate_ci",
+    "render_markdown",
     "verify_evaluator_attestation",
     "key_fingerprint_sha256",
     "commit_attested_evaluator_response",

@@ -4,6 +4,12 @@ import argparse
 import json
 from pathlib import Path
 
+from .adoption import (
+    build_report,
+    parse_metric_assignments,
+    promote_baseline_file,
+    write_json_atomic,
+)
 from .ci_gate import CiPolicy, CiReport, evaluate_ci, render_markdown
 from .core import DriftGuardEngine
 from .ledger import DriftLedger
@@ -79,6 +85,31 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="driftguard")
     sub = parser.add_subparsers(dest="command", required=True)
 
+    report = sub.add_parser(
+        "report",
+        help="build a canonical DriftGuard metric report from NAME=VALUE metrics",
+    )
+    report.add_argument("--run-id", required=True)
+    report.add_argument("--subject")
+    report.add_argument(
+        "--metric",
+        action="append",
+        default=[],
+        metavar="NAME=VALUE",
+        help="repeat for each metric",
+    )
+    report.add_argument("--output", required=True)
+
+    prepare_baseline = sub.add_parser(
+        "prepare-baseline",
+        help="qualify a PASS candidate and write a proposed baseline + receipt",
+    )
+    prepare_baseline.add_argument("--policy", required=True)
+    prepare_baseline.add_argument("--baseline", required=True)
+    prepare_baseline.add_argument("--candidate", required=True)
+    prepare_baseline.add_argument("--output", required=True)
+    prepare_baseline.add_argument("--receipt")
+
     ci = sub.add_parser(
         "ci",
         help="deterministically gate candidate evaluation metrics against a baseline",
@@ -139,6 +170,48 @@ def main(argv: list[str] | None = None) -> int:
     verify.add_argument("--subject")
 
     args = parser.parse_args(argv)
+
+    if args.command == "report":
+        report_value = build_report(
+            run_id=args.run_id,
+            subject=args.subject,
+            metrics=parse_metric_assignments(args.metric),
+        )
+        write_json_atomic(args.output, report_value.payload())
+        print(
+            json.dumps(
+                {
+                    "output": str(Path(args.output)),
+                    "report_digest": report_value.digest,
+                    "run_id": report_value.run_id,
+                    "subject": report_value.subject,
+                    "metrics": dict(report_value.metrics),
+                },
+                sort_keys=True,
+                indent=2,
+            )
+        )
+        return 0
+
+    if args.command == "prepare-baseline":
+        receipt_path = (
+            args.receipt
+            if args.receipt
+            else str(Path(args.output)) + ".promotion.json"
+        )
+        receipt = promote_baseline_file(
+            policy_path=args.policy,
+            baseline_path=args.baseline,
+            candidate_path=args.candidate,
+            output_path=args.output,
+            receipt_path=receipt_path,
+        )
+        payload = receipt.payload()
+        payload["promotion_digest"] = receipt.digest
+        payload["prepared_baseline"] = str(Path(args.output))
+        payload["receipt"] = str(Path(receipt_path))
+        print(json.dumps(payload, sort_keys=True, indent=2))
+        return 0
 
     if args.command == "ci":
         result = evaluate_ci(

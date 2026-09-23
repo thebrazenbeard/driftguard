@@ -179,12 +179,14 @@ driftguard prepare-baseline \
 ```
 
 The command:
-- recomputes the gate from the exact inputs;
+- recomputes an explicit promotion qualification from the exact inputs;
 - refuses BLOCK, WARN, and UNKNOWN;
 - refuses to overwrite the accepted baseline in place;
 - writes the proposed baseline atomically;
 - reads it back and verifies the candidate digest;
-- writes a `.promotion.json` receipt by default.
+- only then emits a `.promotion.json` receipt by default.
+
+Qualification and receipt are intentionally different states: qualification proves the candidate passed the old baseline; the receipt additionally proves the proposed baseline bytes were written and read back with the candidate digest.
 
 The repository change that replaces the accepted baseline remains a separate reviewable effect.
 

@@ -1,0 +1,118 @@
+name: DriftGuard
+description: Deterministic regression admission for AI/agent evaluation metrics
+author: thebrazenbeard
+
+branding:
+  icon: shield
+  color: purple
+
+inputs:
+  policy:
+    description: Repository path to driftguard.toml
+    required: false
+    default: driftguard.toml
+  baseline:
+    description: Repository path to the accepted baseline metric report
+    required: false
+    default: driftguard-baseline.json
+  candidate:
+    description: Workspace path to the candidate metric report produced by your evaluator
+    required: false
+    default: driftguard-candidate.json
+  trusted-ref:
+    description: "Source for policy/baseline: auto, workspace, or an exact Git ref/SHA"
+    required: false
+    default: auto
+  python-version:
+    description: Python version used to execute DriftGuard
+    required: false
+    default: "3.12"
+
+outputs:
+  decision:
+    description: PASS, WARN, BLOCK, or UNKNOWN
+    value: ${{ steps.gate.outputs.decision }}
+  result-digest:
+    description: SHA-256 digest of the canonical DriftGuard gate result
+    value: ${{ steps.gate.outputs.result_digest }}
+  trusted-ref:
+    description: Git ref/SHA from which policy and baseline were read, or workspace
+    value: ${{ steps.gate.outputs.trusted_ref }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install DriftGuard
+      shell: bash
+      run: python -m pip install "${GITHUB_ACTION_PATH}"
+
+    - name: Evaluate DriftGuard gate
+      id: gate
+      shell: bash
+      env:
+        DG_POLICY_PATH: ${{ inputs.policy }}
+        DG_BASELINE_PATH: ${{ inputs.baseline }}
+        DG_CANDIDATE_PATH: ${{ inputs.candidate }}
+        DG_TRUST_INPUT: ${{ inputs.trusted-ref }}
+        DG_EVENT_NAME: ${{ github.event_name }}
+        DG_PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        DG_PUSH_BEFORE_SHA: ${{ github.event.before }}
+      run: |
+        set -u
+
+        result="${RUNNER_TEMP}/driftguard-result.json"
+        summary="${RUNNER_TEMP}/driftguard-summary.md"
+        trusted_policy="${RUNNER_TEMP}/driftguard-policy.toml"
+        trusted_baseline="${RUNNER_TEMP}/driftguard-baseline.json"
+
+        trust="${DG_TRUST_INPUT}"
+        if [ "${trust}" = "auto" ]; then
+          if [ "${DG_EVENT_NAME}" = "pull_request" ] && [ -n "${DG_PR_BASE_SHA}" ]; then
+            trust="${DG_PR_BASE_SHA}"
+          elif [ "${DG_EVENT_NAME}" = "push" ] && [ -n "${DG_PUSH_BEFORE_SHA}" ] && ! printf '%s' "${DG_PUSH_BEFORE_SHA}" | grep -Eq '^0+$'; then
+            trust="${DG_PUSH_BEFORE_SHA}"
+          else
+            trust="workspace"
+          fi
+        fi
+
+        if [ "${trust}" = "workspace" ]; then
+          cp -- "${DG_POLICY_PATH}" "${trusted_policy}"
+          cp -- "${DG_BASELINE_PATH}" "${trusted_baseline}"
+        else
+          if ! git cat-file -e "${trust}^{commit}" 2>/dev/null; then
+            git fetch --no-tags --depth=1 origin "${trust}"
+          fi
+          git show "${trust}:${DG_POLICY_PATH}" > "${trusted_policy}"
+          git show "${trust}:${DG_BASELINE_PATH}" > "${trusted_baseline}"
+        fi
+
+        set +e
+        driftguard ci \
+          --policy "${trusted_policy}" \
+          --baseline "${trusted_baseline}" \
+          --candidate "${DG_CANDIDATE_PATH}" \
+          --output "${result}" \
+          --summary "${summary}"
+        code=$?
+        set -e
+
+        cat "${summary}" >> "${GITHUB_STEP_SUMMARY}"
+
+        python - "${result}" "${GITHUB_OUTPUT}" "${trust}" <<'PY'
+        import json
+        import pathlib
+        import sys
+
+        result = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+        with pathlib.Path(sys.argv[2]).open("a", encoding="utf-8") as handle:
+            handle.write(f"decision={result['decision']}\n")
+            handle.write(f"result_digest={result['result_digest']}\n")
+            handle.write(f"trusted_ref={sys.argv[3]}\n")
+        PY
+
+        exit "${code}"

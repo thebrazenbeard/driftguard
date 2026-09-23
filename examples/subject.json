@@ -1,0 +1,70 @@
+{
+  "subject_id": "example-runtime",
+  "epoch": 0,
+  "components": [
+    {
+      "component_id": "provider",
+      "binding": {
+        "ref": "example://provider",
+        "version": "declared-v1"
+      },
+      "digest": "76a09bc0596c7c1ea943e91b1216a572126f41b2f0b87d21b4fac0e23b91c4af"
+    },
+    {
+      "component_id": "model",
+      "binding": {
+        "ref": "example://model",
+        "version": "declared-v1"
+      },
+      "digest": "74d1220fa53105e92d9360b17269d93cf784d8fb52f26c600f7fa14314e283a6"
+    },
+    {
+      "component_id": "instructions",
+      "binding": {
+        "ref": "example://instructions",
+        "version": "v1"
+      },
+      "digest": "7266d140e5464c60c6616892361886eac362b54df830e14b715fd8dc751e502d"
+    },
+    {
+      "component_id": "tools",
+      "binding": {
+        "ref": "example://tools",
+        "version": "v1"
+      },
+      "digest": "fd0c7e70f8e5c8570a4c7fa8adc5876ecb245a584af787a7164053012cde423d"
+    },
+    {
+      "component_id": "retrieval",
+      "binding": {
+        "ref": "example://retrieval",
+        "version": "disabled-v1"
+      },
+      "digest": "5488b12f6ff8ac074dcb8698f4c99d79688172068223ab9fa8db2727034123b2"
+    },
+    {
+      "component_id": "memory",
+      "binding": {
+        "ref": "example://memory",
+        "version": "disabled-v1"
+      },
+      "digest": "31782bc37d472a56850d19249a75833caaef00cdacc28ec9769c6652deff6b10"
+    },
+    {
+      "component_id": "inference",
+      "binding": {
+        "ref": "example://inference",
+        "version": "v1"
+      },
+      "digest": "a66f8d0775072766db15e18fd8880e80deeae3071ca665b010538e368cd7e06d"
+    },
+    {
+      "component_id": "harness",
+      "binding": {
+        "ref": "example://harness",
+        "version": "v1"
+      },
+      "digest": "7742fcfced13ff9d6f8f1110d7a1d500e7e09d5c8072f770680014a59c252b44"
+    }
+  ]
+}

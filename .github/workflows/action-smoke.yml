@@ -1,0 +1,25 @@
+name: action-smoke
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  local-action:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./
+        id: driftguard
+        with:
+          policy: examples/ci/driftguard.toml
+          baseline: examples/ci/baseline.json
+          candidate: examples/ci/candidate-pass.json
+      - name: Assert action output
+        shell: bash
+        run: |
+          test "${{ steps.driftguard.outputs.decision }}" = "PASS"
+          test -n "${{ steps.driftguard.outputs.result-digest }}"

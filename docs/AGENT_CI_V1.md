@@ -126,9 +126,13 @@ The result binds the exact canonical policy, baseline, candidate, per-metric dis
 
 ## GitHub Action
 
-Generate the candidate report with whatever evaluator you already use, then:
+Generate the candidate report with whatever evaluator you already use. The repository must be checked out because DriftGuard reads the candidate workspace and trusted Git history:
 
 ```yaml
+- uses: actions/checkout@v7
+
+# run your evaluator here
+
 - uses: thebrazenbeard/driftguard@main
   with:
     policy: driftguard.toml
@@ -140,17 +144,19 @@ The action writes a compact Markdown table to the GitHub Actions job summary and
 
 ### Trusted baseline and policy
 
-On pull requests and ordinary pushes, the action defaults to `trusted-ref = "auto"`.
+The action defaults to `trusted-ref = "auto"`.
 
 - pull request: policy and baseline are read from the PR base commit;
 - push: policy and baseline are read from the pre-push commit;
+- push rerun / zero `event.before`: DriftGuard resolves the current commit's first parent, deepening the checkout if needed;
+- push where no pre-change commit can be established: fail closed;
 - other/manual contexts: the action falls back to the workspace.
 
 The candidate report is always read from the current workspace.
 
 That means a change cannot weaken its own DriftGuard policy or rewrite its own baseline and then use the rewritten files to pass the same gate.
 
-For first-time bootstrap or an intentionally isolated test, set:
+For a true first-time bootstrap or an intentionally isolated test, opt in explicitly:
 
 ```yaml
 trusted-ref: workspace
@@ -160,7 +166,7 @@ For a controlled deployment, you can instead provide an exact trusted commit SHA
 
 This mechanism is still bounded by repository/workflow governance. A party able to replace the required workflow or its action reference may be able to bypass the gate, so branch protection remains outside DriftGuard's claim.
 
-For production use, pin the action to a release tag or immutable commit rather than `main`.
+For production use, pin both checkout and DriftGuard to immutable commits rather than floating major/main refs.
 
 ## Baseline governance
 

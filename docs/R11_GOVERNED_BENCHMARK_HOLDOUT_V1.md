@@ -1,7 +1,8 @@
-# DriftGuard R11 Governed Benchmark + Holdout Precommit V3
+# DriftGuard R11 Governed Benchmark + Holdout Precommit V4
 
-Status: statistical/research candidate stacked on clean composed R10/attestation/effect head
-`9df4800d81ab2e937ffa97263b8095305a845661`.
+Status: statistical/research candidate restacked on current canonical DriftGuard main.
+
+V4 closes four governance defects found after the final V3 self-review: post-claim runtime ambiguity could be mislabeled as semantic failure, prior HOLDOUT observations could be reused through metadata relabeling, free-form study IDs could reset lineage, and a study ID could silently change its confirmatory subject.
 
 ## Purpose
 
@@ -31,7 +32,7 @@ A meaningful detector benchmark needs:
 - a reveal boundary that proves exact digest equality;
 - an explicit ceiling on what "untouched" can actually mean.
 
-R11 V3 implements that protocol.
+R11 V4 implements that protocol.
 
 ## Core benchmark portfolio
 
@@ -74,9 +75,9 @@ A `BenchmarkCorpusManifest` binds:
 - SHA-256 of exact canonical corpus artifact bytes;
 - exact core-family manifests.
 
-The role-independent trajectory-content digest hashes only the sorted trajectory payloads.
+The role-independent trajectory-content digest hashes canonical trajectory observation/shift payloads while excluding `trajectory_id` and corpus identity/version metadata.
 
-It prevents trivial reuse of the exact same trajectories merely by relabeling the corpus from DESIGN to HOLDOUT.
+It prevents exact observation reuse from being disguised by corpus, version, artifact, or trajectory-ID relabeling.
 
 It does not prove statistical independence between two different trajectory sets.
 
@@ -169,7 +170,8 @@ A stronger code-origin claim would require a separately trusted package/build/si
 
 `BenchmarkPrecommitPlan` freezes before governed reveal:
 
-- study ID;
+- caller-facing study ID;
+- derived governed study-subject digest;
 - attempt ID;
 - precommit ID;
 - exact predecessor terminal-attempt receipt digests;
@@ -186,9 +188,13 @@ A stronger code-origin claim would require a separately trusted package/build/si
 - selection rule:
   `COMPARE_ONLY_NO_PROMOTION`.
 
-The R11 HOLDOUT digest must differ from every disclosed predecessor holdout digest.
+The R11 HOLDOUT corpus digest must differ from every disclosed predecessor holdout digest.
 
-The predecessor-holdout list is itself a declared governance input. R11 can enforce non-reuse only for holdouts actually disclosed to the plan; it cannot discover hidden prior holdouts by itself.
+V4 additionally derives a governed study-subject digest from the benchmark portfolio, DESIGN observation content, exact execution-source subject, detector specification, family policies, normalized detector candidates, and selection rule. A caller cannot reset the same governed subject by changing `study_id`, and one `study_id` cannot silently drift to a different governed subject.
+
+The ledger also persists each HOLDOUT trajectory-content digest and rejects exact observation-content reuse across prior attempts even when corpus/version/trajectory metadata changes.
+
+The predecessor-holdout list remains declared provenance ancestry. R11 still cannot discover hidden holdouts that were never entered into the governed ledger.
 
 ## Durable attempt ledger
 
@@ -225,13 +231,15 @@ A known semantic execution failure inside the governed run path may transition
 transition bound to the exact precommit, reveal receipt, and execution binding.
 
 If completion, storage, or reconciliation is ambiguous after the execution claim,
-the attempt remains `EXECUTING`. R11 V3 provides no operator reason-string escape
+the attempt remains `EXECUTING`. R11 V4 provides no operator reason-string escape
 from that state. A future resolution would require a separately typed reconciliation
 protocol; until then the active attempt blocks a successor.
 
-## One active attempt per study, per ledger
+## One governed study subject and one active attempt, per ledger
 
-Within one exact `BenchmarkAttemptLedger`, a study may not seal another attempt while one is:
+Within one exact `BenchmarkAttemptLedger`, a derived governed study subject is bound to one caller-facing `study_id`. Reusing that subject under a different ID is rejected, and changing the governed subject under the same ID is rejected as silent redesign.
+
+A study may not seal another attempt while one is:
 
 - `SEALED`;
 - `REVEALED`;
@@ -241,10 +249,9 @@ A successor attempt may be sealed only after all prior attempts are terminal.
 
 The successor precommit must reference every prior terminal attempt receipt digest.
 
-It must also disclose every prior attempt HOLDOUT digest.
+It must also disclose every prior attempt HOLDOUT corpus digest, while the ledger independently rejects reuse of any prior HOLDOUT trajectory-content digest.
 
-This makes abandoned and failed attempts durable ancestry rather than optional history
-inside that ledger.
+This makes abandoned and failed attempts durable ancestry rather than optional history inside that ledger and closes exact-content relabeling attacks.
 
 R11 does not prove that no parallel/replacement ledger exists. A stronger
 "complete study history" claim requires external custody or an independently anchored
@@ -303,13 +310,11 @@ Immediately before detector comparison, the ledger atomically claims:
 
 A concurrent or replayed execution can no longer reach the comparison path after that claim is consumed.
 
-Any known semantic exception after the execution claim and before durable
-completion—including detector comparison, non-promotion enforcement, run-receipt
-construction, or result-integrity validation—uses the internal factory-gated
-semantic-failure path to attempt a durable `INVALIDATED` transition.
+After the execution claim, unexpected runtime/resource/implementation failures are ambiguous and remain `EXECUTING`. They are not converted into `INVALIDATED`.
 
-Public `abort_attempt()` and `invalidate_attempt()` are limited to pre-execution
-`SEALED` / `REVEALED` states. They cannot resolve `EXECUTING`.
+The V4 implementation currently recognizes one explicit governed semantic violation after the claim: an R10 comparison attempting to authorize promotion. That exact condition uses the private factory-gated semantic-failure transition before raising `BenchmarkSemanticFailure`. Other `RuntimeError`, `OSError`, `MemoryError`, detector-execution failures, result-construction failures, and storage/finalization ambiguity propagate while the attempt stays `EXECUTING` and blocks successors.
+
+Public `abort_attempt()` and `invalidate_attempt()` are limited to pre-execution `SEALED` / `REVEALED` states. They cannot resolve `EXECUTING`.
 
 If semantic-failure invalidation or durable completion is itself ambiguous, R11 does
 not infer safe retry. The attempt remains active/ambiguous until separately
@@ -387,7 +392,7 @@ As elsewhere in DriftGuard, Python module-private/factory tokens and a writable 
 
 ## Hostile regressions
 
-R11 V3 tests freeze:
+R11 V4 tests freeze:
 
 - exact eight-phenomenon coverage;
 - one exact global dimension set;
@@ -402,8 +407,12 @@ R11 V3 tests freeze:
 - reveal replay rejection;
 - execution claim is single-use before comparison;
 - run replay rejection;
-- semantic post-claim failure terminalizes `INVALIDATED`;
-- ambiguous completion failure remains `EXECUTING` and blocks retry;
+- explicit governed promotion semantic violation terminalizes `INVALIDATED`;
+- unexpected RuntimeError/OSError/MemoryError after execution claim remain `EXECUTING` and block retry;
+- result-construction and durable completion ambiguity remain `EXECUTING` and block retry;
+- exact HOLDOUT observation reuse is rejected after metadata relabeling;
+- study-ID relabeling cannot reset one governed study subject;
+- same-study subject drift is rejected as redesign;
 - append-only successful attempt history;
 - durable aborted-attempt history;
 - successor attempt must reference all terminal predecessors;
@@ -423,15 +432,17 @@ The test corpora are protocol fixtures, not production benchmark evidence.
 
 ## Claim ceiling
 
-An R11 V3 PASS means:
+An R11 V4 PASS means:
 
-> these exact benchmark manifests, study/attempt commitments, disclosed prior-holdout set, benchmark/calibration/comparison/sequential/model execution-source hashes, HOLDOUT digest/bytes, R9 qualification plan, R10 comparison plan, and durable single-use state transitions compose deterministically under the governed protocol.
+> these exact benchmark manifests, derived study subject, attempt commitments, disclosed prior-holdout provenance, exact prior HOLDOUT content nonreuse within this ledger, benchmark/calibration/comparison/sequential/model execution-source hashes, HOLDOUT digest/bytes, R9 qualification plan, R10 comparison plan, and durable single-use state transitions compose deterministically under the governed protocol.
 
 It does not prove:
 
 - HOLDOUT non-access before precommit;
 - trusted timestamp ordering;
-- complete discovery of every historical holdout;
+- complete discovery of every historical holdout outside this ledger;
+- semantic equivalence detection for transformed/near-duplicate datasets beyond canonical exact content;
+- semantic equivalence detection for arbitrarily transformed study subjects beyond the governed canonical subject;
 - external custody;
 - repository/commit authenticity beyond declared metadata;
 - exact Python interpreter / standard-library implementation identity;
@@ -450,7 +461,7 @@ It does not prove:
 
 ## Composition base
 
-R11 V3 is stacked on the clean composed DriftGuard subject that carries:
+R11 V4 is stacked on the clean composed DriftGuard subject that carries:
 
 - R6 measurement validity;
 - repaired R7 subject identity/epoch authority;

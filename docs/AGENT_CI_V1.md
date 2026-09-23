@@ -121,7 +121,29 @@ Generate the candidate report with whatever evaluator you already use, then:
     candidate: driftguard-candidate.json
 ```
 
-The action writes a compact Markdown table to the GitHub Actions job summary and exposes `decision` and `result-digest` outputs.
+The action writes a compact Markdown table to the GitHub Actions job summary and exposes `decision`, `result-digest`, and `trusted-ref` outputs.
+
+### Trusted baseline and policy
+
+On pull requests and ordinary pushes, the action defaults to `trusted-ref = "auto"`.
+
+- pull request: policy and baseline are read from the PR base commit;
+- push: policy and baseline are read from the pre-push commit;
+- other/manual contexts: the action falls back to the workspace.
+
+The candidate report is always read from the current workspace.
+
+That means a change cannot weaken its own DriftGuard policy or rewrite its own baseline and then use the rewritten files to pass the same gate.
+
+For first-time bootstrap or an intentionally isolated test, set:
+
+```yaml
+trusted-ref: workspace
+```
+
+For a controlled deployment, you can instead provide an exact trusted commit SHA.
+
+This mechanism is still bounded by repository/workflow governance. A party able to replace the required workflow or its action reference may be able to bypass the gate, so branch protection remains outside DriftGuard's claim.
 
 For production use, pin the action to a release tag or immutable commit rather than `main`.
 

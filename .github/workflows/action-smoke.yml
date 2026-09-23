@@ -13,6 +13,20 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      - name: Zero-before resolver recovers exact first parent
+        shell: bash
+        env:
+          DG_TRUST_INPUT: auto
+          DG_EVENT_NAME: push
+          DG_PR_BASE_SHA: ""
+          DG_PUSH_BEFORE_SHA: "0000000000000000000000000000000000000000"
+          DG_CURRENT_SHA: ${{ github.sha }}
+        run: |
+          resolved="$(bash scripts/resolve_trusted_ref.sh)"
+          expected="$(git rev-parse "${DG_CURRENT_SHA}^")"
+          test "${resolved}" = "${expected}"
+          test "${resolved}" != "workspace"
+
       - name: Ordinary local action smoke
         uses: ./
         id: driftguard

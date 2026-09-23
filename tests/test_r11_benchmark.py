@@ -278,12 +278,13 @@ def make_precommit(
     predecessor_holdout_digests=(PRIOR_R10_HOLDOUT,),
     holdout_label="holdout-1",
     holdout_offset=0.01,
+    design_offset=0.0,
 ):
     spec = cusum_spec()
     design = corpus(
         CalibrationCorpusRole.DESIGN,
         label=f"design-{attempt_id}",
-        offset=0.0,
+        offset=design_offset,
     )
     holdout = corpus(
         CalibrationCorpusRole.HOLDOUT_QUALIFICATION,
@@ -581,6 +582,7 @@ class R11BenchmarkTests(unittest.TestCase):
             precommit_id="precommit-b",
             holdout_label="holdout-b",
             holdout_offset=0.02,
+            design_offset=0.01,
         )
         self.registry.seal_precommit(precommit=plan_a)
         self.registry.seal_precommit(precommit=plan_b)
@@ -617,6 +619,7 @@ class R11BenchmarkTests(unittest.TestCase):
             precommit_id="precommit-b-start",
             holdout_label="holdout-b-start",
             holdout_offset=0.04,
+            design_offset=0.02,
         )
         self.registry.seal_precommit(precommit=plan_a)
         self.registry.seal_precommit(precommit=plan_b)
@@ -655,6 +658,7 @@ class R11BenchmarkTests(unittest.TestCase):
             precommit_id="precommit-b-run",
             holdout_label="holdout-b-run",
             holdout_offset=0.06,
+            design_offset=0.03,
         )
         self.registry.seal_precommit(precommit=plan_a)
         self.registry.seal_precommit(precommit=plan_b)

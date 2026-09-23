@@ -177,15 +177,30 @@ def promote_baseline_file(
     output = Path(output_path).resolve()
 
     if output == source_baseline:
-        current = CiReport.load(source_baseline)
-        if current.digest != baseline.digest:
-            raise AdoptionError(
-                "baseline changed after qualification; refusing in-place promotion"
-            )
+        raise AdoptionError(
+            "refusing to overwrite the accepted baseline in place; "
+            "write a proposed baseline and review it separately"
+        )
+    if output.exists():
+        raise AdoptionError(
+            f"proposed baseline output already exists: {output}"
+        )
+    if receipt_path is not None and Path(receipt_path).resolve().exists():
+        raise AdoptionError(
+            f"promotion receipt already exists: {Path(receipt_path).resolve()}"
+        )
 
     write_json_atomic(output, candidate.payload())
+    written = CiReport.load(output)
+    if written.digest != candidate.digest:
+        raise AdoptionError(
+            "proposed baseline readback digest mismatch"
+        )
+
     if receipt_path is not None:
         payload = receipt.payload()
         payload["promotion_digest"] = receipt.digest
+        payload["prepared_baseline_digest"] = written.digest
+        payload["effect_state"] = "PREPARED_FOR_REVIEW"
         write_json_atomic(receipt_path, payload)
     return receipt

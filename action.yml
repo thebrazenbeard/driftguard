@@ -70,26 +70,7 @@ runs:
         trusted_policy="${RUNNER_TEMP}/driftguard-policy.toml"
         trusted_baseline="${RUNNER_TEMP}/driftguard-baseline.json"
 
-        trust="${DG_TRUST_INPUT}"
-        if [ "${trust}" = "auto" ]; then
-          if [ "${DG_EVENT_NAME}" = "pull_request" ] && [ -n "${DG_PR_BASE_SHA}" ]; then
-            trust="${DG_PR_BASE_SHA}"
-          elif [ "${DG_EVENT_NAME}" = "push" ]; then
-            if [ -n "${DG_PUSH_BEFORE_SHA}" ] && [ "${DG_PUSH_BEFORE_SHA}" != "0000000000000000000000000000000000000000" ]; then
-              trust="${DG_PUSH_BEFORE_SHA}"
-            else
-              if ! git cat-file -e "${DG_CURRENT_SHA}^" 2>/dev/null; then
-                git fetch --no-tags --deepen=1 origin || true
-              fi
-              if ! trust="$(git rev-parse "${DG_CURRENT_SHA}^" 2>/dev/null)"; then
-                echo "DriftGuard auto trust cannot establish pre-change Git state. Use trusted-ref=workspace only for an explicit bootstrap." >&2
-                exit 2
-              fi
-            fi
-          else
-            trust="workspace"
-          fi
-        fi
+        trust="$(bash "${GITHUB_ACTION_PATH}/scripts/resolve_trusted_ref.sh")"
 
         if [ "${trust}" = "workspace" ]; then
           cp -- "${DG_POLICY_PATH}" "${trusted_policy}"

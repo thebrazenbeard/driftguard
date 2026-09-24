@@ -2093,6 +2093,13 @@ class DriftLedger:
             ).fetchone()
             if row is None:
                 raise StaleGenerationError("cannot acknowledge unknown session")
+            if db.execute(
+                "SELECT 1 FROM effect_fences WHERE session_id=?",
+                (session_id,),
+            ).fetchone():
+                raise StaleGenerationError(
+                    "active effect fence requires effect-aware acknowledgement"
+                )
             generation = int(row["generation"])
             if generation != expected_generation:
                 raise StaleGenerationError(

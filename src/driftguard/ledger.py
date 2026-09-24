@@ -31,6 +31,7 @@ from .sequential import (
 
 
 _RELOAD_CURRENTNESS_READBACK_TOKEN = object()
+_EFFECT_DISPATCH_PERMIT_TOKEN = object()
 
 
 @dataclass(frozen=True)
@@ -339,6 +340,47 @@ class RecoveryCommitResult:
     successor_generation: int
 
 
+@dataclass(frozen=True)
+class EffectAttemptReceipt:
+    attempt_id: str
+    session_id: str
+    evaluation_digest: str
+    state_digest: str
+    expected_generation: int
+    directive_digest: str
+    subject_digest: str | None
+    subject_epoch: int | None
+    reservation_digest: str
+    status: str
+
+
+@dataclass(frozen=True, init=False)
+class EffectDispatchPermit:
+    attempt_id: str
+    reservation_digest: str
+    claim: str
+
+    def __init__(
+        self,
+        *,
+        attempt_id: str,
+        reservation_digest: str,
+        _permit_token: object | None = None,
+    ) -> None:
+        if _permit_token is not _EFFECT_DISPATCH_PERMIT_TOKEN:
+            raise ValueError(
+                "EffectDispatchPermit may only be issued by "
+                "DriftLedger.claim_effect_dispatch"
+            )
+        object.__setattr__(self, "attempt_id", attempt_id)
+        object.__setattr__(self, "reservation_digest", reservation_digest)
+        object.__setattr__(
+            self,
+            "claim",
+            "MECHANICAL_SINGLE_USE_DISPATCH_PERMIT_ONLY",
+        )
+
+
 class DriftLedger:
     def __init__(self, path: str) -> None:
         self.path = path
@@ -520,6 +562,36 @@ class DriftLedger:
                 CREATE UNIQUE INDEX IF NOT EXISTS
                     reload_ack_session_evaluation_uq
                     ON reload_acknowledgements(session_id, evaluation_digest);
+
+                CREATE TABLE IF NOT EXISTS effect_attempts (
+                    attempt_id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    evaluation_digest TEXT NOT NULL,
+                    state_digest TEXT NOT NULL,
+                    expected_generation INTEGER NOT NULL
+                        CHECK (expected_generation >= 0),
+                    directive_digest TEXT NOT NULL,
+                    subject_digest TEXT NULL,
+                    subject_epoch INTEGER NULL,
+                    reservation_digest TEXT NOT NULL UNIQUE,
+                    status TEXT NOT NULL CHECK (
+                        status IN (
+                            'RESERVED',
+                            'DISPATCH_UNCERTAIN',
+                            'CANCELLED_BEFORE_DISPATCH'
+                        )
+                    ),
+                    FOREIGN KEY(session_id) REFERENCES sessions(session_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS effect_fences (
+                    session_id TEXT PRIMARY KEY,
+                    attempt_id TEXT NOT NULL UNIQUE,
+                    reservation_digest TEXT NOT NULL,
+                    FOREIGN KEY(session_id) REFERENCES sessions(session_id),
+                    FOREIGN KEY(attempt_id) REFERENCES effect_attempts(attempt_id)
+                );
+
                 CREATE TABLE IF NOT EXISTS recovery_verifications (
                     verification_digest TEXT PRIMARY KEY,
                     session_id TEXT NOT NULL,
@@ -1628,6 +1700,374 @@ class DriftLedger:
             ).fetchall()
             return tuple(dict(row) for row in rows)
 
+
+    @staticmethod
+    def _effect_attempt_receipt(row: sqlite3.Row) -> EffectAttemptReceipt:
+        return EffectAttemptReceipt(
+            attempt_id=str(row["attempt_id"]),
+            session_id=str(row["session_id"]),
+            evaluation_digest=str(row["evaluation_digest"]),
+            state_digest=str(row["state_digest"]),
+            expected_generation=int(row["expected_generation"]),
+            directive_digest=str(row["directive_digest"]),
+            subject_digest=(
+                str(row["subject_digest"])
+                if row["subject_digest"] is not None
+                else None
+            ),
+            subject_epoch=(
+                int(row["subject_epoch"])
+                if row["subject_epoch"] is not None
+                else None
+            ),
+            reservation_digest=str(row["reservation_digest"]),
+            status=str(row["status"]),
+        )
+
+    def _validate_effect_currentness_in_tx(
+        self,
+        db: sqlite3.Connection,
+        *,
+        session_id: str,
+        evaluation_digest: str,
+        state: SaveState,
+        expected_generation: int,
+        subject: MonitoredSubject | None,
+    ) -> None:
+        session = db.execute(
+            "SELECT * FROM sessions WHERE session_id=?",
+            (session_id,),
+        ).fetchone()
+        if session is None:
+            raise StaleGenerationError(
+                "effect reservation requires an existing durable session"
+            )
+        if int(session["generation"]) != expected_generation:
+            raise StaleGenerationError(
+                "effect reservation session generation is stale"
+            )
+        if str(session["state_digest"]) != state.digest:
+            raise StaleGenerationError(
+                "effect reservation session state digest mismatch"
+            )
+        if session["last_evaluation_digest"] != evaluation_digest:
+            raise StaleGenerationError(
+                "effect reservation is not bound to current evaluation"
+            )
+
+        self._validate_subject_readback(session, subject)
+        if subject is not None:
+            self._assert_subject_epoch_current(db, subject)
+
+        event = db.execute(
+            """
+            SELECT * FROM evaluation_events
+             WHERE session_id=? AND evaluation_digest=?
+            """,
+            (session_id, evaluation_digest),
+        ).fetchone()
+        if event is None:
+            raise StaleGenerationError(
+                "effect reservation requires durable evaluation evidence"
+            )
+        if int(event["reload_required"]) != 1:
+            raise StaleGenerationError(
+                "effect reservation requires reload-required evaluation"
+            )
+        if str(event["state_digest"]) != state.digest:
+            raise StaleGenerationError(
+                "effect reservation evaluation state digest mismatch"
+            )
+        if int(event["generation_after"]) != expected_generation:
+            raise StaleGenerationError(
+                "effect reservation evaluation generation is stale"
+            )
+        if int(event["generation_before"]) + 1 != expected_generation:
+            raise StaleGenerationError(
+                "effect reservation evaluation generation is inconsistent"
+            )
+
+        expected_subject_digest = (
+            subject.configuration_digest if subject is not None else None
+        )
+        expected_subject_epoch = subject.epoch if subject is not None else None
+        event_subject_digest = (
+            str(event["subject_digest"])
+            if event["subject_digest"] is not None
+            else None
+        )
+        event_subject_epoch = (
+            int(event["subject_epoch"])
+            if event["subject_epoch"] is not None
+            else None
+        )
+        if event_subject_digest != expected_subject_digest:
+            raise StaleGenerationError(
+                "effect reservation evaluation subject digest mismatch"
+            )
+        if event_subject_epoch != expected_subject_epoch:
+            raise StaleGenerationError(
+                "effect reservation evaluation subject epoch mismatch"
+            )
+
+    def reserve_effect_attempt(
+        self,
+        *,
+        attempt_id: str,
+        session_id: str,
+        evaluation_digest: str,
+        state: SaveState,
+        expected_generation: int,
+        directive_digest: str,
+        subject: MonitoredSubject | None = None,
+    ) -> EffectAttemptReceipt:
+        """Atomically bind one local effect reservation to current reload state.
+
+        This creates a durable fence only. It is not provider-effect authority
+        and it performs no network or provider I/O.
+        """
+        if type(attempt_id) is not str or not attempt_id.strip():
+            raise ValueError("attempt_id must be a non-empty exact string")
+        if type(session_id) is not str or not session_id.strip():
+            raise ValueError("session_id must be a non-empty exact string")
+        if type(state) is not SaveState:
+            raise ValueError("state must be exact SaveState")
+        require_sha256_digest(evaluation_digest, "effect evaluation digest")
+        require_sha256_digest(directive_digest, "effect directive digest")
+        if (
+            type(expected_generation) is not int
+            or isinstance(expected_generation, bool)
+            or expected_generation < 0
+        ):
+            raise ValueError(
+                "effect expected_generation must be non-negative int"
+            )
+        if subject is not None and type(subject) is not MonitoredSubject:
+            raise ValueError("subject must be exact MonitoredSubject or None")
+
+        subject_digest = (
+            subject.configuration_digest if subject is not None else None
+        )
+        subject_epoch = subject.epoch if subject is not None else None
+        reservation_digest = canonical_digest(
+            {
+                "schema": "DRIFTGUARD_EFFECT_RESERVATION_V1",
+                "attempt_id": attempt_id,
+                "session_id": session_id,
+                "evaluation_digest": evaluation_digest,
+                "state_digest": state.digest,
+                "expected_generation": expected_generation,
+                "directive_digest": directive_digest,
+                "subject_digest": subject_digest,
+                "subject_epoch": subject_epoch,
+            }
+        )
+
+        with closing(self._connect()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            self._validate_effect_currentness_in_tx(
+                db,
+                session_id=session_id,
+                evaluation_digest=evaluation_digest,
+                state=state,
+                expected_generation=expected_generation,
+                subject=subject,
+            )
+            if db.execute(
+                "SELECT 1 FROM effect_attempts WHERE attempt_id=?",
+                (attempt_id,),
+            ).fetchone():
+                raise StaleGenerationError(
+                    "effect attempt id is already consumed"
+                )
+            if db.execute(
+                "SELECT 1 FROM effect_fences WHERE session_id=?",
+                (session_id,),
+            ).fetchone():
+                raise StaleGenerationError(
+                    "session already has an unresolved effect fence"
+                )
+
+            db.execute(
+                """
+                INSERT INTO effect_attempts(
+                    attempt_id,session_id,evaluation_digest,state_digest,
+                    expected_generation,directive_digest,subject_digest,
+                    subject_epoch,reservation_digest,status
+                ) VALUES(?,?,?,?,?,?,?,?,?,'RESERVED')
+                """,
+                (
+                    attempt_id,
+                    session_id,
+                    evaluation_digest,
+                    state.digest,
+                    expected_generation,
+                    directive_digest,
+                    subject_digest,
+                    subject_epoch,
+                    reservation_digest,
+                ),
+            )
+            db.execute(
+                """
+                INSERT INTO effect_fences(
+                    session_id,attempt_id,reservation_digest
+                ) VALUES(?,?,?)
+                """,
+                (session_id, attempt_id, reservation_digest),
+            )
+            row = db.execute(
+                "SELECT * FROM effect_attempts WHERE attempt_id=?",
+                (attempt_id,),
+            ).fetchone()
+            return self._effect_attempt_receipt(row)
+
+    def effect_attempt(
+        self,
+        attempt_id: str,
+    ) -> EffectAttemptReceipt | None:
+        if type(attempt_id) is not str or not attempt_id.strip():
+            raise ValueError("attempt_id must be a non-empty exact string")
+        with closing(self._connect()) as db:
+            row = db.execute(
+                "SELECT * FROM effect_attempts WHERE attempt_id=?",
+                (attempt_id,),
+            ).fetchone()
+            return (
+                self._effect_attempt_receipt(row)
+                if row is not None
+                else None
+            )
+
+    def active_effect_fence(self, session_id: str) -> dict | None:
+        if type(session_id) is not str or not session_id.strip():
+            raise ValueError("session_id must be a non-empty exact string")
+        with closing(self._connect()) as db:
+            row = db.execute(
+                "SELECT * FROM effect_fences WHERE session_id=?",
+                (session_id,),
+            ).fetchone()
+            return dict(row) if row is not None else None
+
+    def cancel_effect_attempt(
+        self,
+        attempt_id: str,
+    ) -> EffectAttemptReceipt:
+        """Release a fence only before any dispatch claim exists."""
+        if type(attempt_id) is not str or not attempt_id.strip():
+            raise ValueError("attempt_id must be a non-empty exact string")
+        with closing(self._connect()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT * FROM effect_attempts WHERE attempt_id=?",
+                (attempt_id,),
+            ).fetchone()
+            if row is None:
+                raise StaleGenerationError("unknown effect attempt")
+            if str(row["status"]) != "RESERVED":
+                raise StaleGenerationError(
+                    "only a RESERVED effect attempt may be cancelled"
+                )
+            fence = db.execute(
+                """
+                SELECT * FROM effect_fences
+                 WHERE session_id=? AND attempt_id=? AND reservation_digest=?
+                """,
+                (
+                    row["session_id"],
+                    attempt_id,
+                    row["reservation_digest"],
+                ),
+            ).fetchone()
+            if fence is None:
+                raise StaleGenerationError(
+                    "effect reservation fence binding is missing"
+                )
+            db.execute(
+                """
+                UPDATE effect_attempts
+                   SET status='CANCELLED_BEFORE_DISPATCH'
+                 WHERE attempt_id=? AND status='RESERVED'
+                """,
+                (attempt_id,),
+            )
+            if db.execute("SELECT changes()").fetchone()[0] != 1:
+                raise StaleGenerationError(
+                    "effect cancellation compare-and-swap failed"
+                )
+            db.execute(
+                """
+                DELETE FROM effect_fences
+                 WHERE session_id=? AND attempt_id=?
+                """,
+                (row["session_id"], attempt_id),
+            )
+            if db.execute("SELECT changes()").fetchone()[0] != 1:
+                raise StaleGenerationError(
+                    "effect cancellation fence release failed"
+                )
+            updated = db.execute(
+                "SELECT * FROM effect_attempts WHERE attempt_id=?",
+                (attempt_id,),
+            ).fetchone()
+            return self._effect_attempt_receipt(updated)
+
+    def claim_effect_dispatch(
+        self,
+        attempt_id: str,
+    ) -> EffectDispatchPermit:
+        """Consume RESERVED exactly once and retain the unresolved fence.
+
+        The returned object is a mechanical single-use permit only. It is not
+        authorization to perform a protected provider effect.
+        """
+        if type(attempt_id) is not str or not attempt_id.strip():
+            raise ValueError("attempt_id must be a non-empty exact string")
+        with closing(self._connect()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT * FROM effect_attempts WHERE attempt_id=?",
+                (attempt_id,),
+            ).fetchone()
+            if row is None:
+                raise StaleGenerationError("unknown effect attempt")
+            if str(row["status"]) != "RESERVED":
+                raise StaleGenerationError(
+                    "effect dispatch claim is no longer available"
+                )
+            fence = db.execute(
+                """
+                SELECT * FROM effect_fences
+                 WHERE session_id=? AND attempt_id=? AND reservation_digest=?
+                """,
+                (
+                    row["session_id"],
+                    attempt_id,
+                    row["reservation_digest"],
+                ),
+            ).fetchone()
+            if fence is None:
+                raise StaleGenerationError(
+                    "effect dispatch claim requires exact active fence"
+                )
+            db.execute(
+                """
+                UPDATE effect_attempts
+                   SET status='DISPATCH_UNCERTAIN'
+                 WHERE attempt_id=? AND status='RESERVED'
+                """,
+                (attempt_id,),
+            )
+            if db.execute("SELECT changes()").fetchone()[0] != 1:
+                raise StaleGenerationError(
+                    "effect dispatch claim compare-and-swap failed"
+                )
+            return EffectDispatchPermit(
+                attempt_id=attempt_id,
+                reservation_digest=str(row["reservation_digest"]),
+                _permit_token=_EFFECT_DISPATCH_PERMIT_TOKEN,
+            )
+
     def acknowledge_reload(
         self,
         *,
@@ -1653,6 +2093,13 @@ class DriftLedger:
             ).fetchone()
             if row is None:
                 raise StaleGenerationError("cannot acknowledge unknown session")
+            if db.execute(
+                "SELECT 1 FROM effect_fences WHERE session_id=?",
+                (session_id,),
+            ).fetchone():
+                raise StaleGenerationError(
+                    "active effect fence requires effect-aware acknowledgement"
+                )
             generation = int(row["generation"])
             if generation != expected_generation:
                 raise StaleGenerationError(

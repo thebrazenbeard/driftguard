@@ -6,7 +6,12 @@ from hashlib import sha256
 from typing import Any, Iterable
 
 from .core import DriftGuardEngine
-from .ledger import AcknowledgementResult, CommitResult, DriftLedger
+from .ledger import (
+    AcknowledgementResult,
+    CommitResult,
+    DriftLedger,
+    EffectAttemptReceipt,
+)
 from .model import (
     Decision,
     DriftEvidence,
@@ -624,25 +629,16 @@ class ActuatorReconciliation:
     acknowledgement: ReloadAcknowledgement | None
 
 
-def validate_reload_directive(
+def _validate_reload_directive_static(
     *,
     directive: ReloadDirective,
     state: SaveState,
-    ledger: DriftLedger,
-    subject: MonitoredSubject | None = None,
-) -> str:
-    """Re-admit a transportable reload directive against durable current state.
-
-    A well-shaped ReloadDirective is not effect authority.  This check binds the
-    directive back to the exact pinned SaveState and current reload-required
-    evaluation receipt before any actuator receipt may be interpreted.
-    """
+    subject: MonitoredSubject | None,
+) -> None:
     if type(directive) is not ReloadDirective:
         raise ValueError("directive must be exact ReloadDirective")
     if type(state) is not SaveState:
         raise ValueError("state must be exact SaveState")
-    if type(ledger) is not DriftLedger:
-        raise ValueError("ledger must be exact DriftLedger")
     if subject is not None and type(subject) is not MonitoredSubject:
         raise ValueError("subject must be exact MonitoredSubject or None")
 
@@ -663,6 +659,28 @@ def validate_reload_directive(
     expected_packet_digest = sha256(expected_packet.encode("utf-8")).hexdigest()
     if directive.restore_packet_sha256 != expected_packet_digest:
         raise ValueError("reload directive restore packet digest mismatch")
+
+
+def validate_reload_directive(
+    *,
+    directive: ReloadDirective,
+    state: SaveState,
+    ledger: DriftLedger,
+    subject: MonitoredSubject | None = None,
+) -> str:
+    """Re-admit a transportable reload directive against durable current state.
+
+    A well-shaped ReloadDirective is not effect authority. This check binds the
+    directive back to the exact pinned SaveState and current reload-required
+    evaluation receipt before any actuator receipt may be interpreted.
+    """
+    if type(ledger) is not DriftLedger:
+        raise ValueError("ledger must be exact DriftLedger")
+    _validate_reload_directive_static(
+        directive=directive,
+        state=state,
+        subject=subject,
+    )
 
     durable, session, currentness = ledger.reload_currentness_readback(
         session_id=directive.session_id,
@@ -711,6 +729,38 @@ def validate_reload_directive(
         raise ValueError("reload directive current session subject epoch mismatch")
 
     return directive.digest
+
+
+def reserve_reload_effect_attempt(
+    *,
+    attempt_id: str,
+    directive: ReloadDirective,
+    state: SaveState,
+    ledger: DriftLedger,
+    subject: MonitoredSubject | None = None,
+) -> EffectAttemptReceipt:
+    """Reserve and fence one reload effect without performing provider I/O.
+
+    Static directive/state binding is checked here. Durable currentness and the
+    reservation insert are then checked atomically by DriftLedger in one
+    BEGIN IMMEDIATE transaction.
+    """
+    if type(ledger) is not DriftLedger:
+        raise ValueError("ledger must be exact DriftLedger")
+    _validate_reload_directive_static(
+        directive=directive,
+        state=state,
+        subject=subject,
+    )
+    return ledger.reserve_effect_attempt(
+        attempt_id=attempt_id,
+        session_id=directive.session_id,
+        evaluation_digest=directive.evaluation_digest,
+        state=state,
+        expected_generation=directive.expected_generation,
+        directive_digest=directive.digest,
+        subject=subject,
+    )
 
 
 def reconcile_actuator_receipt(
@@ -963,6 +1013,7 @@ __all__ = [
     "classify_behavioral_fields",
     "qualify_post_reload_behavior",
     "reconcile_actuator_receipt",
+    "reserve_reload_effect_attempt",
     "validate_evaluator_response",
     "validate_reload_directive",
 ]

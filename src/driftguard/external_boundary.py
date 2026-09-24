@@ -1013,6 +1013,7 @@ __all__ = [
     "classify_behavioral_fields",
     "qualify_post_reload_behavior",
     "reconcile_actuator_receipt",
+    "reserve_reload_effect_attempt",
     "validate_evaluator_response",
     "validate_reload_directive",
 ]

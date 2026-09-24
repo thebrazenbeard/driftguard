@@ -15,7 +15,10 @@ from driftguard import (
     SourceBinding,
     StaleGenerationError,
 )
-from driftguard.external_boundary import build_reload_directive
+from driftguard.external_boundary import (
+    build_reload_directive,
+    reserve_reload_effect_attempt,
+)
 from driftguard.ledger import (
     DriftLedger,
     EffectDispatchPermit,
@@ -105,13 +108,11 @@ class EffectFenceTests(unittest.TestCase):
         os.unlink(self.path)
 
     def reserve(self, attempt_id="attempt-1"):
-        return self.ledger.reserve_effect_attempt(
+        return reserve_reload_effect_attempt(
             attempt_id=attempt_id,
-            session_id="session",
-            evaluation_digest=self.directive.evaluation_digest,
+            directive=self.directive,
             state=self.s,
-            expected_generation=self.directive.expected_generation,
-            directive_digest=self.directive.digest,
+            ledger=self.ledger,
         )
 
     def test_reservation_binds_exact_currentness_and_creates_one_fence(self):

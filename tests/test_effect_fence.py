@@ -10,6 +10,7 @@ from driftguard import (
     DriftPolicy,
     EvidenceIndependence,
     ProbeSource,
+    ReloadAcknowledgement,
     SaveState,
     SourceBinding,
     StaleGenerationError,
@@ -210,27 +211,24 @@ class EffectFenceTests(unittest.TestCase):
                 reservation_digest=receipt.reservation_digest,
             )
 
-    def test_generation_move_after_reservation_does_not_release_fence(self):
+    def test_generic_acknowledgement_cannot_bypass_active_effect_fence(self):
         self.reserve()
-        self.ledger.acknowledge_reload(
-            session_id="session",
-            state=self.s,
-            acknowledgement=__import__(
-                "driftguard", fromlist=["ReloadAcknowledgement"]
-            ).ReloadAcknowledgement(
-                "ack-effect-fence",
-                self.commit.evaluation.digest,
-                self.s.digest,
-                self.commit.evaluation.turn_index,
-            ),
-            expected_generation=self.commit.successor_generation,
-        )
-        self.assertIsNotNone(self.ledger.active_effect_fence("session"))
         with self.assertRaisesRegex(
             StaleGenerationError,
-            "unresolved effect fence",
+            "effect-aware acknowledgement",
         ):
-            self.reserve("attempt-after-generation-move")
+            self.ledger.acknowledge_reload(
+                session_id="session",
+                state=self.s,
+                acknowledgement=ReloadAcknowledgement(
+                    "ack-effect-fence",
+                    self.commit.evaluation.digest,
+                    self.s.digest,
+                    self.commit.evaluation.turn_index,
+                ),
+                expected_generation=self.commit.successor_generation,
+            )
+        self.assertIsNotNone(self.ledger.active_effect_fence("session"))
 
 
 if __name__ == "__main__":

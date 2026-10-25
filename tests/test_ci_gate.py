@@ -193,6 +193,117 @@ class CiGateTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "duplicate report metric name"):
                 CiReport.load(path)
 
+    def test_tiny_nonzero_regression_exceeds_zero_budget(self):
+        policy = CiPolicy.from_mapping({
+            "schema": "DRIFTGUARD_CI_POLICY_V1",
+            "policy_id": "strict",
+            "metric": [{
+                "name": "quality", "direction": "higher",
+                "max_regression": 0, "severity": "block",
+            }],
+        })
+        result = evaluate_ci(
+            policy=policy,
+            baseline=report("baseline", quality=1.0),
+            candidate=report("candidate", quality=0.9999999999996),
+        )
+        self.assertEqual(result.decision, GateDecision.BLOCK)
+        self.assertGreater(result.metrics[0].regression, 0)
+        self.assertEqual(len(result.digest), 64)
+
+    def test_decimal_threshold_equality_is_not_a_regression(self):
+        policy = CiPolicy.from_mapping({
+            "schema": "DRIFTGUARD_CI_POLICY_V1",
+            "policy_id": "bounded",
+            "metric": [{
+                "name": "quality", "direction": "higher",
+                "max_regression": 0.02, "severity": "block",
+            }],
+        })
+        result = evaluate_ci(
+            policy=policy,
+            baseline=report("baseline", quality=1.0),
+            candidate=report("candidate", quality=0.98),
+        )
+        self.assertEqual(result.decision, GateDecision.PASS)
+        self.assertEqual(result.metrics[0].regression, 0.02)
+
+    def test_decimal_budget_cannot_hide_small_exponent_addend(self):
+        policy = CiPolicy.from_mapping({
+            "schema": "DRIFTGUARD_CI_POLICY_V1",
+            "policy_id": "exact-decimal",
+            "metric": [{
+                "name": "quality", "direction": "higher",
+                "max_regression": 1e100, "severity": "block",
+            }],
+        })
+        result = evaluate_ci(
+            policy=policy,
+            baseline=report("baseline", quality=1e100),
+            candidate=report("candidate", quality=-1e-100),
+        )
+        self.assertEqual(result.decision, GateDecision.BLOCK)
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn(
+            "regression_exceeds_limit_below_display_resolution",
+            result.metrics[0].reasons,
+        )
+        self.assertEqual(len(result.digest), 64)
+
+    def test_reason_does_not_render_distinct_regressions_as_equal(self):
+        policy = CiPolicy.from_mapping({
+            "schema": "DRIFTGUARD_CI_POLICY_V1",
+            "policy_id": "display-precision",
+            "metric": [{
+                "name": "quality", "direction": "higher",
+                "max_regression": 0.1234567890123, "severity": "block",
+            }],
+        })
+        result = evaluate_ci(
+            policy=policy,
+            baseline=report("baseline", quality=1.0),
+            candidate=report("candidate", quality=0.8765432109876),
+        )
+        self.assertEqual(result.decision, GateDecision.BLOCK)
+        self.assertIn(
+            "regression_exceeds_limit_below_display_resolution",
+            result.metrics[0].reasons,
+        )
+
+    def test_finite_inputs_with_unrepresentable_regression_fail_closed(self):
+        for unknown in ("block", "warn"):
+            with self.subTest(unknown=unknown):
+                policy = CiPolicy.from_mapping({
+                    "schema": "DRIFTGUARD_CI_POLICY_V1",
+                    "policy_id": "extreme",
+                    "unknown": unknown,
+                    "metric": [{
+                        "name": "quality", "direction": "higher",
+                        "max_regression": 0, "severity": "block",
+                    }],
+                })
+                result = evaluate_ci(
+                    policy=policy,
+                    baseline=report("baseline", quality=1e308),
+                    candidate=report("candidate", quality=-1e308),
+                )
+                self.assertEqual(result.decision, GateDecision.UNKNOWN)
+                self.assertEqual(result.exit_code, 2)
+                self.assertIsNone(result.metrics[0].regression)
+                self.assertIn("regression_unrepresentable", result.metrics[0].reasons)
+                self.assertIn("one_or_more_regressions_unrepresentable", result.reasons)
+                self.assertEqual(len(result.digest), 64)
+
+    def test_oversized_json_number_has_controlled_validation_error(self):
+        with self.assertRaisesRegex(ValueError, "must be finite"):
+            report("candidate", quality=10 ** 309)
+
+    def test_integer_metric_cannot_silently_lose_precision(self):
+        exact = report("candidate", quality=2 ** 53)
+        self.assertEqual(dict(exact.metrics)["quality"], 2 ** 53)
+        with self.assertRaisesRegex(ValueError, "cannot be represented exactly"):
+            report("candidate", quality=2 ** 53 + 1)
+
     def test_markdown_contains_result_digest(self):
         result = evaluate_ci(
             policy=self.policy,

@@ -21,6 +21,8 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
+      - name: Source-only editor startup guard (before dependency install)
+        run: python -m unittest tests/test_editor_startup_guard.py -v
       - run: python -m pip install -e .
       - run: python -m compileall -q src tests
       - run: python -m unittest discover -s tests -v

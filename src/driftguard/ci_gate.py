@@ -209,8 +209,12 @@ class CiReport:
         if type(raw_metrics) is not dict or not raw_metrics:
             raise ValueError("CI report metrics must be a non-empty object")
         metrics = []
+        seen_names = set()
         for name, raw_score in raw_metrics.items():
             metric_name = _nonempty(name, "report metric name")
+            if metric_name in seen_names:
+                raise ValueError(f"duplicate report metric name: {metric_name}")
+            seen_names.add(metric_name)
             metrics.append(
                 (
                     metric_name,

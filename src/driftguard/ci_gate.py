@@ -87,6 +87,12 @@ class MetricPolicy:
     def from_mapping(cls, value: dict[str, Any]) -> "MetricPolicy":
         if type(value) is not dict:
             raise ValueError("metric policy must be a table")
+        unknown_keys = sorted(str(key) for key in value if key not in {
+            "name", "direction", "max_regression", "severity",
+            "min_candidate", "max_candidate",
+        })
+        if unknown_keys:
+            raise ValueError(f"unknown metric policy field(s): {', '.join(unknown_keys)}")
         name = _nonempty(value.get("name"), "metric name")
         try:
             direction = MetricDirection(value.get("direction"))
@@ -158,6 +164,11 @@ class CiPolicy:
     def from_mapping(cls, value: dict[str, Any]) -> "CiPolicy":
         if type(value) is not dict:
             raise ValueError("CI policy must be a TOML table")
+        unknown_keys = sorted(str(key) for key in value if key not in {
+            "schema", "policy_id", "unknown", "metric",
+        })
+        if unknown_keys:
+            raise ValueError(f"unknown CI policy field(s): {', '.join(unknown_keys)}")
         if value.get("schema") != "DRIFTGUARD_CI_POLICY_V1":
             raise ValueError("wrong CI policy schema")
         policy_id = _nonempty(value.get("policy_id"), "policy_id")

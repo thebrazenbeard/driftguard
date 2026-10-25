@@ -78,9 +78,11 @@ Exit codes:
 
 - `0` — PASS or WARN
 - `1` — BLOCK
-- `2` — UNKNOWN
+- `2` — UNKNOWN or invalid policy/evidence input
 
 Missing evidence is not silently converted into a pass.
+V1 policy fields are strict: unknown keys at the root or inside `[[metric]]`
+are rejected (exit `2`), so a misspelled threshold cannot silently disappear.
 Regression budgets are checked against the decimal values represented by the
 validated inputs, without rounding away tiny nonzero regressions. If finite
 inputs produce a regression too large to represent as a finite result number,

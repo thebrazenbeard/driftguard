@@ -70,6 +70,8 @@ A metric with `severity = "block"` fails the gate when its regression budget or 
 
 Missing required evidence produces `UNKNOWN`. With `unknown = "block"` (the default), UNKNOWN returns exit code 2.
 
+If `unknown = "warn"`, missing policy metrics can instead produce a top-level `WARN` with exit code 0, provided no other metric blocks the gate. A baseline/candidate subject mismatch remains `UNKNOWN` with exit code 2 regardless of this setting. Use `unknown = "block"` when an incomplete metric report must stop CI.
+
 ## Metric report
 
 Both baseline and candidate use the same minimal schema:
@@ -151,6 +153,8 @@ The action defaults to `trusted-ref = "auto"`.
 - push rerun / zero `event.before`: DriftGuard resolves the current commit's first parent, deepening the checkout if needed;
 - push where no pre-change commit can be established: fail closed;
 - other/manual contexts: the action falls back to the workspace.
+
+The `auto` workspace fallback on manual/other events is not a protected baseline. For an admission gate in those contexts, supply an exact reviewed commit with `trusted-ref` and separately govern workflow changes and branch permissions.
 
 The candidate report is always read from the current workspace.
 

@@ -338,6 +338,42 @@ severity = "block"
             self.assertEqual(loaded.policy_id, "demo")
             self.assertEqual(loaded.unknown, MetricSeverity.BLOCK)
 
+    def test_rejects_unrecognized_root_policy_key(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "driftguard.toml"
+            path.write_text(
+                '''schema = "DRIFTGUARD_CI_POLICY_V1"
+policy_id = "demo"
+unknwon = "warn"
+
+[[metric]]
+name = "quality"
+direction = "higher"
+max_regression = 0
+''',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "unknown CI policy field"):
+                CiPolicy.load(path)
+
+    def test_rejects_unrecognized_metric_policy_key(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "driftguard.toml"
+            path.write_text(
+                '''schema = "DRIFTGUARD_CI_POLICY_V1"
+policy_id = "demo"
+
+[[metric]]
+name = "quality"
+direction = "higher"
+max_regression = 0
+min_canidate = 0.90
+''',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "unknown metric policy field"):
+                CiPolicy.load(path)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from decimal import Decimal
 from enum import StrEnum
+from fractions import Fraction
 from hashlib import sha256
 import json
 import math
@@ -36,9 +38,15 @@ def _nonempty(value: Any, label: str) -> str:
 def _finite(value: Any, label: str) -> float:
     if type(value) not in (int, float) or isinstance(value, bool):
         raise ValueError(f"{label} must be numeric")
-    value = float(value)
+    original_int = value if type(value) is int else None
+    try:
+        value = float(value)
+    except OverflowError as exc:
+        raise ValueError(f"{label} must be finite") from exc
     if not math.isfinite(value):
         raise ValueError(f"{label} must be finite")
+    if original_int is not None and value != original_int:
+        raise ValueError(f"{label} integer cannot be represented exactly")
     return value
 
 
@@ -336,6 +344,7 @@ def evaluate_ci(
     saw_block = False
     saw_warn = False
     saw_unknown = False
+    saw_unrepresentable = False
 
     for metric in sorted(policy.metrics, key=lambda item: item.name):
         base = baseline_values.get(metric.name)
@@ -362,16 +371,46 @@ def evaluate_ci(
             continue
 
         if metric.direction is MetricDirection.HIGHER:
-            regression = base - cand
+            exact_regression = (
+                Fraction(Decimal(str(base))) - Fraction(Decimal(str(cand)))
+            )
         else:
-            regression = cand - base
-        regression = round(regression, 12)
+            exact_regression = (
+                Fraction(Decimal(str(cand))) - Fraction(Decimal(str(base)))
+            )
+        try:
+            regression = float(exact_regression)
+        except OverflowError:
+            regression = math.inf if exact_regression > 0 else -math.inf
+        if not math.isfinite(regression):
+            metric_results.append(MetricEvaluation(
+                name=metric.name,
+                status=GateDecision.UNKNOWN,
+                severity=metric.severity,
+                direction=metric.direction,
+                baseline=base,
+                candidate=cand,
+                regression=None,
+                max_regression=metric.max_regression,
+                reasons=("regression_unrepresentable",),
+            ))
+            saw_unrepresentable = True
+            continue
 
         reasons = []
-        if regression > metric.max_regression:
-            reasons.append(
-                f"regression_{regression:.12g}_exceeds_{metric.max_regression:.12g}"
-            )
+        if exact_regression > Fraction(Decimal(str(metric.max_regression))):
+            displayed_regression = f"{regression:.12g}"
+            displayed_limit = f"{metric.max_regression:.12g}"
+            if (
+                regression <= metric.max_regression
+                or displayed_regression == displayed_limit
+            ):
+                # Finite float or 12-digit display can hide exact excess.
+                reasons.append("regression_exceeds_limit_below_display_resolution")
+            else:
+                reasons.append(
+                    f"regression_{displayed_regression}_exceeds_{displayed_limit}"
+                )
         if metric.min_candidate is not None and cand < metric.min_candidate:
             reasons.append(
                 f"candidate_{cand:.12g}_below_min_{metric.min_candidate:.12g}"
@@ -410,6 +449,9 @@ def evaluate_ci(
     if saw_block:
         decision = GateDecision.BLOCK
         reasons.append("one_or_more_blocking_metrics_failed")
+    elif saw_unrepresentable:
+        decision = GateDecision.UNKNOWN
+        reasons.append("one_or_more_regressions_unrepresentable")
     elif saw_unknown and policy.unknown is MetricSeverity.BLOCK:
         decision = GateDecision.UNKNOWN
         reasons.append("required_metric_evidence_missing")

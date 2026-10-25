@@ -218,6 +218,10 @@ class CiReport:
     def from_mapping(cls, value: dict[str, Any]) -> "CiReport":
         if type(value) is not dict:
             raise ValueError("CI report must be a JSON object")
+        if set(value) - {"schema", "run_id", "subject", "metrics"}:
+            # Never erase provenance or negative-authority flags by silently
+            # converting a larger, untrusted payload into an admitted report.
+            raise ValueError("unknown CI report field(s)")
         if value.get("schema") != "DRIFTGUARD_CI_REPORT_V1":
             raise ValueError("wrong CI report schema")
         run_id = _nonempty(value.get("run_id"), "report run_id")

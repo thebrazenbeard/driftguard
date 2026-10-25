@@ -156,6 +156,36 @@ class CiGateTests(unittest.TestCase):
         self.assertEqual(result.decision, GateDecision.UNKNOWN)
         self.assertIn("baseline_candidate_subject_mismatch", result.reasons)
 
+    def test_report_rejects_untrusted_preview_authority_fields(self):
+        trusted_shape = {
+            "schema": "DRIFTGUARD_CI_REPORT_V1",
+            "run_id": "candidate",
+            "subject": "checkout-agent",
+            "metrics": {"task_success": 0.95},
+        }
+        for key, value in (
+            ("admission_eligible", False),
+            ("preview_only", True),
+            ("authorization_effect", "NONE"),
+            ("independent_custody_verified", False),
+            ("driftguard_preview", {"admission_eligible": False}),
+        ):
+            with self.subTest(field=key):
+                with self.assertRaisesRegex(ValueError, "unknown CI report field"):
+                    CiReport.from_mapping({**trusted_shape, key: value})
+
+    def test_json_report_rejects_relabelled_preview_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "candidate.json"
+            path.write_text(
+                '{"schema":"DRIFTGUARD_CI_REPORT_V1",'
+                '"run_id":"candidate","metrics":{"task_success":0.95},'
+                '"authorization_effect":"NONE","admission_eligible":false}',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "unknown CI report field"):
+                CiReport.load(path)
+
     def test_policy_digest_is_order_stable(self):
         first = self.policy.digest
         raw = {

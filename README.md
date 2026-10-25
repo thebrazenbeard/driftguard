@@ -81,6 +81,23 @@ Exit codes:
 - `2` — UNKNOWN
 
 Missing evidence is not silently converted into a pass.
+Regression budgets are checked against the decimal values represented by the
+validated inputs, without rounding away tiny nonzero regressions. If finite
+inputs produce a regression too large to represent as a finite result number,
+the gate returns UNKNOWN (exit `2`) even when `unknown = "warn"`; oversized
+numeric inputs are rejected. That case uses metric reason
+`regression_unrepresentable` and result reason
+`one_or_more_regressions_unrepresentable`, preserving a digestible result.
+Integer metrics that cannot be represented exactly as finite floats are also
+rejected. Fractional JSON numbers are still normalized to finite Python floats
+on input; canonical digests bind normalized metric values, not original JSON
+number spellings.
+The numeric `regression` field is float-sized for reporting; at extreme
+precision boundaries it may display the same value as the limit even when
+the exact decimal comparison requires BLOCK.
+In that case the metric reason is
+`regression_exceeds_limit_below_display_resolution`, also used when the
+reason's shortened numeric text would otherwise falsely show equality.
 
 See [Agent CI V1](docs/AGENT_CI_V1.md) and the runnable files under [examples/ci](examples/ci).
 

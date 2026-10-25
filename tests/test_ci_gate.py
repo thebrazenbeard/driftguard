@@ -167,6 +167,32 @@ class CiGateTests(unittest.TestCase):
         second = CiPolicy.from_mapping(raw).digest
         self.assertEqual(first, second)
 
+    def test_report_rejects_duplicate_names_after_normalization(self):
+        with self.assertRaisesRegex(ValueError, "duplicate report metric name"):
+            CiReport.from_mapping(
+                {
+                    "schema": "DRIFTGUARD_CI_REPORT_V1",
+                    "run_id": "candidate",
+                    "subject": "checkout-agent",
+                    "metrics": {
+                        "task_success": 0.1,
+                        " task_success ": 0.95,
+                    },
+                }
+            )
+
+    def test_json_report_rejects_duplicate_names_after_normalization(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "candidate.json"
+            path.write_text(
+                '{"schema":"DRIFTGUARD_CI_REPORT_V1",'
+                '"run_id":"candidate","subject":"checkout-agent",'
+                '"metrics":{"task_success":0.1," task_success ":0.95}}',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "duplicate report metric name"):
+                CiReport.load(path)
+
     def test_markdown_contains_result_digest(self):
         result = evaluate_ci(
             policy=self.policy,

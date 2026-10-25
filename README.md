@@ -122,6 +122,8 @@ DriftGuard writes a Markdown metric table to the Actions job summary and exposes
 
 By default, pull requests read policy/baseline from the **base commit** and pushes read them from pre-change Git state. Push reruns with an all-zero `event.before` recover the current commit's first parent instead of silently trusting the workspace. If pre-change state cannot be established, auto mode fails closed.
 
+On manual or other events, `trusted-ref: auto` falls back to the current workspace; it does not establish an independently trusted baseline in those contexts. For a governed manual gate, set `trusted-ref` to an exact reviewed commit and protect the workflow and branch separately.
+
 For production use, pin checkout and DriftGuard to immutable commits instead of floating refs.
 
 ## What makes this different

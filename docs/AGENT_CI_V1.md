@@ -158,7 +158,7 @@ The `auto` workspace fallback on manual/other events is not a protected baseline
 
 The candidate report is always read from the current workspace.
 
-That means a change cannot weaken its own DriftGuard policy or rewrite its own baseline and then use the rewritten files to pass the same gate.
+On pull-request and push events where `auto` resolves a pre-change Git commit, the candidate cannot weaken its own policy or rewrite its own baseline and use those workspace files to pass the same gate. Manual/other workspace fallback does **not** provide that protection.
 
 For a true first-time bootstrap or an intentionally isolated test, opt in explicitly:
 

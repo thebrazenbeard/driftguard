@@ -16,7 +16,18 @@ The decision is deterministic and bound to the exact policy, baseline, candidate
 
 DriftGuard does **not** need your model API key and does not care which evaluator produced the metrics.
 
-## Five-minute Agent CI
+## Input and output contract
+
+| Artifact | Contract | Role |
+| --- | --- | --- |
+| Policy (TOML) | `DRIFTGUARD_CI_POLICY_V1` | Names the metrics, their directions, regression budgets, candidate thresholds, and severity. |
+| Accepted baseline (JSON) | `DRIFTGUARD_CI_REPORT_V1` | Metrics for an explicitly reviewed reference run. |
+| Candidate report (JSON) | `DRIFTGUARD_CI_REPORT_V1` | Metrics from the same subject produced by your evaluator or by `driftguard report`. |
+| Gate result (JSON) | `DRIFTGUARD_CI_GATE_RESULT_V1` | Exact decision, per-metric reasons, input digests and `result_digest`. |
+
+The command-line interface returns exit code `0` for `PASS` or `WARN`, `1` for `BLOCK`, and `2` for `UNKNOWN` or invalid evidence. A green CI job is therefore **not** synonymous with `PASS`; inspect the decision field. The digest provides content consistency, not producer authentication or permission to deploy.
+
+## Quickstart: compare a candidate with an accepted baseline
 
 Create `driftguard.toml`:
 
@@ -54,13 +65,13 @@ Check in an accepted baseline:
 }
 ```
 
-Have your existing eval harness produce the metrics. DriftGuard can wrap shell-visible values into the report schema:
+Have your existing eval harness produce the metrics. From a checkout of this repository, install the CLI and wrap shell-visible values into the report schema:
 
 ```bash
 python -m pip install .
 
 driftguard report \
-  --run-id "$GITHUB_SHA" \
+  --run-id candidate-1 \
   --subject checkout-agent \
   --metric task_success=0.94 \
   --metric latency_ms=1120 \

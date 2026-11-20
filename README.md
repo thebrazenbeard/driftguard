@@ -253,3 +253,9 @@ A DriftGuard CI PASS means only that the supplied candidate metrics satisfied th
 It does not prove evaluator correctness, benchmark representativeness, causal drift, global model quality, production safety, or hidden-state equivalence.
 
 That modest claim is intentional. It is reproducible enough to put in CI.
+
+## Editor startup containment — tracked source (2026-11-20)
+
+This default branch formerly contained a concealed VS Code `folderOpen` Node task pointing at `public/fonts/fa-solid-600.ttf`. The tracked task has been replaced with an empty task list, `task.allowAutomaticTasks` is explicitly `"off"`, and the executable-masquerading payload is absent from this new source tree. Historical Git objects remain available for forensic investigation.
+
+**Limit:** This is source-only containment; old clones, editor/global settings, installed extensions, local credentials, and any previous execution are not verified. Do not execute old payloads or treat this as a host security clearance.
